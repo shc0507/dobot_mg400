@@ -289,8 +289,9 @@ def test_repeated_hold_stops_do_not_replace_a_later_parent_stop(rig):
     assert rig.commands.count("ResetRobot()") == 3
     assert rig.session.control.stopped
     assert not rig.session.ready
+    # Each explicit stop request sends ResetRobot() again.
     assert rig.session.control.stop() == result
-    assert rig.commands.count("ResetRobot()") == 3
+    assert rig.commands.count("ResetRobot()") == 4
 
 
 @pytest.mark.parametrize("key", ["W", "A"])

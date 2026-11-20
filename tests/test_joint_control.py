@@ -615,7 +615,6 @@ def test_disable_verifies_mode_four_without_waiting_for_operation_lock(rig, init
         actual = control.disable()
     assert actual == Feedback(START, 4, 0, False)
     assert 10.0 < now[0] < 10.4
-    assert control.disable() is actual
     assert commands == [
         ("DisableRobot()", 29999),
         ("RobotMode()", 29999),
@@ -623,6 +622,10 @@ def test_disable_verifies_mode_four_without_waiting_for_operation_lock(rig, init
         ("GetAngle()", 29999),
     ]
     assert control.stopped
+    # A later disable request sends DisableRobot() again and verifies it again.
+    again = control.disable()
+    assert again == actual and again is not actual
+    assert commands[4:] == commands[:4]
 
 
 def test_successful_disable_allows_explicit_enable_on_fresh_controller(rig, monkeypatch):
@@ -694,10 +697,11 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
         assert diagnostic.endswith("use the physical emergency stop")
         assert "joint_span_deg=(0.0, 0.0, 0.026, 0.0)" in diagnostic
         assert fresh_control.stopped
+        # A later stop request sends ResetRobot() again but stays unconfirmed.
         assert not fresh_control.stop()["stationary_verified"]
         assert "stage=after EnableRobot()" in diagnostic
         assert fresh_control._pending["sent"] and fresh_control._pending["ok"]
-        expected_mutations = ["DisableRobot()", "EnableRobot()", "ResetRobot()"]
+        expected_mutations = ["DisableRobot()", "EnableRobot()", "ResetRobot()", "ResetRobot()"]
 
     assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == (
         expected_mutations
@@ -831,24 +835,36 @@ def test_disable_cancels_active_operation_without_competing_failure_stop(rig, mo
     assert mutations == ["EnableRobot()" if action == "enable" else MOVE, "DisableRobot()"]
 
 
-def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch):
+@pytest.mark.parametrize("action", ["disable", "stop"])
+def test_concurrent_request_sends_once_and_returns_same_result(rig, monkeypatch, action):
     control, _, _, commands = rig
-    entered, release = threading.Event(), threading.Event()
+    text = {"disable": "DisableRobot()", "stop": "ResetRobot()"}[action]
+    entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
     original_command = control._command
+    original_cancel = control.cancel
     results = []
 
-    def command(text, *args, **kwargs):
-        if text == "DisableRobot()":
+    def command(sent, *args, **kwargs):
+        if sent == text:
             entered.set()
             assert release.wait(1)
-        return original_command(text, *args, **kwargs)
+        return original_command(sent, *args, **kwargs)
+
+    def cancel(**kwargs):
+        # The second request calls cancel() after it notes the finished attempts.
+        if entered.is_set():
+            waiting.set()
+        original_cancel(**kwargs)
 
     monkeypatch.setattr(control, "_command", command)
-    workers = [threading.Thread(target=lambda: results.append(control.disable())) for _ in range(2)]
+    monkeypatch.setattr(control, "cancel", cancel)
+    request = getattr(control, action)
+    workers = [threading.Thread(target=lambda: results.append(request())) for _ in range(2)]
     workers[0].start()
     try:
         assert entered.wait(1)
         workers[1].start()
+        assert waiting.wait(1)
     finally:
         release.set()
         for worker in workers:
@@ -856,7 +872,7 @@ def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch)
                 worker.join(1)
     assert len(results) == 2
     assert results[0] is results[1]
-    assert [text for text, _ in commands].count("DisableRobot()") == 1
+    assert [sent for sent, _ in commands].count(text) == 1
 
 
 @pytest.mark.parametrize(
@@ -873,7 +889,7 @@ def test_concurrent_disable_sends_once_and_returns_same_result(rig, monkeypatch)
         "final_feedback",
     ],
 )
-def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, monkeypatch, failure):
+def test_unconfirmed_disable_stays_unconfirmed_and_each_request_sends(rig, monkeypatch, failure):
     control, sample, now, commands = rig
     original_command = control._command
 
@@ -906,16 +922,17 @@ def test_unconfirmed_disable_stays_cancelled_and_uses_failure_stop_once(rig, mon
     monkeypatch.setattr(control, "_command", command)
     with pytest.raises((RuntimeError, TimeoutError)) as first:
         control.disable()
+    if failure == "enabled":
+        assert 15.0 <= now[0] < 15.5
+        assert "Fresh disabled robot feedback was not confirmed" in str(first.value)
     with pytest.raises(type(first.value)) as second:
         control.disable()
     assert first.value is second.value
     assert control.stopped
     assert control._disable_result is None
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
-    assert mutations == ["DisableRobot()", "ResetRobot()"]
-    if failure == "enabled":
-        assert 15.0 <= now[0] < 15.5
-        assert "Fresh disabled robot feedback was not confirmed" in str(first.value)
+    # Each disable request sends DisableRobot() and its failure stop again.
+    assert mutations == ["DisableRobot()", "ResetRobot()"] * 2
 
 
 @pytest.mark.parametrize("settles_after_reset", [False, True])
@@ -958,8 +975,6 @@ def test_disable_after_confirmed_stop_requires_new_stop_verification(
     assert result["ok"] is settles_after_reset
     assert result["stationary_verified"] is settles_after_reset
     assert control.stopped
-    assert control.disable() is disabled
-    assert control.stop() is result
     assert commands == [
         ("ResetRobot()", 29999),
         ("DisableRobot()", 29999),
@@ -967,6 +982,14 @@ def test_disable_after_confirmed_stop_requires_new_stop_verification(
         ("GetErrorID()", 29999),
         ("GetAngle()", 29999),
         ("ResetRobot()", 29999),
+    ]
+    # Each later request sends its command again. The new disable needs a new stop.
+    commands.clear()
+    assert control.disable() == disabled
+    assert control.stop()["ok"] is settles_after_reset
+    assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
+        "DisableRobot()",
+        "ResetRobot()",
     ]
     with pytest.raises(RuntimeError, match="stopped"):
         control.enable()
@@ -1119,7 +1142,8 @@ def test_late_mutation_ack_cannot_confirm_disable_or_send_again(rig, monkeypatch
         control.disable()
     with pytest.raises(RuntimeError, match="ordering remains unknown"):
         control.disable()
-    assert commands == [("DisableRobot()", 29999), ("ResetRobot()", 29999)]
+    # The second request sends again; the late ACK still cannot confirm it.
+    assert commands == [("DisableRobot()", 29999), ("ResetRobot()", 29999)] * 2
     assert control.stopped
 
 
@@ -1159,8 +1183,9 @@ def test_late_mutation_ack_cannot_clear_unknown_stop_ordering(rig, monkeypatch, 
     assert not result["ok"]
     assert not result["stationary_verified"]
     assert "unknown" in result["error"]
+    # A later request sends ResetRobot() again; ordering stays unknown.
     assert control.stop() is result
-    assert commands == [("ResetRobot()", 29999)]
+    assert commands == [("ResetRobot()", 29999)] * 2
     stable.assert_not_called()
 
 
@@ -1234,7 +1259,7 @@ def test_arrival_requires_stable_dwell_and_final_idle_mode(rig, monkeypatch):
     assert now[0] >= 10.7
 
 
-def test_stop_is_latched_and_repeated_calls_never_resend(rig):
+def test_stop_is_latched_and_each_stop_request_sends_again(rig):
     control, _, _, commands = rig
     result = control.stop()
     assert result == {
@@ -1242,11 +1267,12 @@ def test_stop_is_latched_and_repeated_calls_never_resend(rig):
         "stationary_verified": True,
         "physical_stop_requested": True,
     }
-    assert control.stop() is result
+    again = control.stop()
+    assert again == result and again is not result
     for action in (control.enable, lambda: control.move(TARGET)):
         with pytest.raises(RuntimeError, match="stopped"):
             action()
-    assert commands == [("ResetRobot()", 29999)]
+    assert commands == [("ResetRobot()", 29999)] * 2
 
 
 def test_stop_ack_does_not_prove_stillness(rig, monkeypatch):
@@ -1254,7 +1280,7 @@ def test_stop_ack_does_not_prove_stillness(rig, monkeypatch):
     monkeypatch.setattr(control, "_wait_stable", Mock(side_effect=TimeoutError("Not stationary")))
     assert control.stop()["stationary_verified"] is False
     assert control.stop()["ok"] is False
-    assert commands == [("ResetRobot()", 29999)]
+    assert commands == [("ResetRobot()", 29999)] * 2
 
 
 @pytest.mark.parametrize("speed", [1, 25, 100])
@@ -1278,7 +1304,8 @@ def test_jog_release_reuses_child_connection_until_finish(rig, monkeypatch, spee
     result = active.stop_after_command(jog=True, jog_speed_percent=speed)
     assert result["ok"]
     assert 0.24 <= now[0] - before < 0.26
-    assert active.stop(jog=True) is result
+    # A follow-up of the same hold shares the finished stop and sends nothing.
+    assert active.stop_after_command(jog=True) is result
     assert connection.sendall.call_args_list == [call(b"MoveJog(J4+)"), call(b"MoveJog()")]
     assert socket.create_connection.call_count == 1
     connection.close.assert_not_called()
@@ -2067,13 +2094,16 @@ def test_send_rechecks_idle_state_and_start_pose_under_cancellation_lock(
     connection.sendall.assert_not_called()
 
 
-def test_stop_transport_failure_is_not_retried(rig, monkeypatch):
+def test_stop_transport_failure_is_not_retried_within_one_request(rig, monkeypatch):
     control, _, _, _ = rig
     command = Mock(side_effect=TimeoutError("Reset ACK lost"))
     monkeypatch.setattr(control, "_command", command)
-    assert not control.stop()["ok"]
-    assert not control.stop()["stationary_verified"]
+    first = control.stop()
+    assert not first["ok"]
     assert command.call_args_list == [call("ResetRobot()", stopping=True)]
+    # The next stop request reaches the controller again and keeps the first verdict.
+    assert control.stop() is first
+    assert command.call_args_list == [call("ResetRobot()", stopping=True)] * 2
 
 
 def test_linear_move_cannot_start_outside_manufacturer_j4_range(cartesian_rig):

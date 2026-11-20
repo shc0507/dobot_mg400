@@ -88,6 +88,9 @@ class JointControl:
         self._disable_result = self._disable_error = None
         self._pending = None
         self._stop_result = None
+        # Finished stop and disable attempts. A waiting call compares them to share
+        # the result of a concurrent attempt.
+        self._stop_attempts = self._disable_attempts = 0
         self._stop_uncertain = False
         self._rejection = None
         self._child_stop_error = None
@@ -223,7 +226,7 @@ class JointControl:
                     self._parent.cancel()
                 if on_error is not None:
                     on_error(error)
-        return self.stop(jog=jog, jog_speed_percent=jog_speed_percent)
+        return self._stop(jog=jog, jog_speed_percent=jog_speed_percent, repeat=False)
 
     def cancel(self, *, disabling=False):
         """Immediately latch cancellation from the UI, without waiting or networking.
@@ -838,7 +841,8 @@ class JointControl:
             # The explicit disable owns cancellation of the previous operation.
             if self._disable_requested and not disabling:
                 return
-            result = self.stop()
+            # The failed operation shares a stop that already finished.
+            result = self._stop(repeat=False)
         if not result["ok"]:
             raise RuntimeError(
                 f"{error}; physical stop not confirmed: {result['error']}; "
@@ -1080,18 +1084,25 @@ class JointControl:
     def disable(self) -> Feedback:
         """Cancel this instance and verify the disabled state, without proving rest.
 
+        Each call sends DisableRobot() again, also after an earlier disable. A call
+        that waits for a concurrent disable shares its result. A failed disable stays
+        unconfirmed: later calls raise the earlier error.
         Create a new instance only after this succeeds and the previous operation exits.
         Use verify_stationary() separately before disconnecting feedback.
         """
+        attempts = self._disable_attempts
         self.cancel(disabling=True)
         with self._send_lock:
             # Record uncertainty if a send raced with the immediate cancellation.
             self.cancel(disabling=True)
         with self._stop_lock:
-            if self._disable_error is not None:
-                raise self._disable_error
-            if self._disable_result is not None:
+            if self._disable_attempts != attempts:
+                # A concurrent disable finished while this call waited.
+                if self._disable_error is not None:
+                    raise self._disable_error
                 return self._disable_result
+            earlier_error = self._disable_error
+            self._disable_result = None
             try:
                 # A new disable invalidates any earlier verification of rest.
                 self._stop_result = None
@@ -1117,16 +1128,20 @@ class JointControl:
                 sample = self._fresh({4})[0]
                 if mode != 4:
                     raise RuntimeError("Disabled robot mode was not confirmed")
-                self._disable_result = sample
-                return sample
             except Exception as error:
                 self._note_rejection(error)
                 try:
                     self._failed(error, disabling=True)
                 except Exception as failure:
                     error = failure
-                self._disable_error = error
-                raise error
+                self._disable_error = earlier_error or error
+                raise self._disable_error
+            finally:
+                self._disable_attempts += 1
+            if earlier_error is not None:
+                raise earlier_error
+            self._disable_result = sample
+            return sample
 
     def verify_stationary(self) -> Feedback:
         """Verify rest from feedback only. Call on a worker thread.
@@ -1138,9 +1153,17 @@ class JointControl:
     def stop(self, *, jog=False, jog_speed_percent=1):
         """Permanently cancel this instance, request a controlled stop, verify rest.
 
+        Each call sends a stop command again, also after an earlier stop. A call that
+        waits for a concurrent stop shares its result. A failed stop stays unconfirmed:
+        later calls return the earlier failure.
         An unresolved mutation ACK makes ordering across connections unknown;
         even a later successful ACK cannot establish a confirmed stop.
         """
+        return self._stop(jog=jog, jog_speed_percent=jog_speed_percent, repeat=True)
+
+    def _stop(self, *, jog=False, jog_speed_percent=1, repeat):
+        # repeat=False shares any finished stop: the caller follows up on that stop.
+        attempts = self._stop_attempts
         normal_jog = jog and not self.stopped and not self._stop_uncertain
         if self._parent is not None and self._parent._stop_uncertain:
             self._stop_uncertain = True
@@ -1166,8 +1189,9 @@ class JointControl:
                 and pending.get("port") == 30003
             )
         with self._stop_lock:
-            if self._stop_result is not None:
-                return self._stop_result
+            earlier = self._stop_result
+            if earlier is not None and (not repeat or self._stop_attempts != attempts):
+                return earlier
             if self._parent is not None and self._parent.stopped:
                 normal_jog = False
             # The jog path never runs a vacuum action; only ResetRobot() clears the blow.
@@ -1201,7 +1225,7 @@ class JointControl:
                     jog_stop_ack=jog_stop_ack,
                     jog_speed_percent=jog_speed_percent,
                 )
-                self._stop_result = {
+                result = {
                     "ok": True,
                     "stationary_verified": True,
                     "physical_stop_requested": True,
@@ -1219,15 +1243,19 @@ class JointControl:
                         )
                     except Exception as rescue_error:
                         error = RuntimeError(f"{error}; ResetRobot stop failed: {rescue_error}")
-                self._stop_result = {
+                result = {
                     "ok": False,
                     "stationary_verified": False,
                     "physical_stop_requested": True,
                     "error": str(error),
                 }
+            if earlier is not None and not earlier["ok"]:
+                result = earlier
             if blow_error is not None:
-                self._stop_result["blow_error"] = blow_error
-            if self._parent is not None and not self._stop_result["ok"]:
+                result["blow_error"] = blow_error
+            self._stop_result = result
+            self._stop_attempts += 1
+            if self._parent is not None and not result["ok"]:
                 # A child stop must not populate the reusable parent's stop cache.
-                self._parent._child_stop_error = self._stop_result["error"]
-            return self._stop_result
+                self._parent._child_stop_error = result["error"]
+            return result

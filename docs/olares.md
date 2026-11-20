@@ -309,7 +309,7 @@ go2rtc 从 `http://127.0.0.1:8770/api/camera/microscope/mjpeg` 读取 `1296x968`
 go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有画面时，`/camera/microscope.mp4` 返回 502，控制台改用 `/camera/microscope.mjpeg`。预览服务从 go2rtc 读取该 MJPEG，并从显微镜服务转发 `/camera/microscope.png` 原尺寸静帧。
 `/camera/fps.json` 返回每路 MJPEG 流在最近 2 s 内发送给每个观看者的帧率。没有观看者的流为 `null`。控制台在摄像头状态中读取这些值。
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
-ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，每 1 s 发送 1 个关键帧。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
+ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，并保留源时间戳（`-enc_time_base:v 1/90000`），每 1 s 发送 1 个关键帧。编码器默认按估计帧率的网格取整时间戳；估计值与 30 fps 不同时，约 8% 的帧成对相差 1 tick，随后有间隙，画面闪动。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
 使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s，其他流为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。go2rtc 没有所请求的预览时，该路由返回 404；go2rtc 没有应答时返回 502。
 使用 NVENC 时，大于 `1280x720` 的流只有 H.265 预览，侧视流除外。预览分辨率与采集模式相同，码率上限为 6 Mbit/s。

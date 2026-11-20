@@ -1618,6 +1618,8 @@ def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
     rendered = module.render_go2rtc(DEVICES, nvenc=True)
     h264 = next(line for line in rendered.splitlines() if line.startswith("  h264: "))
     assert "-c:v h264_nvenc" in h264 and "-fps_mode passthrough" in h264
+    # The encoder keeps the RTP timestamps, not a grid of the guessed input rate.
+    assert "-enc_time_base:v 1/90000" in h264
     assert "-forced-idr 1" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
     assert "libx264" not in rendered
     for number in range(1, 4):
@@ -1630,6 +1632,7 @@ def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
     rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True)
     h265 = next(line for line in rendered.splitlines() if line.startswith("  h265: "))
     assert "-c:v hevc_nvenc" in h265 and "-bf 0" in h265 and "-fps_mode passthrough" in h265
+    assert "-enc_time_base:v 1/90000" in h265
     assert "-forced-idr 1" in h265 and "-force_key_frames expr:gte(t,n_forced)" in h265
     # go2rtc 1.9.14 breaks an RTP aggregation packet of SEI and a small frame.
     assert h265.endswith('-bsf:v filter_units=remove_types=39|40"')
@@ -1682,6 +1685,7 @@ def test_camera_configuration_renders_exact_device_count(module, count):
     )
     assert "-fpsprobesize 2 -i {input}" in rtsp
     assert "-c:v libx264" in h264 and "-fps_mode passthrough" in h264
+    assert "-enc_time_base:v 1/90000" in h264
     assert "-x264-params fps=30" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
     assert "preload:\n" + "".join(f"  camera{n}: video\n" for n in range(1, count + 1)) in rendered
     # go2rtc reads the microscope preview only for an H.264 viewer: it is not preloaded.

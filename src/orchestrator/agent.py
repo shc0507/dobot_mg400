@@ -28,6 +28,8 @@ CAMERA_URL = ports.url("camera")
 SESSION = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MOTION = ("robot", "stage", "microscope")
 FINAL = {"ok", "failed", "rejected", "stopped"}
+# A service may show its own command with one of these results until it ends.
+IN_PROGRESS = {"running", "pending"}
 POLL_S = 0.2
 BEAT_S = 1.0
 DEFAULT_TIMEOUT_S = 300.0
@@ -125,6 +127,14 @@ def hint(device, code, state=None):
         "timeout": f"labctl {device} state",
         "busy": f"labctl {device} wait",
     }.get(code)
+
+
+def result_verdict(last):
+    """Return the final result of a command, None while it runs, or unknown."""
+    result = last.get("result")
+    if result in FINAL:
+        return result
+    return None if result in IN_PROGRESS else "unknown"
 
 
 def failure(code, message, *, outcome=None, status=None, device=None, state=None, **extra):
@@ -442,9 +452,9 @@ class Agent:
                 state, action=action, command_id=command_id, instance=instance, baseline=baseline
             )
         if command_id is not None and last.get("id") == command_id:
-            return last.get("result") if last.get("result") in FINAL else "unknown"
+            return result_verdict(last)
         if command_id is None and last.get("id") not in (None, baseline):
-            return last.get("result") if last.get("result") in FINAL else "unknown"
+            return result_verdict(last)
         if last.get("id") not in (None, baseline) and last.get("client") == holder:
             # A newer command of this session replaced it before its result was seen.
             return "unknown"
@@ -506,8 +516,9 @@ class Agent:
                         "state": state,
                     }
                 if command_id is not None and last.get("id") == command_id:
-                    verdict = last.get("result") if last.get("result") in FINAL else "unknown"
-                    return self._finish(verdict, state, command_id, device, info)
+                    verdict = result_verdict(last)
+                    if verdict is not None:
+                        return self._finish(verdict, state, command_id, device, info)
             if self.clock() >= deadline:
                 return failure("timeout", f"No result within {timeout:g} s.", device=device, **info)
             self.sleep(POLL_S)

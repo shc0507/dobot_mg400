@@ -209,6 +209,44 @@ def test_contract_failures_exit_1(result, code, outcome):
     assert exit_ == code and report["outcome"] == outcome and report["error"]["message"] == "No."
 
 
+@pytest.mark.parametrize(("final", "code", "outcome"), [("ok", 0, "ok"), ("failed", 1, "failed")])
+def test_stage_move_waits_while_its_command_is_running(final, code, outcome):
+    running = {"busy": True, "last_command": {"id": "42", "result": "running"}}
+    done = {"busy": False, "last_command": {"id": "42", "result": final, "message": "End."}}
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states({"last_command": None}, running, running, done),
+            "api/console/command/stage": (202, {"command_id": "42"}),
+        }
+    )
+    exit_, result = run_cli(["stage", "move", "bottom", "0.0625"], agent)
+    assert exit_ == code and result["outcome"] == outcome and result["state"] == done
+    _, waited = run_cli(["stage", "wait", "42"], agent)
+    assert waited["outcome"] == outcome
+
+
+def test_wait_with_a_command_id_waits_while_it_is_running():
+    running = {"busy": True, "last_command": {"id": "7", "result": "running"}}
+    done = {"busy": False, "last_command": {"id": "7", "result": "ok"}}
+    agent, _ = make({"api/console/state/stage": states(running, running, done)})
+    code, result = run_cli(["stage", "wait", "7"], agent)
+    assert code == 0 and result["outcome"] == "ok"
+
+
+def test_an_unrecognized_result_is_still_unknown():
+    odd = {"last_command": {"id": "9", "result": "partial"}}
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states({"last_command": None}, odd),
+            "api/console/command/stage": (202, {"command_id": "9"}),
+        }
+    )
+    code, result = run_cli(["stage", "calibrate", "top"], agent)
+    assert code == 3 and result["outcome"] == "unknown"
+
+
 def test_a_newer_command_of_this_session_makes_the_outcome_unknown():
     newer = {"last_command": {"id": "10", "result": "ok", "client": "h"}}
     agent, _ = make(

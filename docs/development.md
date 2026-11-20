@@ -118,7 +118,7 @@ wait "$sim_pid"
 | `src/mg400/sim/` | 回环控制器模拟器，共用测试模型 |
 | `src/stage_controller/` | 位移台服务：Flask 接口和串口协议 |
 | `src/labkit/` | 共用的服务契约、租约、事件、访问检查和 HTTP 客户端，见 [ADR 0001](adr/0001-instrument-service-contract.md) |
-| `src/cameras/` | AC410 摄像头模式和 UVC 读取 |
+| `src/cameras/` | AC410 摄像头模式和 go2rtc 图像读取 |
 | `src/vision/` | [视觉服务](vision.md)：定位、QR 读取、托盘和相机校准 |
 | `src/thermal_cam/` | [热像仪服务](thermal.md) |
 | `src/furnace/` | [炉温与气体服务](furnace.md) |

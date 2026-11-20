@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pytest
 
-from cameras import uvc
+from cameras import go2rtc, uvc
 from cameras.usb import enumerate_usb_cameras
 from microscope import autofocus, paths
 from microscope.aruco_locator import Locator, detect, marker_center
@@ -175,7 +175,7 @@ def stop_reader(capture, finished):
 
 
 def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatch):
-    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    monkeypatch.setattr(go2rtc, "RECONNECT_SECONDS", 0)
     decoded = []
     decode = cv2.imdecode
     monkeypatch.setattr(
@@ -186,7 +186,7 @@ def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatc
     first = Stream([truncated, jpeg(), truncated], hold=hold)
     second = Stream([jpeg(16, 20), jpeg(24, 48)])
     opener, calls, finished = stream_opener(first, second)
-    capture = uvc.Go2RTCCapture("camera2", opener=opener)
+    capture = go2rtc.Go2RTCCapture("camera2", opener=opener)
     assert calls == []
     try:
         ok, frame = capture.read()
@@ -206,10 +206,10 @@ def test_go2rtc_keeps_one_stream_and_returns_the_newest_complete_jpeg(monkeypatc
 def test_go2rtc_reader_has_no_read_timeout_that_reconnects_during_a_stall(monkeypatch):
     # go2rtc keeps a closed MJPEG consumer until its next frame. A read timeout during a camera
     # stall would reconnect and leave 1 consumer each time.
-    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    monkeypatch.setattr(go2rtc, "RECONNECT_SECONDS", 0)
     held = threading.Event()
     opener, calls, finished = stream_opener(Stream([jpeg()], hold=held))
-    capture = uvc.Go2RTCCapture("camera2", opener=opener)
+    capture = go2rtc.Go2RTCCapture("camera2", opener=opener)
     try:
         assert capture.read()[0]
         assert calls == [(STREAM_URL, None)]
@@ -223,7 +223,7 @@ def test_go2rtc_reader_has_no_read_timeout_that_reconnects_during_a_stall(monkey
 )
 def test_camera_stream_rejects_urls_and_injection(stream):
     with pytest.raises(ValueError):
-        uvc.Go2RTCCapture(stream)
+        go2rtc.Go2RTCCapture(stream)
     with pytest.raises(ValueError):
         uvc.USBCamera(stream)
 
@@ -231,9 +231,9 @@ def test_camera_stream_rejects_urls_and_injection(stream):
 def test_default_opener_disables_proxies_and_redirects(monkeypatch):
     observed = []
     monkeypatch.setattr(
-        uvc, "build_opener", lambda *handlers: observed.extend(handlers) or object()
+        go2rtc, "build_opener", lambda *handlers: observed.extend(handlers) or object()
     )
-    uvc.Go2RTCCapture("camera2")
+    go2rtc.Go2RTCCapture("camera2")
     assert observed[0].proxies == {}
     assert observed[1].redirect_request(None, None, 302, None, None, "http://bad.invalid") is None
 
@@ -243,7 +243,7 @@ def test_default_opener_disables_proxies_and_redirects(monkeypatch):
     ["status", "redirect", "type", "length", "oversized", "dimensions", "invalid", "http"],
 )
 def test_go2rtc_drops_bad_responses_and_parts_before_decode_and_reconnects(failure, monkeypatch):
-    monkeypatch.setattr(uvc, "RECONNECT_SECONDS", 0)
+    monkeypatch.setattr(go2rtc, "RECONNECT_SECONDS", 0)
     good = jpeg(24, 48)
     decode = cv2.imdecode
     monkeypatch.setattr(
@@ -264,7 +264,7 @@ def test_go2rtc_drops_bad_responses_and_parts_before_decode_and_reconnects(failu
     }[failure]
     held = threading.Event()
     opener, calls, finished = stream_opener(bad, Stream([good], hold=held))
-    capture = uvc.Go2RTCCapture("camera2", opener=opener)
+    capture = go2rtc.Go2RTCCapture("camera2", opener=opener)
     try:
         ok, frame = capture.read()
         assert ok and frame.shape == (24, 48, 3)

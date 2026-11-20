@@ -1055,7 +1055,7 @@ def test_live_4k_stage_samples_reuse_capture_without_mode_changes(monkeypatch):
         assert url == "http://127.0.0.1:1984/api/frame.jpeg?src=camera1"
         return BytesIO(content.getvalue())
 
-    monkeypatch.setattr("vision.frames.build_opener", lambda *args: open_frame)
+    monkeypatch.setattr("cameras.go2rtc.build_opener", lambda *args: open_frame)
     frames = twin.CameraFrames(
         {
             "MG400_CAMERA_DEVICES": ",".join(

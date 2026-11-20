@@ -120,7 +120,7 @@ Exception: a `labctl` stop goes to the orchestrator and also directly to the dev
 | `src/mg400/sim/` | Loopback controller simulator, with a shared test model |
 | `src/stage_controller/` | Stage service: Flask interface and serial protocol |
 | `src/labkit/` | Shared service contract, leases, events, access checks, and HTTP client. See [ADR 0001](adr/0001-instrument-service-contract.en.md) |
-| `src/cameras/` | AC410 camera modes and UVC reading |
+| `src/cameras/` | AC410 camera modes and go2rtc frame reading |
 | `src/vision/` | [Vision service](vision.en.md): localization, QR reading, trays, and camera calibration |
 | `src/thermal_cam/` | [Thermal camera service](thermal.en.md) |
 | `src/furnace/` | [Furnace and gas service](furnace.en.md) |

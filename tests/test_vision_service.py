@@ -14,6 +14,7 @@ import pytest
 from contract_helpers import assert_error, check_contract
 from PIL import Image
 
+from cameras import go2rtc
 from vision import __main__ as entrypoint
 from vision import frames as frame_module
 from vision import service as service_module
@@ -175,7 +176,7 @@ def test_default_frame_opener_rejects_redirect_before_second_request(monkeypatch
             return response
 
     monkeypatch.setattr(
-        frame_module, "build_opener", lambda *handlers: build_opener(*handlers, FakeHTTP())
+        go2rtc, "build_opener", lambda *handlers: build_opener(*handlers, FakeHTTP())
     )
     with pytest.raises(FrameError, match="HTTP 302"):
         Go2RTCSource().read(1)

@@ -879,3 +879,19 @@ def test_still_overlay_also_stops_the_h265_preview_of_a_large_camera(monkeypatch
     assert '  camera1_h265: ""' in lines
     assert '  camera1_h264: ""' not in lines
     assert '  camera2_h264: ""' in lines and '  camera2_h265: ""' in lines
+
+
+def test_startup_waits_for_the_go2rtc_api_on_the_labkit_port(preview, monkeypatch):
+    module, upstream = preview
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    upstream.side_effect = [ConnectionRefusedError(), ConnectionRefusedError(), io.BytesIO(b"{}")]
+    module.wait_go2rtc()
+    assert [call.args[0] for call in upstream.call_args_list] == ["http://127.0.0.1:1984/api"] * 3
+
+
+def test_startup_fails_when_go2rtc_never_answers(preview, monkeypatch):
+    module, upstream = preview
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    upstream.side_effect = ConnectionRefusedError()
+    with pytest.raises(OSError, match="go2rtc did not answer"):
+        module.wait_go2rtc(seconds=0)

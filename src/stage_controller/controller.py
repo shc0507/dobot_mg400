@@ -89,6 +89,7 @@ class MotorController(StageContract, EncoderController):
 
     def _read_status(self, *, fresh=True, command_result="ok"):
         super()._read_status(fresh=fresh)
+        self._refresh_reference()
         self._complete_motion_commands(command_result)
 
     def poll(self):
@@ -99,6 +100,7 @@ class MotorController(StageContract, EncoderController):
     def _lose_connection(self, exc):
         self._stop_epoch += 1
         super()._lose_connection(exc)
+        self._refresh_reference("connection_lost")
         self._lock_unconfirmed_stop()
 
     def connect(self, port, *, client=None):
@@ -111,6 +113,7 @@ class MotorController(StageContract, EncoderController):
             if not isinstance(port, str) or port not in {item["device"] for item in self.ports()}:
                 raise ValueError("That port is no longer available. Select another port.")
             super().connect(port)
+            self._refresh_reference("connected", force=True)
             if not any(self._motor_busy(state) for state in self._motors.values()):
                 self._contract_fault = None
             self._stop_epoch += 1
@@ -120,6 +123,7 @@ class MotorController(StageContract, EncoderController):
         with self._lock:
             self._stop_epoch += 1
             super().disconnect()
+            self._refresh_reference("disconnected")
             self._fail_motion_commands("Stage disconnected.")
             if any(self._motor_busy(state) for state in self._motors.values()):
                 self._lock_unconfirmed_stop()
@@ -129,6 +133,9 @@ class MotorController(StageContract, EncoderController):
         if self._contract_fault or self._contract_stopping:
             raise ControllerError("The service is locked. Only stop is allowed.")
         super()._require_motion_ready(motor, speed)
+        # Encoder methods refresh telemetry before this hook. Check the pair
+        # again under the same serial lock, immediately before their writes.
+        self._check_command_reference()
         if any(self._motor_busy(state) for name, state in self._motors.items() if name != motor):
             raise ControllerError("Stop the other stage motor before starting this motor.")
         if any(self.clock() < deadline for deadline in self._cooldowns.values()):
@@ -154,6 +161,7 @@ class MotorController(StageContract, EncoderController):
     def snapshot(self):
         with self._lock:
             state = super().snapshot()
+            self._refresh_reference()
             other_busy = any(self._motor_busy(item) for item in self._motors.values())
             cooldown = any(self.clock() < deadline for deadline in self._cooldowns.values())
             for motor in state["motors"]:
@@ -173,6 +181,7 @@ class MotorController(StageContract, EncoderController):
                     telemetry_fresh=self._feedback_fresh(motor["id"]),
                     position_tolerance_rotations=motor["tolerance"],
                     coordinate_unit="rotations",
+                    reference_valid=self._reference_valid(motor["id"]),
                 )
             return {
                 **state,
@@ -183,6 +192,20 @@ class MotorController(StageContract, EncoderController):
                 "configuration_error": self._configuration_error,
                 "legacy_geometry_active": False,
             }
+
+    def _configure_travel(self, motor, action):
+        with self._lock:
+            result = super()._configure_travel(motor, action)
+            # A zero reset can leave identical bounds and a zero position.
+            # It still replaces the reference used by previously saved targets.
+            self._refresh_reference(action, force=True)
+            return {**result, **self._contract_state()}
+
+    def calibrate(self, motor, speed):
+        with self._lock:
+            result = super().calibrate(motor, speed)
+            self._refresh_reference("calibration_started", force=True)
+            return {**result, **self._contract_state()}
 
     def preview_reference(self, motor):
         raise ControllerError("Camera references are inactive. Use encoder calibration.")

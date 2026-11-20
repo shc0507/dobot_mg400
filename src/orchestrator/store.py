@@ -28,6 +28,7 @@ def identifier(value):
 
 class RunStore:
     def __init__(self, directory=DEFAULT_RUNS, *, readonly=False):
+        self.readonly = readonly
         self.directory = Path(directory).absolute()
         for path in (self.directory, *self.directory.parents):
             if path.is_symlink():
@@ -93,12 +94,11 @@ class RunStore:
                     chip_id TEXT, step INTEGER, kind TEXT NOT NULL,
                     data_json TEXT NOT NULL, created_at REAL NOT NULL
                 );
-                -- Device history. A restarted service reuses seq, never (seq, ts).
+                -- Device history retains legacy rows without a process instance.
                 CREATE TABLE IF NOT EXISTS device_events (
                     id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
                     ts REAL, level TEXT NOT NULL, message TEXT NOT NULL,
-                    fields_json TEXT NOT NULL DEFAULT '{}',
-                    UNIQUE(device, seq, ts)
+                    fields_json TEXT NOT NULL DEFAULT '{}', instance TEXT
                 );
                 CREATE TABLE IF NOT EXISTS device_states (
                     id INTEGER PRIMARY KEY, device TEXT NOT NULL, ts REAL NOT NULL,
@@ -108,11 +108,60 @@ class RunStore:
                 CREATE INDEX IF NOT EXISTS device_states_ts ON device_states(device, ts);
                 DROP TABLE IF EXISTS gateway_calls;
             """)
+            self._migrate_device_events()
+            self.init_sample_tracking()
+        self._device_event_columns = {
+            row[1] for row in self._db.execute("PRAGMA table_info(device_events)")
+        }
+
+    def _sample_history_changed(self):
+        self._db.execute("UPDATE sample_revision SET revision=revision+1 WHERE singleton=1")
+
+    def init_sample_tracking(self):
+        from .agent_connect.samples import SampleTracker
+
+        SampleTracker(self).initialize()
+
+    def chip_event(self, chip_id, kind, **payload):
+        from .agent_connect.samples import SampleTracker
+
+        return SampleTracker(self).record_event(chip_id, kind, **payload)
+
+    def sample_states(self, **selection):
+        from .agent_connect.samples import SampleTracker
+
+        return SampleTracker(self).samples(**selection)
+
+    def _migrate_device_events(self):
+        with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(device_events)")}
-            if "fields_json" not in columns:
+            if "instance" not in columns:
+                # Rebuild to remove the old UNIQUE constraint. Keep row IDs and payloads.
+                self._db.execute("""
+                    CREATE TABLE device_events_with_instance (
+                        id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
+                        ts REAL, level TEXT NOT NULL, message TEXT NOT NULL,
+                        fields_json TEXT NOT NULL DEFAULT '{}', instance TEXT
+                    )
+                """)
+                fields = "fields_json" if "fields_json" in columns else "'{}'"
                 self._db.execute(
-                    "ALTER TABLE device_events ADD COLUMN fields_json TEXT NOT NULL DEFAULT '{}'"
+                    "INSERT INTO device_events_with_instance "
+                    "(id,device,seq,ts,level,message,fields_json) "
+                    f"SELECT id,device,seq,ts,level,message,{fields} FROM device_events"
                 )
+                self._db.execute("DROP TABLE device_events")
+                self._db.execute("ALTER TABLE device_events_with_instance RENAME TO device_events")
+            self._db.execute("CREATE INDEX IF NOT EXISTS device_events_ts ON device_events(ts)")
+            self._db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS device_events_identity "
+                "ON device_events(device,instance,seq) WHERE instance IS NOT NULL"
+            )
+            self._db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS device_events_legacy_identity "
+                "ON device_events(device,seq,ts) WHERE instance IS NULL"
+            )
 
     def _check(self, path, *, directory=False):
         info = path.lstat()
@@ -138,6 +187,7 @@ class RunStore:
         try:
             folder.chmod(0o750)
             with self._lock, self._db:
+                self._sample_history_changed()
                 self._db.execute(
                     "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?)",
                     (run_id, recipe.name, payload, chip_id, "created", now, now, ""),
@@ -164,6 +214,7 @@ class RunStore:
 
     def event(self, run_id, kind, data, *, chip_id=None, step=None):
         with self._lock, self._db:
+            self._sample_history_changed()
             self._db.execute(
                 "INSERT INTO events(run_id,chip_id,step,kind,data_json,created_at) "
                 "SELECT id,COALESCE(?,chip_id),?,?,?,? FROM runs WHERE id=?",
@@ -180,6 +231,7 @@ class RunStore:
 
     def step(self, run_id, position, status, *, result=None, error=None, resolution=None):
         with self._lock, self._db:
+            self._sample_history_changed()
             if status == "running":
                 self._db.execute(
                     "UPDATE steps SET status=?,started_at=? WHERE run_id=? AND position=?",
@@ -195,6 +247,7 @@ class RunStore:
     def sample(self, run_id, step, chip_id, data):
         identifier(chip_id)
         with self._lock, self._db:
+            self._sample_history_changed()
             self._db.execute(
                 "INSERT INTO samples(run_id,step,chip_id,data_json,created_at) VALUES(?,?,?,?,?)",
                 (run_id, step, chip_id, encoded(data), time.time()),
@@ -223,6 +276,7 @@ class RunStore:
                     output.flush()
                     os.fsync(output.fileno())
                 with self._db:
+                    self._sample_history_changed()
                     self._db.execute(
                         "INSERT INTO artifacts VALUES(?,?,?,?,?,?)",
                         (
@@ -484,12 +538,21 @@ class RunStore:
             raise ValueError("Cannot read artifact safely.") from error
 
     def add_device_events(self, rows):
-        """Insert (device, seq, ts, level, message, fields) rows; skip rows already stored."""
+        """Insert (device, seq, ts, level, message, fields[, instance]) rows."""
+        values = []
+        for row in rows:
+            if len(row) not in (6, 7):
+                raise ValueError("Device events require 6 fields and an optional service instance.")
+            instance = row[6] if len(row) == 7 else None
+            if instance is not None and (not isinstance(instance, str) or not instance):
+                raise ValueError("Device event instance must be a nonempty string or null.")
+            values.append((*row[:5], encoded(row[5]), instance))
         with self._lock, self._db:
             self._db.executemany(
-                "INSERT OR IGNORE INTO device_events(device,seq,ts,level,message,fields_json) "
-                "VALUES(?,?,?,?,?,?)",
-                [(*row[:5], encoded(row[5])) for row in rows],
+                "INSERT OR IGNORE INTO device_events "
+                "(device,seq,ts,level,message,fields_json,instance) "
+                "VALUES(?,?,?,?,?,?,?)",
+                values,
             )
 
     def add_device_state(self, device, ts, phase, row, state):
@@ -518,9 +581,13 @@ class RunStore:
 
     def device_events(self, *, device=None, since=0, start=None, end=None, limit=500):
         """Return stored device events, newest first. id is the cursor for since."""
+        fields = (
+            "fields_json" if "fields_json" in self._device_event_columns else "'{}' AS fields_json"
+        )
+        instance = "instance" if "instance" in self._device_event_columns else "NULL AS instance"
         rows = self._device_rows(
             "device_events",
-            "id,device,seq,ts,level,message,fields_json",
+            f"id,device,seq,ts,level,message,{fields},{instance}",
             device,
             since,
             start,

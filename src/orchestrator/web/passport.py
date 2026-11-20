@@ -112,6 +112,23 @@ def register_passport(blueprint, service):
             raise ServiceError(503, "Run history is unavailable.")
         return current
 
+    @blueprint.get("/api/chip/location")
+    def chip_location():
+        from orchestrator.agent_connect.samples import SampleTracker
+
+        chip = _query({"id"})
+        try:
+            page = SampleTracker(store()).samples(selection="ids", chip_ids=[chip], limit=1)
+            sample = next((row for row in page["items"] if row["chip_id"] == chip), None)
+            result = _clean(sample, service.dashboard)
+            if result is not None:
+                result["chip_id"] = chip
+        except ServiceError:
+            raise
+        except Exception:
+            raise ServiceError(503, "Current chip location is unavailable.") from None
+        return jsonify(chip_id=chip, sample=result)
+
     @blueprint.get("/api/chip")
     def chip_history():
         chip = _query({"id", "kind", "run_id", "limit", "offset"})

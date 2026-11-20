@@ -127,6 +127,7 @@ class Console:
         self.watcher = None
         self.threads = set()
         self.cursors = {}
+        self.event_instances = {}
         self.event_errors = {}
         self.commit = deployed_commit(service.settings)
 
@@ -716,7 +717,12 @@ class Console:
         the device cache readers through pull_events."""
         self.service.devices.start()
         try:
-            self._merge("runs", self.service.events.since(self.cursors.get("runs", 0)))
+            self._merge(
+                "runs",
+                self.service.events.since(
+                    self.cursors.get("runs", 0), instance=self.event_instances.get("runs")
+                ),
+            )
         except Exception:
             pass
 
@@ -727,10 +733,20 @@ class Console:
         cursor = report.get("next")
         if type(cursor) is not int or cursor < 0:
             raise ValueError("Invalid event cursor.")
+        instance = report.get("instance")
+        if instance is not None and (not isinstance(instance, str) or not instance):
+            raise ValueError("Invalid event instance.")
         text = self.service.dashboard.text
         rows = []
         for event in report["events"]:
             if not isinstance(event, dict) or type(event.get("seq")) is not int:
+                continue
+            event_instance = event.get("instance", instance)
+            if event_instance is not None and (
+                not isinstance(event_instance, str)
+                or not event_instance
+                or (instance is not None and event_instance != instance)
+            ):
                 continue
             level, stamp = event.get("level"), event.get("ts_unix")
             rows.append(
@@ -741,19 +757,42 @@ class Console:
                     level if level in {"debug", "info", "warning", "error", "critical"} else "info",
                     text(event.get("message")) or "",
                     event.get("fields") if isinstance(event.get("fields"), dict) else {},
+                    event_instance,
                 )
             )
-        self.service.store.add_device_events(rows)
         with self.lock:
+            previous = (self.event_instances.get(name), self.cursors.get(name, 0))
+            self.service.store.add_device_events(rows)
             self.cursors[name] = cursor
+            self.event_instances[name] = instance
+        from ..agent_connect.runtime import publish_device_events
+
+        publish_device_events(self.service, name, rows, previous, instance, report)
+        if report.get("gap") is True and previous != (instance, cursor):
+            restarted = report.get("restarted") is True
+            self.service.events.add(
+                "info" if restarted else "warning",
+                "Device service restarted." if restarted else "Device event history has a gap.",
+                device=name,
+                instance=instance,
+                since=previous[1],
+                oldest=report.get("oldest"),
+                gap_reason=report.get("gap_reason"),
+            )
 
     def pull_events(self, name, adapter):
         """Read one device's event replay. The device cache reader calls this every 1 s."""
         try:
-            cursor = self.cursors.get(name, 0)
-            report = adapter.events(cursor)
+            with self.lock:
+                cursor = self.cursors.get(name, 0)
+                instance = self.event_instances.get(name)
+            report = (
+                adapter.events(cursor, instance=instance)
+                if instance is not None
+                else adapter.events(cursor)
+            )
             if isinstance(report, dict) and type(report.get("next")) is int:
-                if report["next"] < cursor:
+                if report.get("instance") is None and report["next"] < cursor:
                     report = adapter.events(0)
             self._merge(name, report)
             with self.lock:

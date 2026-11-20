@@ -94,6 +94,15 @@ class ThermalFrame:
             "ir": self.ir.tolist(),
         }
 
+    def region_stats(self, region):
+        values = self.temperatures_c[region.y0 : region.y1, region.x0 : region.x1]
+        return {
+            **region.bounds(),
+            "min_c": float(np.min(values)),
+            "mean_c": float(np.mean(values)),
+            "max_c": float(np.max(values)),
+        }
+
     def npz(self):
         buffer = io.BytesIO()
         np.savez_compressed(
@@ -218,6 +227,7 @@ class CameraService:
             return {
                 **status,
                 "service": "thermal",
+                "instance": self.events.instance,
                 "seq": self._state_seq,
                 "ts_unix": time.time(),
                 "demo": self.source == "demo",
@@ -240,13 +250,9 @@ class CameraService:
     def region_reading(self, region, *, name=None):
         with self._lock:
             frame = self.latest()
-            values = frame.temperatures_c[region.y0 : region.y1, region.x0 : region.x1]
             result = {
                 "name": name,
-                **region.bounds(),
-                "min_c": float(np.min(values)),
-                "mean_c": float(np.mean(values)),
-                "max_c": float(np.max(values)),
+                **frame.region_stats(region),
                 "frame_sequence": frame.sequence,
                 "timestamp": frame.timestamp,
                 "source": frame.source,
@@ -256,6 +262,23 @@ class CameraService:
             if age > MAX_FRAME_AGE_S:
                 raise RuntimeError("Camera frame is stale; reconnect the camera")
             return {**result, "frame_age_s": age}
+
+    def frame_summary(self):
+        """Return metadata and region statistics from one fresh frame, without matrices."""
+        with self._lock:
+            frame = self.latest()
+            regions = {name: frame.region_stats(region) for name, region in self.regions.items()}
+            age = self.clock() - frame.monotonic_time
+            if age > MAX_FRAME_AGE_S:
+                raise RuntimeError("Camera frame is stale; reconnect the camera")
+            return {
+                **frame.metadata(),
+                "instance": self.events.instance,
+                "timestamp_basis": "read_completed",
+                "capture_timestamp": None,
+                "frame_age_s": age,
+                "regions": regions,
+            }
 
     def connect(self):
         with self._lifecycle, self._lock:

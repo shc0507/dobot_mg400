@@ -298,6 +298,27 @@ def service_post(rig, route, data=None, actor="operator"):
     )
 
 
+def test_service_instance_survives_motor_reconnect_but_changes_on_recreation(demo_rig):
+    rig = demo_rig()
+    service = rig.service
+    instance = rig.client.get("/api/state").json["instance"]
+    assert instance == service.events.instance
+    service._motor.disconnect()
+    assert not service.snapshot()["connected"]
+    assert service.snapshot()["instance"] == instance
+    service._motor._serial_factory = lambda **_: type(rig.port)()
+    service._motor.connect(service.config.serial, reset_seconds=0)
+    assert service.snapshot()["connected"]
+    assert service.snapshot()["instance"] == instance
+    service.events.add("info", "Microscope reconnected")
+    replay = rig.client.get("/api/events").json
+    assert replay["instance"] == instance
+    assert {event["instance"] for event in replay["events"]} == {instance}
+    replacement = demo_rig().service
+    assert replacement.snapshot()["instance"] != instance
+    assert replacement.snapshot()["instance"] == replacement.events.instance
+
+
 def wait_command(rig, command_id, *, timeout=5):
     import time
 

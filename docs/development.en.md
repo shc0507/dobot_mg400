@@ -319,11 +319,19 @@ An asynchronous command updates its result after its worker completes.
 A rejection from another client does not hide the final result of an active command.
 An older canceled worker cannot overwrite a newer completed stop.
 
-`api/events` returns `{"events": [...], "next": 0}`.
-Each event contains `seq`, `ts_unix`, `level`, `message`, and `fields`.
+`api/events` returns `events`, `next`, `instance`, `oldest`, `gap`, `gap_reason`, and `restarted`.
+Each event contains `instance`, `seq`, `ts_unix`, `level`, `message`, and `fields`.
 `since` defaults to 0 and must be a nonnegative integer.
-The response contains only events with sequences greater than `since`. Use `next` for the next query.
+Save `instance` and `next`, then send both as `instance` and `since` in the next query.
+When the requested instance matches, the response contains only sequences greater than `since`.
+When it differs, the response contains the new process's retained history, even when its sequence exceeds the old cursor.
+Without a requested instance, selection uses only `since`.
 The service retains the latest 1000 events. Sequence numbering restarts with the service.
+`oldest` is the first retained sequence, or `next + 1` when no events remain.
+`gap_reason` is `instance_changed`, `cursor_ahead`, `history_evicted`, or `null`. `gap` is true when the reason is not null.
+`restarted` is true only when the requested instance differs. A device reconnect preserves `instance`.
+The Console stores identified events by service, instance, and sequence. Legacy services retain timestamp-based identity.
+The existing history view retains restart and replay-gap notices.
 Events record state messages, lock and unlock, and unconfirmed stops and their clearance.
 They also record feedback mode and alarm flag changes, alarms, and keyboard close reasons. The `message` of each event is the related service log line.
 

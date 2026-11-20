@@ -929,6 +929,11 @@ def test_contract_routes_follow_base_path_and_event_cursor(base_path):
         assert code == 200
         assert json.loads(body)["next"] == 2
         assert [event["message"] for event in json.loads(body)["events"]] == ["second"]
+        code, body = request(server, "GET", base_path + "api/events?since=1&instance=old-boot")
+        replay = json.loads(body)
+        assert code == 200 and replay["instance"] == state.events.instance
+        assert replay["restarted"] and replay["gap_reason"] == "instance_changed"
+        assert [event["message"] for event in replay["events"]] == ["first", "second"]
         headers = {**ROBOT_HEADERS, "X-MG400-Client": "not-the-holder"}
         code, body = request(server, "POST", base_path + "api/stop", '{"wait_s":0.25}', headers)
         assert code == 200 and json.loads(body)["stop"] == "pending"
@@ -977,6 +982,12 @@ def test_contract_events_reject_invalid_or_ambiguous_cursor(cursor):
             )[0]
             == 400
         )
+
+
+@pytest.mark.parametrize("instance", ["", "one&instance=two", "%7F", "%E4%B8%AD"])
+def test_contract_events_reject_invalid_or_ambiguous_instance(instance):
+    with running(ContractRecordingState()) as server:
+        assert request(server, "GET", "/api/events?instance=" + instance)[0] == 400
 
 
 def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):

@@ -249,7 +249,8 @@ def test_store_refuses_database_with_another_owner(tmp_path, monkeypatch):
         RunStore(directory)
 
 
-def test_store_migrates_device_events_and_drops_gateway_calls(tmp_path):
+@pytest.mark.parametrize("with_fields", [False, True])
+def test_store_migrates_device_events_and_drops_gateway_calls(tmp_path, with_fields):
     folder = tmp_path / "runs"
     folder.mkdir(mode=0o750)
     database = sqlite3.connect(folder / "runs.db")
@@ -261,14 +262,101 @@ def test_store_migrates_device_events_and_drops_gateway_calls(tmp_path):
         );
         INSERT INTO device_events(device,seq,ts,level,message) VALUES('stage',1,1.0,'info','Old');
     """)
+    if with_fields:
+        database.execute(
+            "ALTER TABLE device_events ADD COLUMN fields_json TEXT NOT NULL DEFAULT '{}'"
+        )
+        database.execute(
+            "UPDATE device_events SET fields_json=?", (json.dumps({"saved": "payload"}),)
+        )
+        database.commit()
+    old_columns = {row[1] for row in database.execute("PRAGMA table_info(device_events)")}
     database.close()
     (folder / "runs.db").chmod(0o600)
+    expected_fields = {"saved": "payload"} if with_fields else {}
+    with RunStore(folder, readonly=True) as store:
+        old = store.device_events()[0]
+        assert old["instance"] is None and old["fields"] == expected_fields
+        assert {
+            row[1] for row in store._db.execute("PRAGMA table_info(device_events)")
+        } == old_columns
     with RunStore(folder) as store:
         store.add_device_events([("microscope", 1, 2.0, "info", "New", {"action": "focus_move"})])
         rows = store.device_events()
         assert [(row["message"], row["fields"]) for row in rows] == [
             ("New", {"action": "focus_move"}),
-            ("Old", {}),
+            ("Old", expected_fields),
         ]
+        assert rows[-1]["id"] == old["id"]
+        assert all(row["instance"] is None for row in rows)
+        store.add_device_events([("stage", 1, 1.0, "info", "Restarted", {}, "stage-new")])
+        assert len(store.device_events(device="stage")) == 2
         tables = {row[0] for row in store._db.execute("SELECT name FROM sqlite_master")}
         assert "gateway_calls" not in tables
+    with RunStore(folder) as store:
+        assert len(store.device_events()) == 3
+        assert any(row["instance"] == "stage-new" for row in store.device_events())
+
+
+def test_device_event_instance_identity_ignores_timestamps_and_keeps_legacy_rows(tmp_path):
+    with RunStore(tmp_path / "runs") as store:
+        store.add_device_events(
+            [
+                ("stage", 1, 10.0, "info", "Legacy", {"legacy": True}),
+                ("stage", 1, 10.0, "info", "Legacy duplicate", {}, None),
+                ("stage", 1, 11.0, "info", "Legacy later", {}),
+                ("stage", 1, 10.0, "info", "First process", {"result": "ok"}, "stage-a"),
+                ("stage", 1, 20.0, "info", "Replay with different time", {}, "stage-a"),
+                ("stage", 1, 10.0, "info", "New process", {}, "stage-b"),
+                ("stage", 2, 10.0, "info", "Second sequence", {}, "stage-b"),
+                ("vision", 1, 10.0, "info", "Another service", {}, "stage-b"),
+            ]
+        )
+        rows = store.device_events()
+        assert len(rows) == 6
+        assert {row["message"] for row in rows} == {
+            "Legacy",
+            "Legacy later",
+            "First process",
+            "New process",
+            "Second sequence",
+            "Another service",
+        }
+        first = next(row for row in rows if row["message"] == "First process")
+        assert first["instance"] == "stage-a" and first["ts"] == 10.0
+        assert first["fields"] == {"result": "ok"}
+        store.add_device_events([("stage", 1, None, "info", "Replay without time", {}, "stage-a")])
+        assert len(store.device_events()) == 6
+        store.prune_devices(11.0)
+        assert [row["message"] for row in store.device_events()] == ["Legacy later"]
+
+
+def test_device_event_migration_failure_preserves_old_rows_and_schema():
+    class FailingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql.startswith("ALTER TABLE device_events_with_instance RENAME"):
+                raise sqlite3.OperationalError("migration interrupted")
+            return super().execute(sql, *args, **kwargs)
+
+    database = sqlite3.connect(":memory:", factory=FailingConnection)
+    database.executescript("""
+        CREATE TABLE device_events (
+            id INTEGER PRIMARY KEY, device TEXT NOT NULL, seq INTEGER NOT NULL,
+            ts REAL, level TEXT NOT NULL, message TEXT NOT NULL, UNIQUE(device, seq, ts)
+        );
+        INSERT INTO device_events VALUES (9, 'stage', 1, 1.0, 'info', 'Preserved');
+    """)
+    store = RunStore.__new__(RunStore)
+    store._db = database
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="migration interrupted"):
+            store._migrate_device_events()
+        assert database.execute("SELECT * FROM device_events").fetchall() == [
+            (9, "stage", 1, 1.0, "info", "Preserved")
+        ]
+        tables = {
+            row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert tables == {"device_events"}
+    finally:
+        database.close()

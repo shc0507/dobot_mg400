@@ -83,9 +83,9 @@ class ServiceAdapter:
             return capture._call(path, data)
         return self._http._call(path, data)
 
-    def events(self, since=0):
+    def events(self, since=0, *, instance=None):
         """Read the contract event replay once; the robot service serves the same route."""
-        return self._http.events(since)
+        return self._http.events(since, instance=instance)
 
     def stop(self, **params):
         """Stop the device, or 1 part of it with service stop params (furnace gas_channel)."""

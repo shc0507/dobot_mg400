@@ -1203,6 +1203,7 @@ class FurnaceService:
             )
         return copy.deepcopy(
             dict(
+                instance=self.events.instance,
                 connected=self.connected,
                 locked=self._locked,
                 fault=self._fault,

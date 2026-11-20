@@ -112,10 +112,20 @@ class ServiceClient:
     def release(self):
         return self._call("api/release", {})
 
-    def events(self, since=0):
+    def events(self, since=0, *, instance=None):
         if isinstance(since, bool) or not isinstance(since, int) or since < 0:
             raise ValueError("Event sequence must be a nonnegative integer.")
-        return self._call("api/events?" + urllib.parse.urlencode({"since": since}))
+        query = {"since": since}
+        if instance is not None:
+            if (
+                not isinstance(instance, str)
+                or not 1 <= len(instance) <= 128
+                or not instance.isascii()
+                or not instance.isprintable()
+            ):
+                raise ValueError("Event instance must contain 1 to 128 printable ASCII characters.")
+            query["instance"] = instance
+        return self._call("api/events?" + urllib.parse.urlencode(query))
 
     def heartbeat_thread(self, *, interval=1, on_error=None, renew_only=False):
         """Create a helper; renew_only requires an explicitly acquired lease."""

@@ -317,11 +317,19 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 其他客户端的拒绝请求不会隐藏正在执行的命令的最终结果。
 已取消的旧工作线程不能覆盖较新的已完成停止。
 
-`api/events` 返回 `{"events": [...], "next": 0}`。
-每个事件含 `seq`、`ts_unix`、`level`、`message` 和 `fields`。
+`api/events` 返回 `events`、`next`、`instance`、`oldest`、`gap`、`gap_reason` 和 `restarted`。
+每个事件含 `instance`、`seq`、`ts_unix`、`level`、`message` 和 `fields`。
 `since` 默认为 0，必须是非负整数。
-响应只包含序号大于 `since` 的事件，下一次查询使用 `next`。
+保存 `instance` 和 `next`，下次查询分别传为 `instance` 和 `since`。
+请求的实例相同时，响应只包含序号大于 `since` 的事件。
+请求的实例不同时，响应包含新进程保留的全部事件。即使新进程序号超过旧游标，也按此规则返回。
+未提供实例时，仅按 `since` 选择事件。
 服务保留最近 1000 个事件，重启后序号重新开始。
+`oldest` 是保留的首个序号。没有事件时，它等于 `next + 1`。
+`gap_reason` 为 `instance_changed`、`cursor_ahead`、`history_evicted` 或 `null`。原因非空时，`gap` 为真。
+仅当请求的实例不同，`restarted` 才为真。设备重连保留 `instance`。
+控制台按服务、实例和序号存储带实例的事件。旧服务沿用基于时间戳的事件标识。
+现有历史视图保留重启和回放缺口提示。
 事件记录状态消息、锁定和解锁、停止未确认及其清除。
 事件还记录反馈模式和报警标志的变化、报警和键盘关闭原因。每个事件的 `message` 即对应的服务日志行。
 

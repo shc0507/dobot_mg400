@@ -1,0 +1,120 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agent Portal</title>
+  <script src="/assets/theme.js"></script>
+  <link rel="stylesheet" href="/assets/portal.css">
+</head>
+<body data-mode="live"><main>
+  <header class="page-header">
+    <div><p class="eyebrow">AI CHEMISTRY CONSOLE</p><h1>Agent Portal</h1></div>
+    <div class="header-actions"><span id="portal-mode" class="status-pill live-badge">Live · Read only</span><button id="theme-toggle" type="button">Dark mode</button></div>
+  </header>
+  <div class="portal-mode-row"><p class="intro">One agent connection. See the data Olares sends, as it arrives.</p><label class="test-toggle"><input type="checkbox" id="enable-tests"> Enable simulation tests</label></div>
+  <section id="live-view" aria-label="Live Olares data stream">
+    <section class="card live-connection">
+      <div class="card-heading"><div><h2>Olares data stream</h2><a href="http://100.64.0.1:8082/lab/#agent-connect" target="_blank" rel="noopener">100.64.0.1:8082 ↗</a></div><div class="live-controls"><label>Updates per second<select id="live-rate"><option value="1">1 Hz</option><option value="2" selected>2 Hz</option><option value="4">4 Hz</option></select></label><button id="live-connect" type="button">Disconnect</button></div></div>
+      <div class="live-status-row"><span id="live-status" class="status-pill" role="status">Connecting to Olares…</span><span id="live-metrics">Waiting for the first frame.</span></div>
+      <p id="live-error" class="live-error" role="alert" hidden></p>
+    </section>
+    <div class="section-head live-section-head"><h2>Devices</h2><span class="section-note">Values keep their source quality. “Outdated” means the reading is no longer current.</span></div>
+    <p id="live-empty" class="empty-state">Connect LarePass to receive data from Olares.</p>
+    <section id="live-devices" class="live-device-grid" aria-label="All received device data"></section>
+    <div class="two-column live-groups">
+      <section class="card"><div class="card-heading"><h2>Active samples</h2><span id="live-sample-count" class="status-pill">Not received</span></div><p class="section-note">Chips with work in progress. Missing locations remain unknown.</p><div id="live-samples"></div></section>
+      <section class="card"><div class="card-heading"><h2>Operations</h2><span id="live-operation-count" class="status-pill">Not received</span></div><p class="section-note">Current runs and Console operations.</p><div id="live-operations"></div></section>
+    </div>
+    <section class="card live-events-card"><div class="card-heading"><h2>Recent events</h2><span class="section-note">Last 100 received events</span></div><div id="live-events" class="live-events"><p class="empty-state">No events received yet.</p></div></section>
+    <details class="card disclosure live-json"><summary>Full state JSON</summary><div class="disclosure-content"><p class="section-note">The complete last state frame, including all device fields, sample records, operations and message metadata.</p><button id="live-download" type="button" disabled>Download received data</button><pre id="live-raw">Waiting for a state frame.</pre></div></details>
+    <details class="card disclosure live-json"><summary>Connection and data agreement</summary><div class="disclosure-content"><dl id="live-agreement"></dl><pre id="live-last-message">Waiting for a message.</pre></div></details>
+  </section>
+  <section id="advanced-tests" hidden aria-label="Optional simulated agent tests">
+  <p class="section-note">Simulation only. The live Olares connection is paused. Use these tests when you need to compare two readers or check a data format change.</p>
+  <nav class="portal-tabs" aria-label="Test pages"><button type="button" data-panel="stream-tests" aria-pressed="true">Samples &amp; stream</button><button type="button" data-panel="format-tests" aria-pressed="false">Data format tests</button></nav>
+  <section id="stream-tests" aria-label="Sample tracking and message stream">
+    <p class="section-note">Two independent connections receive the same simulated Console data. Reports change chip records only. No equipment moves.</p>
+    <p id="stream-error" role="alert" hidden></p>
+    <div class="test-controls">
+      <section class="card">
+        <h2>Choose the messages</h2>
+        <div class="stream-options"><label>Updates per second<select id="stream-rate"><option value="1">1 Hz</option><option value="2" selected>2 Hz</option><option value="4">4 Hz</option></select></label><label>Chip selection<select id="stream-selection"><option value="ids">Selected chips</option><option value="active">Chips with work in progress</option></select></label><label>Exact chip IDs, one per line<textarea id="stream-ids" rows="2">chip-001
+chip-002</textarea></label></div>
+        <div class="stream-groups"><label><input type="checkbox" id="stream-devices" checked> Devices</label><label><input type="checkbox" id="stream-samples" checked> Chips</label><label><input type="checkbox" id="stream-operations"> Operations</label></div>
+        <button id="stream-apply" type="button">Apply to both connections</button>
+        <p class="section-note">Changing the selection starts a fresh subscription. Reconnect keeps the last event number to check for missed messages.</p>
+      </section>
+      <section class="card"><h2>Test recovery</h2><div class="control-grid">
+        <div class="control-item"><button type="button" id="stream-restart">Simulate restart</button><p>Keep chip records. Start a new Console process identity.</p></div>
+        <div class="control-item"><button type="button" id="stream-expire">Expire saved events</button><p>Test a reconnect whose old events are no longer available.</p></div>
+        <div class="control-item"><button type="button" id="stream-upgrade">Add optional data field</button><p>Publish a compatible agreement update.</p></div>
+        <div class="control-item"><button type="button" id="stream-incompatible">Change position units</button><p>The connections must stop reading incompatible data.</p></div>
+        <div class="control-item"><button type="button" id="stream-original">Restore original format</button><p>Resume reading the supported agreement.</p></div>
+      </div></section>
+    </div>
+    <section id="stream-clients" class="client-grid" aria-label="Independent stream connections"></section>
+    <section id="stream-readings" class="readings" aria-label="Device readings from Connection A"></section>
+    <section class="card"><div class="card-heading"><h2>Chip locations</h2><button id="stream-list" type="button">Browse saved chips</button></div><p id="stream-count" class="section-note"></p><div class="scroll"><table><thead><tr><th>Chip</th><th>Current location</th><th>Evidence</th><th>Inside furnace</th><th>Pending work</th></tr></thead><tbody id="stream-chip-rows"></tbody></table></div><button id="stream-next" type="button" hidden>Next page</button><p class="section-note">Camera observation, manual report, and inferred location are different kinds of evidence. Unknown means the Console cannot establish the position.</p></section>
+    <section class="test-controls sample-actions">
+      <section class="card"><h2>Report a chip location</h2><p class="section-note">This is a human report in the simulation, not a camera measurement.</p><form id="sample-report"><div class="stream-options"><label>Exact chip ID<input id="report-chip" value="chip-001" maxlength="256" required></label><label>Location<select id="report-holder"><option value="tray_slot">Tray slot</option><option value="robot">Robot</option><option value="stage_insert">Stage insert</option></select></label><label>Tray ID<input id="report-tray" value="T1" maxlength="128"></label><label>Slot ID<input id="report-slot" value="A1" maxlength="128"></label></div><div class="stream-actions"><button type="submit">Save manual report</button><button type="button" id="report-unknown">Mark location unknown</button></div></form><p id="report-result" role="status" class="section-note"></p></section>
+      <section class="card"><h2>Test chip evidence</h2><p class="section-note">These actions use the chip ID entered in the report form.</p><div class="control-grid">
+        <div class="control-item"><button type="button" data-sample="pick">Start a pick</button><p>Show pending work. The current holder becomes unknown.</p></div>
+        <div class="control-item"><button type="button" data-sample="place">Finish placement</button><p>Infer that the chip reached the insert. No camera proof.</p></div>
+        <div class="control-item"><button type="button" data-sample="confirm">Confirm with camera</button><p>Add a new simulated observation of this exact chip.</p></div>
+        <div class="control-item"><button type="button" data-sample="old-frame">Send an old image result</button><p>Old evidence must not replace the current location.</p></div>
+        <div class="control-item"><button type="button" data-sample="conflict">Send conflicting identity</button><p>A different detected chip makes the claim uncertain.</p></div>
+        <div class="control-item"><button type="button" data-sample="entry">Simulate furnace entry</button><p>Use a test mapping. This mapping does not exist on Olares.</p></div>
+        <div class="control-item"><button type="button" data-sample="lose-reference">Lose entry reference</button><p>Keep the insert holder. Furnace entry becomes unknown.</p></div>
+        <div class="control-item"><button type="button" data-sample="reset">Reset chip examples</button><p>Clear this simulation's chip reports and start again.</p></div>
+      </div></section>
+    </section>
+    <section class="two-column technical"><details class="card disclosure"><summary>Received message JSON</summary><div class="disclosure-content"><pre id="stream-raw">Waiting for the stream.</pre></div></details><details class="card disclosure"><summary>Connection activity</summary><div class="disclosure-content"><div id="stream-activity"></div></div></details></section>
+  </section>
+  <section id="format-tests" hidden>
+  <ol class="flow" aria-label="How the test works">
+    <li><span class="step-number" aria-hidden="true">1</span><div><strong>Simulated Console</strong><p>Sends changing positions and temperatures.</p></div></li>
+    <li><span class="step-number" aria-hidden="true">2</span><div><strong>Two agent versions</strong><p>Read the messages using different scripts.</p></div></li>
+    <li><span class="step-number" aria-hidden="true">3</span><div><strong>Compare results</strong><p>See which data each version understands.</p></div></li>
+  </ol>
+  <nav aria-label="Test tools"><a href="http://127.0.0.1:8790/lab/" target="_blank" rel="noopener">Open Simulated Console ↗</a><a href="/api/export" download>Export messages &amp; results ↓</a></nav>
+  <p id="error" role="alert" hidden></p>
+  <section class="test-controls" aria-label="Simulation controls">
+    <article class="card source-card">
+      <div class="card-heading"><h2>Simulated Console</h2><span id="source-status" class="status-pill" role="status">Waiting for readings</span></div>
+      <p class="section-note">An outdated reading is older than 3 seconds.</p>
+      <div class="control-grid">
+        <div class="control-item"><button type="button" data-action="pause" aria-describedby="pause-help">Pause updates</button><p id="pause-help">Stop new samples. Existing readings age.</p></div>
+        <div class="control-item"><button type="button" data-action="resume" aria-describedby="resume-help">Resume updates</button><p id="resume-help">Continue sending fresh samples.</p></div>
+        <div class="control-item"><button type="button" data-action="stale" aria-describedby="old-help">Simulate old readings</button><p id="old-help">Pause updates and make the readings outdated.</p></div>
+        <div class="control-item"><button type="button" data-action="reference-reset" aria-describedby="reference-help">Change coordinate reference</button><p id="reference-help">Simulate a changed origin or calibration. Increase its version without zeroing the position.</p></div>
+        <div class="control-item"><button type="button" data-action="restart" aria-describedby="restart-help">Simulate Console restart</button><p id="restart-help">Simulate a Console restart without clearing readings or chips.</p></div>
+        <div class="control-item"><button type="button" data-action="reset" aria-describedby="reset-help">Reset demo</button><p id="reset-help">Restore the starting readings, chips and original format. Resume updates.</p></div>
+      </div>
+    </article>
+    <article class="card setup-card">
+      <h2>Test a data update</h2><p class="section-note">A data agreement defines the message format, fields and units the agent can read.</p><label for="fixture">Test setup</label>
+      <select id="fixture" aria-describedby="fixture-help">
+        <option value="baseline">Original format (1.0)</option><option value="compatible">Add optional field (1.1)</option><option value="incompatible">Change position units (2.0)</option><option value="unsupported-dialect">Unsupported agreement format</option><option value="broken-digest">Damaged agreement file</option>
+      </select>
+      <p id="fixture-help" class="section-note">Use the original message format, fields and units.</p>
+      <button id="run" type="button" aria-describedby="check-help">Run automatic checks</button>
+      <p id="check-help" class="section-note">Run separate scripted checks without changing this demo.</p>
+      <p id="results-summary" class="results-summary" role="status">No checks have run yet.</p>
+    </article>
+  </section>
+  <section id="clients" class="client-grid" aria-label="Scripted agent versions"></section>
+  <section class="section-head" aria-label="Reading selection"><h2>Received readings</h2><label for="selected">Show readings from</label><select id="selected"><option value="A">Earlier agent version</option><option value="B">Newer agent version</option></select><span id="frame-meta"></span></section>
+  <section id="readings" class="readings" aria-label="Current readings"></section>
+  <section class="card chips-card"><h2>Example chips</h2><p id="samples-empty" class="empty-state" hidden>Chip records are unavailable for the selected agent version.</p><div class="scroll"><table><thead><tr><th>Chip</th><th>Location</th><th>Evidence</th><th>Pending action</th><th>Last run / step</th></tr></thead><tbody id="samples"></tbody></table></div></section>
+  <details id="check-details" class="card disclosure"><summary>Check results</summary><div class="disclosure-content"><p class="section-note">Expected and actual results from the scripted tests.</p><div id="results">No checks have run yet.</div></div></details>
+  <section class="two-column technical" aria-label="Message details">
+    <details class="card disclosure"><summary>Data agreement details</summary><div class="disclosure-content"><p class="section-note">The data agreement defines message formats, fields and units. Digests identify exact agreement files.</p><dl id="contract"></dl><button id="bundle" type="button">Show saved agreement (JSON)</button><pre id="bundle-json" hidden></pre><h3>Changes from the previous agreement</h3><div id="changes"></div></div></details>
+    <details class="card disclosure"><summary>Message JSON</summary><div class="disclosure-content"><p class="section-note">The exact state message received by the selected version.</p><pre id="raw">Waiting for a message.</pre></div></details>
+    <details class="card disclosure"><summary>Simulation activity</summary><div class="disclosure-content"><p class="section-note">Updates, restarts and changes to the test setup.</p><div id="history"></div></div></details>
+  </section>
+  </section>
+  </section>
+  <footer>This portal receives data only. It does not control equipment. Simulation tests stay separate from Olares.</footer>
+</main><script src="/assets/portal.js"></script><script src="/assets/stream-portal.js"></script><script src="/assets/live-portal.js"></script></body>
+</html>

@@ -1393,11 +1393,12 @@ def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, modul
     assert "Upgrade" not in config and "Connection" not in config  # Caddy forwards upgrades itself.
     assert config.count("handle_path ") == 1 and "handle_path /camera/*" in config
     # Only the Lab Console, its control socket and the camera streams are proxied.
-    assert config.count("handle /") == 2 and "handle /lab/*" in config
+    assert config.count("handle /") == 1 and "handle /lab/*" in config
     from orchestrator.__main__ import SOCKET_PORT
 
     assert module.ORCH_SOCKET_PORT == SOCKET_PORT
-    socket_route = config.index("handle /lab/api/console/socket {")
+    assert "@console_sockets path /lab/api/console/socket /lab/api/agent/v1/stream" in config
+    socket_route = config.index("handle @console_sockets {")
     assert config.index("import instrument 127.0.0.1:8774", socket_route) < config.index(
         "handle /lab/*"
     )

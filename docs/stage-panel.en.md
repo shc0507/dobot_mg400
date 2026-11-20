@@ -101,6 +101,23 @@ After changing configuration or installing updated code, run `labctl restart sta
 
 Use [Stage automation contract](development.en.md#stage-automation-contract) for command schemas, state fields, leases and completion rules. Send mutations through the Console relay or a leased contract client. Stop uses the dedicated contract stop route and requires no lease.
 
+`GET /api/state` returns these coordinate reference fields. A coordinate reference defines the position origin, direction and valid limits.
+
+| Field | Meaning |
+| --- | --- |
+| `instance` | Current service process identity, shared with its event log. Serial reconnection preserves it. A service restart replaces it. |
+| `reference_revision` | Coordinate reference version for the whole stage. Detected reference loss, direction changes, reconnection, position reset, calibration and limit changes increase it. |
+| `reference_change_reason` | Reason for the latest reference revision change. The event log reports changes with `kind="reference_changed"`, `revision` and `reason`. |
+| `reference_valid` | Each motor and the service return this field. The service field is true only when every motor reference is valid. |
+
+A valid motor reference requires a connection, encoder closed-loop control, a healthy encoder, a valid calibrated range and fresh feedback. Stale feedback makes the reference invalid, but a change in frame age alone does not increase the revision. Ordinary moves, reads and stops do not change the reference revision by themselves.
+
+`move`, `move_guarded`, `move_to_position`, `move_to_position_guarded` and `hold` accept optional reference arguments. To use them, supply both `expected_instance` and `expected_reference_revision`. Copy these 2 values from the same state response. The revision must be an integer greater than or equal to 0. Supplying only 1 argument returns 400.
+
+After reading fresh feedback, the service checks the reference arguments again under the serial lock before it sends motion commands. If either value differs, the interface returns 409 and rejects that move. Clients can omit these 2 arguments to retain their existing calls. Lease, feedback and motion limit checks still apply.
+
+If the board resets without a restart banner and its reference feedback remains identical, the service cannot detect that reset.
+
 ## Troubleshooting
 
 | Symptom | Action |

@@ -1130,6 +1130,7 @@ class MicroscopeService(TurretCalibrationMixin):
             known = self._reference is not None
             return dict(
                 service="microscope",
+                instance=self.events.instance,
                 seq=self._seq,
                 ts_unix=self._wall_clock(),
                 demo=self.demo,

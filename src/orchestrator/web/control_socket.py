@@ -74,7 +74,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlsplit(self.path)
-        if url.path != self.server.path:
+        agent_stream = url.path == self.server.prefix + "/api/agent/v1/stream"
+        hub = self.server.app.extensions.get("agent_stream") if agent_stream else None
+        if url.path != self.server.path and hub is None:
             return self._refuse(404, "Not found.")
         if (
             self.request_version != "HTTP/1.1"
@@ -88,10 +90,37 @@ class _Handler(BaseHTTPRequestHandler):
             return self._refuse(400, "The WebSocket key is invalid.")
         origin = self.headers.get("Origin")
         host = self.headers.get("Host", "").lower()
-        if origin is not None and urlsplit(origin).netloc.lower() != host:
+        mock_origin = (
+            agent_stream
+            and self.server.app.config.get("MOCK_SOURCE") is not None
+            and origin == "http://127.0.0.1:8792"
+        )
+        if origin is not None and urlsplit(origin).netloc.lower() != host and not mock_origin:
             # HTTP requests need the X-MG400-Client header, which other sites cannot send.
             # Browsers send Origin with every WebSocket, so the same rule holds here.
             return self._refuse(403, "Open the socket from the console page.")
+        if agent_stream:
+            from orchestrator.agent_connect.routes import serve_socket, socket_subscription
+
+            try:
+                subscriber = socket_subscription(hub, url.query)
+            except ValueError as error:
+                return self._refuse(400, str(error))
+            if not self.server.admit():
+                subscriber.close()
+                return self._refuse(503, "Too many console sockets are open.")
+            try:
+                self.send_response(101)
+                self.send_header("Upgrade", "websocket")
+                self.send_header("Connection", "Upgrade")
+                self.send_header("Sec-WebSocket-Accept", accept_key(key))
+                self.end_headers()
+                self.close_connection = True
+                serve_socket(self, hub, subscriber)
+            finally:
+                subscriber.close()
+                self.server.discharge()
+            return
         clients = parse_qs(url.query).get("client", [])
         try:
             page = validate_client(clients[0] if len(clients) == 1 else None)

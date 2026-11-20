@@ -79,7 +79,7 @@ def contract_blueprint(service, *, base_path="/", lease):
         raw = request.args.get("since", "0")
         if not raw.isascii() or not raw.isdecimal():
             raise ValueError("Event sequence must be a nonnegative integer.")
-        return jsonify(service.events.since(int(raw)))
+        return jsonify(service.events.since(int(raw), instance=request.args.get("instance")))
 
     @bp.post("/api/heartbeat")
     def heartbeat():

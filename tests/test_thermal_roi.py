@@ -93,6 +93,89 @@ def test_contract_conformance_and_metadata(tmp_path):
         assert state["frame_sequence"] == 17
 
 
+def test_frame_summary_keeps_one_frame_metadata_and_regions(tmp_path, monkeypatch):
+    service, clock = service_with_frame(tmp_path)
+    frame = service._frame
+    clock.advance(1.25)
+    with client_for(service, base_path="/thermal") as client:
+        full = client.get("/thermal/api/frame").json()
+        assert full == frame.payload()
+        calls = []
+        latest = service.latest
+
+        def advance_frame():
+            calls.append(True)
+            current = latest()
+            service._frame = replace(frame, sequence=18)
+            return current
+
+        monkeypatch.setattr(service, "latest", advance_frame)
+        monkeypatch.setattr(ThermalFrame, "payload", lambda _: pytest.fail("matrix allocation"))
+        response = client.get("/thermal/api/frame?summary=1")
+        assert response.status_code == 200
+        summary = response.json()
+        assert calls == [True]
+        assert {key: summary[key] for key in frame.metadata()} == frame.metadata()
+        assert summary["instance"] == service.snapshot()["instance"] == service.events.instance
+        assert summary["timestamp"] == full["timestamp"]
+        assert summary["timestamp_basis"] == "read_completed"
+        assert summary["capture_timestamp"] is None
+        assert summary["frame_age_s"] == 1.25
+        expected = frame.temperatures_c[5:7, 2:5]
+        assert summary["regions"] == {
+            "crucible": {
+                **COORDS,
+                "min_c": float(expected.min()),
+                "mean_c": float(expected.mean()),
+                "max_c": float(expected.max()),
+            }
+        }
+        assert not {"raw", "ir", "temperatures_c"} & summary.keys()
+        assert len(response.content) < 2048
+
+
+def test_frame_summary_age_increases_until_stale(tmp_path):
+    service, clock = service_with_frame(tmp_path)
+    with client_for(service) as client:
+        first = client.get("/api/frame?summary=1").json()
+        assert first["frame_age_s"] == 0
+        clock.advance(3)
+        last = client.get("/api/frame?summary=1").json()
+        assert last["frame_age_s"] == 3
+        assert last["timestamp"] == first["timestamp"]
+        assert last["sequence"] == first["sequence"]
+        clock.advance(0.001)
+        response = client.get("/api/frame?summary=1")
+        assert_error(response, 503)
+        assert "stale" in response.json()["error"]
+        assert client.get("/api/state").json()["fault"]["code"] == "frame_stale"
+
+
+@pytest.mark.parametrize("state", ["disconnected", "connecting", "error", "settling"])
+def test_frame_summary_rejects_capture_loss_and_settling(tmp_path, state):
+    service, _ = service_with_frame(tmp_path)
+    if state == "settling":
+        service._frame = None
+    else:
+        service._state = state
+        service._error = "Camera link lost" if state == "error" else None
+    with client_for(service) as client:
+        assert_error(client.get("/api/frame?summary=1"), 503)
+
+
+def test_events_report_the_service_instance_and_restart(tmp_path):
+    service, _ = service_with_frame(tmp_path)
+    service.events.add("info", "Frame available")
+    with client_for(service) as client:
+        instance = client.get("/api/state").json()["instance"]
+        replay = client.get("/api/events", params={"since": 1, "instance": "old-service"}).json()
+        assert replay["instance"] == instance
+        assert replay["restarted"] is True and replay["gap"] is True
+        assert [event["instance"] for event in replay["events"]] == [instance]
+        assert_error(client.get("/api/events?instance=one&instance=two"), 400)
+        assert_error(client.get("/api/events?instance="), 400)
+
+
 def test_renew_extends_only_the_existing_callers_lease(tmp_path):
     service, clock = service_with_frame(tmp_path)
     frame = service._frame
@@ -312,8 +395,8 @@ def test_demo_noop_stop_and_lease_expiry_keep_acquiring_without_http(tmp_path):
         assert sum("lease expired" in message for message in messages) == 1
         assert sum("Camera is streaming" in message for message in messages) == 1
         assert client.get("/api/events", params={"since": events["next"]}).json() == {
+            **events,
             "events": [],
-            "next": events["next"],
         }
 
 

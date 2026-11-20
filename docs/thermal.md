@@ -218,6 +218,7 @@ with np.load("captures/probe.npz", allow_pickle=False) as frame:
 | 方法 | 路径 | 结果 |
 | --- | --- | --- |
 | `GET` | `/api/frame` | 1 个内部一致的帧，含序号、时间戳、尺寸、统计、摄氏温度、原始值和亮度矩阵。 |
+| `GET` | `/api/frame?summary=1` | 来自同 1 帧的元数据和具名区域统计，不含矩阵。 |
 
 连接、快门校正、状态和区域读数使用下文的契约路由。
 
@@ -232,6 +233,23 @@ curl --fail http://127.0.0.1:8768/api/frame
 用序号和时间戳关联测量值。
 帧不可用或过期时，返回 HTTP 503，不编造读数。
 采集工作线程负责 USB 读取和命令，HTTP 查看者读取快照。
+
+### 帧摘要
+
+不要求矩阵时，使用 `/api/frame?summary=1`。响应省略 `temperatures_c`、`raw` 和 `ir`。
+默认 `/api/frame` 响应保持不变。摘要使用 1 个已有帧，不另行读取相机。
+
+| 字段 | 含义 |
+| --- | --- |
+| `instance`、`sequence`、`source` | 服务进程、帧序号和来源（`camera` 或 `demo`）。`instance` 与契约状态和事件一致。 |
+| `width`、`height`、`temperature_unit`、`raw_unit` | 原生尺寸，以及与完整响应相同的单位元数据。 |
+| `stats` | 全帧的 `min`、`max` 和 `center` 点，各含 `celsius`、`x` 和 `y`。另含 `mean_celsius`、`stddev_celsius` 和 `range_celsius`。 |
+| `timestamp`、`timestamp_basis`、`capture_timestamp` | 读取完成后的 UTC 帧时间。`timestamp_basis` 为 `read_completed`。传感器采集时间未知，因此 `capture_timestamp` 为 `null`。 |
+| `frame_age_s` | 读取完成后的秒数，使用单调时钟计算。重复请求不会重置帧龄。 |
+| `regions` | 具名区域对应的 `x0`、`y0`、`x1`、`y1`，以及同帧的摄氏统计值 `min_c`、`mean_c`、`max_c`。未配置区域时为空。 |
+
+帧不可用或帧龄超过 3 秒时，摘要返回 HTTP 503 和 `{"error":"..."}`。
+相机断开、采集失败，或传感器稳定期间没有新帧时，同样返回此错误。错误响应不含温度值。
 
 ## 自动化契约与测温区域
 

@@ -8,6 +8,15 @@
   const LANG_KEY = "labconsole.lang";
   const strings = {
     en: {
+      "location.title": "Current location", "location.reading": "Reading current location…",
+      "location.unavailable": "Current location is unavailable.", "location.holder": "Holder",
+      "location.basis": "Evidence basis", "location.inside": "Inside furnace", "location.last": "Last known location",
+      "location.pending": "Pending operation", "location.source": "Evidence source", "location.observed": "Observation time",
+      "location.conflict": "Conflicting evidence: {text}", "location.report": "Report location", "location.unknown": "Mark unknown",
+      "location.control": "Available after operator control is added.", "location.none": "None",
+      "location.yes": "Yes", "location.no": "No", "location.tray_slot": "Tray slot", "location.robot": "Robot",
+      "location.stage_insert": "Stage Insert", "basis.observed": "Camera observation", "basis.reported": "Manual report",
+      "basis.inferred": "Inferred", "basis.unknown": "Unknown",
       "page.title": "Chip passport", "page.console": "Lab Console", "lang.switch": "中文", "lang.label": "Switch language to Chinese",
       "page.nav": "Pages", "find.label": "Find a chip", "find.field": "QR text / chip ID", "find.placeholder": "Paste the exact QR text.",
       "find.submit": "Search records",
@@ -50,6 +59,15 @@
       "url.bad": "The chip URL is invalid. Enter the exact QR text to search.",
     },
     zh: {
+      "location.title": "当前位置", "location.reading": "正在读取当前位置…",
+      "location.unavailable": "当前位置不可用。", "location.holder": "承载位置",
+      "location.basis": "证据依据", "location.inside": "是否在炉内", "location.last": "上次已知位置",
+      "location.pending": "待完成操作", "location.source": "证据来源", "location.observed": "观测时间",
+      "location.conflict": "证据冲突：{text}", "location.report": "报告位置", "location.unknown": "标记未知",
+      "location.control": "添加操作员控制后可用。", "location.none": "无",
+      "location.yes": "是", "location.no": "否", "location.tray_slot": "托盘槽位", "location.robot": "机械臂",
+      "location.stage_insert": "位移台 Insert", "basis.observed": "相机观测", "basis.reported": "人工报告",
+      "basis.inferred": "推断", "basis.unknown": "未知",
       "page.title": "芯片履历", "page.console": "实验室控制台", "lang.switch": "English", "lang.label": "切换到英文",
       "page.nav": "页面", "find.label": "查找芯片", "find.field": "二维码文本 / 芯片 ID", "find.placeholder": "粘贴完整的二维码文本。",
       "find.submit": "查找记录",
@@ -138,6 +156,12 @@
     runs.clear();
     nextRun = null;
     loadingRuns = false;
+    $("pp-location").hidden = true;
+    $("location-chip").textContent = "";
+    $("location-status").textContent = "";
+    $("location-values").replaceChildren();
+    $("location-conflict").hidden = true;
+    $("location-conflict").textContent = "";
     $("passport-runs").replaceChildren();
     $("selected-chip").textContent = "";
     $("run-count").textContent = t("none");
@@ -399,6 +423,44 @@
     }
   }
 
+  function holder(location) {
+    if (!location || !["tray_slot", "robot", "stage_insert"].includes(location.holder)) return t("unknown");
+    return [t("location." + location.holder), location.tray_id, location.slot_id, location.container_id].filter(value => value !== null && value !== undefined && value !== "").join(" / ");
+  }
+  function observationTime(value) {
+    if (typeof value === "number") return date(value);
+    if (typeof value !== "string" || !value) return t("time.none");
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : t("time.bad");
+  }
+  async function loadLocation(savedGeneration) {
+    $("pp-location").hidden = false;
+    $("location-chip").textContent = chip;
+    $("location-status").textContent = t("location.reading");
+    try {
+      const result = await get("/api/chip/location?" + new URLSearchParams({ id: chip }), savedGeneration);
+      if (result.chip_id !== chip || (result.sample && result.sample.chip_id !== chip)) throw new Error(t("error.chip"));
+      const sample = result.sample || {}, location = sample.location || {}, observation = sample.last_observation || {};
+      const basis = ["observed", "reported", "inferred", "unknown"].includes(sample.basis) ? sample.basis : "unknown";
+      const pending = sample.pending_operation;
+      const pendingText = pending ? [pending.action || pending.id || t("unknown"), pending.destination ? holder(pending.destination) : null].filter(Boolean).join(" → ") : t("location.none");
+      const rows = [
+        ["location.holder", holder(location)], ["location.basis", t("basis." + basis)],
+        ["location.inside", t(location.inside_furnace === true ? "location.yes" : location.inside_furnace === false ? "location.no" : "unknown")],
+        ["location.last", holder(sample.last_known_location?.location)], ["location.pending", pendingText],
+        ["location.source", observation.source || t("unknown")], ["location.observed", observationTime(observation.observed_at)],
+      ];
+      $("location-values").replaceChildren(...rows.map(([label, value]) => {
+        const row = node("div"); row.append(node("dt", t(label)), node("dd", value)); return row;
+      }));
+      $("location-status").textContent = "";
+      $("location-conflict").hidden = !sample.conflict;
+      $("location-conflict").textContent = sample.conflict ? t("location.conflict", { text: sample.conflict }) : "";
+    } catch {
+      if (savedGeneration === generation) $("location-status").textContent = t("location.unavailable");
+    }
+  }
+
   function search(updateLocation = true) {
     reset();
     chip = exactInput === null ? $("chip-id").value : exactInput;
@@ -410,6 +472,7 @@
     if (updateLocation) history.replaceState(null, "", base + "/chip?" + new URLSearchParams({ id: chip }).toString());
     nextRun = 0;
     loadRuns(generation);
+    loadLocation(generation);
   }
   $("passport-form").addEventListener("submit", event => { event.preventDefault(); search(); });
   $("chip-id").addEventListener("input", () => { exactInput = $("chip-id").value; });
@@ -441,7 +504,10 @@
     if (document.documentElement) document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.title = t("page.title");
     for (const [id, key] of [["pp-title", "page.title"], ["pp-console", "page.console"], ["pp-lang", "lang.switch"], ["pp-label", "find.field"],
-      ["pp-search", "find.submit"], ["passport-heading", "history.title"], ["pp-footer", "footer"]]) $(id).textContent = t(key);
+      ["pp-search", "find.submit"], ["passport-heading", "history.title"], ["pp-footer", "footer"],
+      ["location-heading", "location.title"], ["location-report", "location.report"], ["location-unknown", "location.unknown"],
+      ["location-control-note", "location.control"]]) $(id).textContent = t(key);
+    $("location-report").disabled = $("location-unknown").disabled = true;
     $("pp-lang").setAttribute("aria-label", t("lang.label"));
     $("pp-nav").setAttribute("aria-label", t("page.nav"));
     $("pp-find").setAttribute("aria-label", t("find.label"));

@@ -236,7 +236,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                     values = query.get("since", ["0"])
                     if len(values) != 1 or not values[0].isascii() or not values[0].isdecimal():
                         raise ValueError("Event sequence must be a nonnegative integer")
-                    result = self.server.state.events.since(int(values[0]))
+                    instances = query.get("instance", [None])
+                    if len(instances) != 1:
+                        raise ValueError("Event instance must have one value")
+                    result = self.server.state.events.since(int(values[0]), instance=instances[0])
             except ValueError as error:
                 self._send(400, {"error": str(error)})
             else:

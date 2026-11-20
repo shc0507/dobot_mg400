@@ -419,6 +419,10 @@ class OrchestratorService:
             self.store = RunStore(self.runs_dir)
             self.started = True
             if background:
+                stream = getattr(self, "agent_stream", None)
+                if stream is not None:
+                    stream.start()
+                    self.agent_observations.start()
                 self.poller = threading.Thread(
                     target=self._poll, name="orch-service-poll", daemon=True
                 )
@@ -981,6 +985,10 @@ class OrchestratorService:
 
     def close(self):
         self.dashboard.begin_close()
+        stream = getattr(self, "agent_stream", None)
+        if stream is not None:
+            stream.close()
+            self.agent_observations.close()
         self.devices.close()
         with self.lock:
             self.closing = True
@@ -1030,6 +1038,13 @@ def create_app(service, *, base_path="/"):
     app.register_blueprint(dashboard_blueprint(service, prefix))
     for blueprint in console_blueprints(service, prefix):
         app.register_blueprint(blueprint)
+    from .agent_connect.routes import register_routes
+    from .agent_connect.runtime import create_hub
+
+    if hasattr(service, "devices"):
+        if not getattr(service, "agent_stream", None):
+            service.agent_stream = create_hub(service)
+        register_routes(app, service.agent_stream, prefix=prefix + "/api/agent")
 
     @app.before_request
     def access():

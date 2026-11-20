@@ -218,6 +218,7 @@ with np.load("captures/probe.npz", allow_pickle=False) as frame:
 | Method | Path | Result |
 | --- | --- | --- |
 | `GET` | `/api/frame` | 1 coherent frame with sequence, timestamp, dimensions, statistics, Celsius, raw, and brightness matrices. |
+| `GET` | `/api/frame?summary=1` | Metadata and named-region statistics from 1 frame, without matrices. |
 
 Connection, shutter correction, state, and region readings use the contract routes below.
 
@@ -232,6 +233,23 @@ Each response is internally consistent, but separate requests can refer to diffe
 Use the sequence and timestamp to associate measurements.
 Unavailable or stale frames return HTTP 503 instead of fabricated readings.
 The acquisition worker owns USB reads and commands. HTTP viewers read snapshots.
+
+### Compact frame summary
+
+Use `/api/frame?summary=1` when matrices are unnecessary. The response omits `temperatures_c`, `raw`, and `ir`.
+The default `/api/frame` response remains unchanged. The summary uses 1 existing frame and starts no additional camera read.
+
+| Fields | Meaning |
+| --- | --- |
+| `instance`, `sequence`, `source` | Service process, frame sequence, and source (`camera` or `demo`). `instance` matches the contract state and events. |
+| `width`, `height`, `temperature_unit`, `raw_unit` | Native dimensions and the same unit metadata as the full response. |
+| `stats` | Full-frame `min`, `max`, and `center` points, each with `celsius`, `x`, and `y`. Also includes `mean_celsius`, `stddev_celsius`, and `range_celsius`. |
+| `timestamp`, `timestamp_basis`, `capture_timestamp` | UTC frame time after the read completes. `timestamp_basis` is `read_completed`. Sensor capture time is unknown, so `capture_timestamp` is `null`. |
+| `frame_age_s` | Seconds since read completion, measured with a monotonic clock. Repeated requests do not reset this age. |
+| `regions` | Configured names mapped to `x0`, `y0`, `x1`, `y1`, and Celsius statistics `min_c`, `mean_c`, `max_c` from the same frame. Empty when no regions are configured. |
+
+The summary returns HTTP 503 with `{"error":"..."}` when the frame is unavailable or older than 3 seconds.
+This includes disconnection, capture failure, and sensor settling without a new frame. The error response contains no temperature values.
 
 ## Automation contract and regions
 

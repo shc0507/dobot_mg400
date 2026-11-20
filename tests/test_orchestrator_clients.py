@@ -45,6 +45,15 @@ def lease_adapter(monkeypatch):
     return adapter, lease, now, paths
 
 
+def test_event_adapter_forwards_the_service_instance(monkeypatch):
+    adapter = ServiceAdapter("http://127.0.0.1:1", "event-reader")
+    replay = {"events": [], "next": 3, "instance": "process-new"}
+    read = Mock(return_value=replay)
+    monkeypatch.setattr(adapter._http, "events", read)
+    assert adapter.events(7, instance="process-old") == replay
+    read.assert_called_once_with(7, instance="process-old")
+
+
 @pytest.mark.parametrize("loss", ["expired", "released", "other-holder"])
 def test_atomic_renewal_never_reacquires_a_lost_lease(monkeypatch, loss):
     adapter, lease, now, paths = lease_adapter(monkeypatch)

@@ -735,7 +735,7 @@ def test_failed_inference_dispatch_finishes_reservation_and_allows_retry(make_se
     assert client.get("/api/detect?camera=1").status_code == 200
 
 
-def test_only_a_failed_inference_is_an_event(make_service):
+def test_each_finished_inference_has_one_small_final_event(make_service):
     model = DemoLocalizer()
     service = make_service(localizer_factory=lambda: model)
     client = create_app(service).test_client()
@@ -745,10 +745,178 @@ def test_only_a_failed_inference_is_an_event(make_service):
         events = service.events.since(0)["events"]
         return [(e["level"], e["message"]) for e in events if "inference" in e["message"]]
 
-    assert inference_events() == []
+    assert inference_events() == [("info", "vision inference complete")]
     model.predict = Mock(side_effect=RuntimeError("model broke"))
     assert_error(client.get("/api/detect?camera=1"), 503)
-    assert inference_events() == [("error", "vision inference failed")]
+    assert inference_events() == [
+        ("info", "vision inference complete"),
+        ("error", "vision inference failed"),
+    ]
+    records = service.events.since(0)["events"][-2:]
+    for event, job_id, status in zip(records, ("1", "2"), ("ok", "failed"), strict=True):
+        fields = event["fields"]
+        assert fields == {
+            "instance": service.snapshot()["instance"],
+            "job_id": job_id,
+            "source": "vision",
+            "camera": 1,
+            "action": "detect",
+            "observed_at": None,
+            "finished_at": fields["finished_at"],
+            "status": status,
+            "result": status,
+        }
+        assert len(str(event)) < 1024
+
+
+def test_result_lookup_matches_instance_and_job_after_later_results(make_service):
+    service = make_service()
+    instance = service.snapshot()["instance"]
+    service.start()
+    assert service.snapshot()["instance"] == service.events.instance == instance
+    client = create_app(service, base_path="/vision").test_client()
+    first = client.get("/vision/api/detect?camera=1").get_json()
+    service._model.predict = Mock(side_effect=RuntimeError("model broke"))
+    assert_error(client.get("/vision/api/detect?camera=1"), 503)
+    for job_id, status in (("1", "ok"), ("2", "failed")):
+        response = client.get(f"/vision/api/results/{job_id}?instance={instance}")
+        assert response.status_code == 200
+        record = response.get_json()
+        assert record["available"] and record["status"] == status
+        assert record["instance"] == instance and record["job_id"] == job_id
+        assert record["observed_at"] is None
+        if status == "ok":
+            assert record["output"] == first and record["error"] is None
+        else:
+            assert record["output"] is None and "model broke" in record["error"]["message"]
+    record = service.result(instance, "1")
+    record["output"]["camera"] = 99
+    assert service.result(instance, "1")["output"] == first
+    restarted = make_service()
+    assert restarted.instance != instance
+    restarted.read("detect", 1)
+    response = create_app(restarted).test_client().get(f"/api/results/1?instance={instance}")
+    assert response.status_code == 410
+    assert response.get_json() == {
+        "instance": restarted.instance,
+        "requested_instance": instance,
+        "job_id": "1",
+        "available": False,
+        "status": "unavailable",
+        "reason": "restarted",
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/results/1",
+        "/api/results/1?instance=bad",
+        "/api/results/1?instance={instance}&instance={instance}",
+        "/api/results/1?instance={instance}&camera=1",
+        "/api/results/0?instance={instance}",
+        "/api/results/01?instance={instance}",
+        "/api/results/-1?instance={instance}",
+        "/api/results/100000000000000000000?instance={instance}",
+    ],
+)
+def test_result_lookup_rejects_ambiguous_identity(make_service, path):
+    service = make_service()
+    assert_error(create_app(service).test_client().get(path.format(instance=service.instance)), 400)
+
+
+def test_result_count_limit_evicts_oldest_without_latest_fallback(make_service):
+    service = make_service()
+    service._process = Mock(return_value=({"camera": 1}, None))
+    for _ in range(101):
+        service.read("detect", 1)
+    assert len(service._results) == service_module.MAX_RETAINED_RESULTS == 100
+    client = create_app(service).test_client()
+    evicted = client.get(f"/api/results/1?instance={service.instance}")
+    assert evicted.status_code == 410
+    assert evicted.get_json()["reason"] == "expired_or_evicted"
+    assert "output" not in evicted.get_json()
+    assert service.result(service.instance, "2")["job_id"] == "2"
+    assert service.result(service.instance, "101")["job_id"] == "101"
+    missing = client.get(f"/api/results/102?instance={service.instance}")
+    assert missing.status_code == 404
+    assert missing.get_json()["reason"] == "not_found"
+    assert set(vars(service)).isdisjoint({"_expired", "_evicted", "_tombstones"})
+
+
+def test_result_cache_has_an_eight_mib_serialized_byte_limit(make_service):
+    service = make_service()
+    output = service._bounded_result({"camera": 1, "data": "x" * (256 * 1024 - 64)})
+    service._process = Mock(return_value=(output, Image.new("RGB", (1, 1))))
+    for _ in range(40):
+        service.read("detect", 1)
+    assert service_module.MAX_RETAINED_RESULT_BYTES == 8 * 1024 * 1024
+    assert service._result_bytes == sum(len(value[1]) for value in service._results.values())
+    assert service._result_bytes <= service_module.MAX_RETAINED_RESULT_BYTES
+    assert len(service._results) < 40
+    assert service.result(service.instance, "1")["reason"] == "expired_or_evicted"
+    retained = service.result(service.instance, "40")
+    assert retained["output"] == output and "image" not in retained
+
+
+def test_result_expiration_uses_monotonic_time_and_removes_bytes(make_service):
+    now, wall = [1000.0], [5000.0]
+    service = make_service(clock=lambda: now[0], wall_clock=lambda: wall[0])
+    service.read("detect", 1)
+    wall[0] = 1.0
+    now[0] += 599.99
+    assert service.result(service.instance, "1")["available"]
+    assert service.result(service.instance, "1")["finished_at"] == 5000.0
+    now[0] = 1600.0
+    assert service.result(service.instance, "1")["reason"] == "expired_or_evicted"
+    assert service._result_bytes == 0 and not service._results
+
+
+@pytest.mark.parametrize("cancel", ["stop", "release", "expire", "close"])
+def test_cancel_before_publication_emits_one_stopped_result(make_service, monkeypatch, cancel):
+    now = [1000.0]
+    service = make_service(clock=lambda: now[0])
+    service.lease.acquire("owner")
+    processed, publish = threading.Event(), threading.Event()
+    finish = service._finish
+    jobs = []
+
+    def delay_finish(job, *args):
+        jobs.append(job)
+        processed.set()
+        assert publish.wait(2)
+        finish(job, *args)
+
+    monkeypatch.setattr(service, "_finish", delay_finish)
+    job_id = service.command("detect", {"camera": 1}, "owner")
+    try:
+        assert processed.wait(1)
+        client = create_app(service).test_client()
+        pending = client.get(f"/api/results/{job_id}?instance={service.instance}")
+        assert pending.status_code == 202 and pending.get_json()["reason"] == "pending"
+        assert not [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+        if cancel == "stop":
+            assert service.stop("observer", wait_s=0) == "pending"
+        elif cancel == "release":
+            service.lease.release("owner")
+            service.lease.acquire("owner")
+        elif cancel == "expire":
+            now[0] += 3
+        else:
+            assert service.close(wait_s=0) == "pending"
+    finally:
+        publish.set()
+    state = completed(service, job_id)
+    assert state["last_command"]["result"] == "stopped"
+    record = service.result(service.instance, job_id)
+    assert record["status"] == "stopped" and record["output"] is None
+    events = [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+    assert len(events) == 1
+    assert events[0]["fields"]["job_id"] == job_id
+    assert events[0]["fields"]["status"] == "stopped"
+    finish(jobs[0], {}, None, "ok", None)
+    assert service.events.since(events[0]["seq"])["events"] == []
+    assert service.result(service.instance, job_id) == record
 
 
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), "x" * (256 * 1024)])

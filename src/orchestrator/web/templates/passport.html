@@ -32,6 +32,18 @@
       </form>
       <p id="passport-status" class="notice" role="status" aria-live="polite"></p>
     </section>
+    <section class="panel pp-location" id="pp-location" aria-labelledby="location-heading" hidden>
+      <h2 id="location-heading">Current location</h2>
+      <p id="location-chip" class="chip-text"></p>
+      <p id="location-status" class="notice" role="status" aria-live="polite"></p>
+      <dl id="location-values" class="location-values"></dl>
+      <p id="location-conflict" class="notice error" hidden></p>
+      <div class="location-actions">
+        <button type="button" class="secondary" id="location-report" disabled aria-describedby="location-control-note">Report location</button>
+        <button type="button" class="secondary" id="location-unknown" disabled aria-describedby="location-control-note">Mark unknown</button>
+      </div>
+      <p id="location-control-note" class="muted">Available after operator control is added.</p>
+    </section>
     <section class="pp-history" id="pp-history" aria-labelledby="passport-heading" hidden>
       <div class="section-heading"><h2 id="passport-heading">Recorded history</h2></div>
       <p id="selected-chip" class="chip-text"></p>

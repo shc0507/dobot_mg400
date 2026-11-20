@@ -9,6 +9,8 @@ import math
 import re
 import threading
 import time
+import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -44,6 +46,9 @@ FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
 MAX_RESULT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 16 * 1024
+MAX_RETAINED_RESULTS = 100
+MAX_RETAINED_RESULT_BYTES = 8 * 1024 * 1024
+RESULT_RETENTION_SECONDS = 600
 
 
 def _slot_arguments(args):
@@ -307,6 +312,8 @@ class VisionService:
         devices = getattr(getattr(self.frames, "configuration", None), "devices", ())
         self._devices = tuple(devices) if isinstance(devices, (tuple, list)) else ()
         self._calibrated_cameras = set()
+        self.instance = uuid.uuid4().hex
+        self._clock = clock
         self._wall_clock = wall_clock
         self._lock = threading.RLock()
         self._inference = threading.Lock()
@@ -321,7 +328,9 @@ class VisionService:
         self._active = None
         self._next = self._seq = self.expiry_count = 0
         self._fault = self._last_command = self._summary = None
-        self.events = EventLog(clock=wall_clock)
+        self._results = OrderedDict()
+        self._result_bytes = 0
+        self.events = EventLog(clock=wall_clock, instance=self.instance)
         self.lease = _VisionLease(
             3, clock, on_expire=self.on_lease_expired, on_release=self._released
         )
@@ -435,6 +444,7 @@ class VisionService:
             return copy.deepcopy(
                 {
                     "service": "vision",
+                    "instance": self.instance,
                     "seq": self._seq,
                     "ts_unix": self._wall_clock(),
                     "demo": self.demo,
@@ -513,6 +523,8 @@ class VisionService:
     def _poll(self):
         while not self._quit.wait(0.1):
             self.lease.poll()
+            with self._lock:
+                self._expire_results()
 
     def _nominal_distance(self, tool_dz_mm):
         """The tag sits above the flange and the tip below it: D = tag height + tool dz."""
@@ -894,31 +906,47 @@ class VisionService:
         self._finish(job, result, image, outcome, error)
 
     def _finish(self, job, result, image, outcome, error):
-        if job["action"] in {"check_calibration", "observe_slots"} and outcome == "ok":
+        if job["client"] is not None and outcome == "ok":
             try:
                 with self._commit(job):
                     return self._finish_result(job, result, image, outcome, error)
             except (ServiceError, DetectionCancelled):
                 outcome, error = (
                     "stopped",
-                    ServiceError(409, "Vision check lost control; its proof was discarded."),
+                    ServiceError(409, "Vision inference lost control. Its result was discarded."),
                 )
         return self._finish_result(job, result, image, outcome, error)
 
     def _finish_result(self, job, result, image, outcome, error):
         with self._lock:
+            if job["done"].is_set():
+                return
             # Stop can arrive after processing finishes but before publication.
-            if job["cancel"].is_set():
+            if self._closed or job["cancel"].is_set():
                 outcome, error = (
                     "stopped",
                     ServiceError(409, "Inference stopped; its result was discarded."),
                 )
+            finished_at = self._wall_clock()
+            identity = {
+                "instance": self.instance,
+                "job_id": job["id"],
+                "source": "vision",
+                "action": job["action"],
+                "camera": job["camera"],
+                "finished_at": finished_at,
+                "observed_at": None,
+                "result": outcome,
+                "status": outcome,
+            }
             if outcome == "ok":
                 self._summary = {
+                    "instance": self.instance,
+                    "job_id": job["id"],
                     "camera": job["camera"],
                     "action": job["action"],
                     "count": len(result.get("detections", result.get("labels", []))),
-                    "finished_at": self._wall_clock(),
+                    "finished_at": finished_at,
                 }
                 self._connected = True
                 self._fault = None
@@ -929,9 +957,10 @@ class VisionService:
             if job["client"] is not None:
                 self._last_command = {key: job[key] for key in ("id", "action", "client")}
                 self._last_command.update(
+                    instance=self.instance,
                     result=outcome,
                     message="Inference complete." if error is None else error.message,
-                    finished_at=self._wall_clock(),
+                    finished_at=finished_at,
                     output=copy.deepcopy(result) if outcome == "ok" else None,
                 )
             job.update(
@@ -939,18 +968,78 @@ class VisionService:
                 image=image if outcome == "ok" else None,
                 error=error,
             )
+            self._retain_result(
+                {
+                    **identity,
+                    "available": True,
+                    "output": job["result"],
+                    "error": None
+                    if error is None
+                    else {"status": error.status, "message": error.message[:1024]},
+                }
+            )
             self._active = None
             self._seq += 1
-            # A detection preview polls every second, so only a failure is an event.
-            if outcome == "failed":
-                self.events.add(
-                    "error",
-                    "vision inference failed",
-                    action=job["action"],
-                    camera=job["camera"],
-                    result=outcome,
-                )
+            self.events.add(
+                {"ok": "info", "failed": "error", "stopped": "warning"}[outcome],
+                "vision inference "
+                + {"ok": "complete", "failed": "failed", "stopped": "stopped"}[outcome],
+                **identity,
+            )
             job["done"].set()
+
+    def _expire_results(self):
+        cutoff = self._clock() - RESULT_RETENTION_SECONDS
+        while self._results:
+            retained_at, encoded = next(iter(self._results.values()))
+            if retained_at > cutoff:
+                break
+            self._results.popitem(last=False)
+            self._result_bytes -= len(encoded)
+
+    def _retain_result(self, result):
+        """Keep bounded JSON records. Do not retain images or expired-job tombstones."""
+        self._expire_results()
+        encoded = json.dumps(
+            result, ensure_ascii=True, allow_nan=False, separators=(",", ":")
+        ).encode("ascii")
+        if len(encoded) > MAX_RETAINED_RESULT_BYTES:
+            return
+        while self._results and (
+            len(self._results) >= MAX_RETAINED_RESULTS
+            or self._result_bytes + len(encoded) > MAX_RETAINED_RESULT_BYTES
+        ):
+            _, removed = self._results.popitem(last=False)
+            self._result_bytes -= len(removed[1])
+        self._results[result["job_id"]] = (self._clock(), encoded)
+        self._result_bytes += len(encoded)
+
+    def result(self, instance, job_id):
+        """Read one job from one process. Missing results never use the latest job."""
+        if not isinstance(instance, str) or not re.fullmatch(r"[0-9a-f]{32}", instance):
+            raise ValueError("Specify a service instance from api/state or api/events.")
+        if not isinstance(job_id, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", job_id):
+            raise ValueError("Job ID must be a positive integer with at most 20 digits.")
+        with self._lock:
+            self._expire_results()
+            if instance != self.instance:
+                reason = "restarted"
+            elif job_id in self._results:
+                return json.loads(self._results[job_id][1])
+            elif self._active is not None and self._active["id"] == job_id:
+                reason = "pending"
+            elif int(job_id) <= self._next:
+                reason = "expired_or_evicted"
+            else:
+                reason = "not_found"
+            return {
+                "instance": self.instance,
+                "requested_instance": instance,
+                "job_id": job_id,
+                "available": False,
+                "status": "pending" if reason == "pending" else "unavailable",
+                "reason": reason,
+            }
 
     def stop(self, client, wait_s=0):
         waiting = []
@@ -1013,6 +1102,15 @@ def create_app(service, *, base_path="/"):
     @blueprint.get("/api/labels")
     def labels():
         return jsonify(service.read("read_labels", camera()))
+
+    @blueprint.get("/api/results/<job_id>")
+    def result(job_id):
+        instances = request.args.getlist("instance")
+        if set(request.args) != {"instance"} or len(instances) != 1:
+            raise ValueError("Specify the service instance exactly once.")
+        record = service.result(instances[0], job_id)
+        status = {"pending": 202, "not_found": 404}.get(record.get("reason"), 410)
+        return jsonify(record), 200 if record["available"] else status
 
     @blueprint.get("/api/annotated.jpg")
     def annotated():

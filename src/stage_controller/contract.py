@@ -24,6 +24,7 @@ from .protocol import (
     POSITION_LIMIT,
     ControllerError,
     LinkError,
+    has_calibrated_range,
 )
 
 
@@ -37,6 +38,59 @@ class StageContract:
         self._contract_fault = None
         self._contract_stopping = 0
         self._stop_epoch = 0
+        self._reference_revision = 0
+        self._reference_change_reason = "not_connected"
+        self._reference_signature_value = self._reference_signature()
+        self._command_reference = None
+
+    def _reference_signature(self):
+        return (
+            self._transport is not None,
+            self._closed_loop,
+            self._positive_direction,
+            self._lower_limit_direction,
+            tuple(
+                (
+                    motor.encoder == "ok",
+                    motor.calibration == "done",
+                    motor.lower_limit_set,
+                    motor.upper_limit_set,
+                    motor.lower_limit,
+                    motor.upper_limit,
+                )
+                for motor in (self._motors[name] for name in MOTOR_IDS)
+            ),
+        )
+
+    def _reference_valid(self, motor):
+        state = self._motors[motor]
+        return bool(
+            self._closed_loop
+            and state.encoder == "ok"
+            and has_calibrated_range(state)
+            and self._feedback_fresh(motor)
+        )
+
+    def _refresh_reference(self, reason="device_reference_changed", *, force=False):
+        signature = self._reference_signature()
+        if force or signature != self._reference_signature_value:
+            self._reference_signature_value = signature
+            self._reference_revision += 1
+            self._reference_change_reason = reason
+            self.events.add(
+                "info",
+                "Stage coordinate reference changed.",
+                kind="reference_changed",
+                revision=self._reference_revision,
+                reason=reason,
+            )
+
+    def _check_command_reference(self):
+        if self._command_reference is not None and self._command_reference != (
+            self.events.instance,
+            self._reference_revision,
+        ):
+            raise ControllerError("Stage coordinate reference changed. Read the current state.")
 
     def describe(self):
         motor = parameter("string", enum=list(MOTOR_IDS))
@@ -104,6 +158,17 @@ class StageContract:
             "clear_fault",
         ):
             commands[action] = spec(dict(motor=motor))
+        for action in (
+            "move",
+            "move_guarded",
+            "move_to_position",
+            "move_to_position_guarded",
+            "hold",
+        ):
+            commands[action]["params"]["properties"].update(
+                expected_instance=parameter("string"),
+                expected_reference_revision=parameter("integer", minimum=0),
+            )
         return describe(
             service="stage",
             version="0.2.0",
@@ -118,6 +183,10 @@ class StageContract:
         self._state_seq += 1
         return {
             "service": "stage",
+            "instance": self.events.instance,
+            "reference_revision": self._reference_revision,
+            "reference_change_reason": self._reference_change_reason,
+            "reference_valid": all(self._reference_valid(motor) for motor in self._motors),
             "seq": self._state_seq,
             "ts_unix": time.time(),
             "busy": any(self._motor_busy(motor) for motor in self._motors.values()),
@@ -190,8 +259,25 @@ class StageContract:
         specs = self.describe()["commands"]
         if action not in specs or not isinstance(args, dict):
             raise ValueError("Unknown stage command or invalid arguments.")
-        if set(args) != set(specs[action]["params"]["required"]):
+        params = specs[action]["params"]
+        if not set(params["required"]) <= set(args) <= set(params["properties"]):
             raise ValueError("Command arguments must match the discovery schema.")
+        args = dict(args)
+        reference = None
+        reference_keys = {"expected_instance", "expected_reference_revision"}
+        if reference_keys & args.keys():
+            if not reference_keys <= args.keys():
+                raise ValueError("Supply both the expected instance and reference revision.")
+            instance = args.pop("expected_instance")
+            revision = args.pop("expected_reference_revision")
+            if (
+                not isinstance(instance, str)
+                or not instance
+                or type(revision) is not int
+                or revision < 0
+            ):
+                raise ValueError("Invalid expected stage reference.")
+            reference = (instance, revision)
         entry = {"id": uuid.uuid4().hex, "action": action, "client": client}
         if action == "connect":
             try:
@@ -215,6 +301,8 @@ class StageContract:
             ) and action != "stop_all":
                 raise ServiceError(409, "The service is locked. Only stop is allowed.")
             try:
+                self._command_reference = reference
+                self._check_command_reference()
                 guarded = action.endswith("_guarded")
                 operation = action.removesuffix("_guarded")
                 if guarded:
@@ -243,6 +331,8 @@ class StageContract:
                         503 if isinstance(exc, LinkError) else 409, str(exc)
                     ) from exc
                 raise
+            finally:
+                self._command_reference = None
             if operation in ("move", "move_to_position", "calibrate"):
                 state = self._motors[args["motor"]]
                 target = args.get("position", state.position + state.remaining)

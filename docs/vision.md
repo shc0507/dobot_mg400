@@ -115,6 +115,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 | `GET api/state` | 模型、设备、连接、忙状态、故障、租约和最近结果摘要 |
 | `GET api/describe` | 契约版本和命令参数说明 |
 | `GET api/events?since=0` | 服务事件，同时写入日志 |
+| `GET api/results/<job_id>?instance=...` | 指定服务进程和作业的结果，不启动推理 |
 
 读取路由不要求租约，也不检查请求头。
 3 个推理路由必须且只能包含 1 个 `camera` 查询参数，不接受其他查询参数。
@@ -164,10 +165,27 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 结果必须是有限的 JSON 值，编码为紧凑 ASCII JSON 后不超过 256 KiB。
 无效或过大的结果返回 503，且不发布。
 失败或停止的命令为 `output=null`。
-`last_result` 保存最近一次成功操作的 `camera`、`action`、`count` 和 `finished_at`。
+`last_result` 保存最近一次成功操作的 `instance`、`job_id`、`camera`、`action`、`count` 和 `finished_at`。
 真实模式在首次成功处理图像前报告 `connected=false`。
 任何失败的操作都设置 `fault`，下次成功的操作清除它。只有返回 503 的失败才把 `connected` 设为 `false`。
 `fault` 不为空时，校准技能和漂移检查拒绝执行。此时先完成 1 次成功读取，例如 `GET api/detect`。
+
+### 最终事件与结果查询
+
+`state.instance` 标识当前服务进程，与事件和结果中的 `instance` 一致。服务重启后，此值改变。用 `(instance, job_id)` 标识作业。异步命令的 `job_id` 等于响应中的 `command_id`。
+
+每个已接受的作业，包括推理读取请求，在完成并确定取消结果后只生成 1 条最终事件。事件的 `result` 和 `status` 同为 `ok`、`failed` 或 `stopped`。已取消的作业不发布成功结果。事件字段还包含 `instance`、`job_id`、`source`、`action`、`camera` 和 `finished_at`，不包含图像或完整检测数组。`source` 为 `vision`。`finished_at` 是作业完成时的 Unix 秒数，采集时间未知时，`observed_at` 为 `null`。
+
+结果查询必须且只能包含 1 个 `instance` 查询参数。查询不要求租约。响应如下：
+
+| HTTP 状态 | 查询结果 |
+| --- | --- |
+| 200 | `available=true`，`status` 为 `ok`、`failed` 或 `stopped`。成功结果包含 `output`，失败或停止时为 `output=null`。 |
+| 202 | `available=false`，`status=pending`，`reason=pending`。 |
+| 404 | `available=false`，`status=unavailable`，`reason=not_found`。 |
+| 410 | `available=false`，`status=unavailable`。过期或淘汰时为 `reason=expired_or_evicted`，进程不匹配时为 `reason=restarted`。 |
+
+缓存最多保留 100 个结果。每个结果保留不超过 600 s。全部紧凑 ASCII JSON 记录合计不超过 8 MiB。缓存不保留图像。结果缺失时，查询不会返回其他作业的最新结果。不可用响应中的 `instance` 标识当前进程，`requested_instance` 保留查询值。
 
 ## 相机到机器人校准
 

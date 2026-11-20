@@ -59,16 +59,15 @@ def create_app(*, demo=False, auto_connect=True, service=None, base_path="/", re
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    def latest():
+    @app.get(prefix + "/api/frame")
+    def frame(request: Request):
+        """One coherent frame; matrices are [y][x], temperatures always Celsius."""
         try:
-            return controller.latest()
+            if request.query_params.get("summary") == "1":
+                return JSONResponse(controller.frame_summary())
+            return JSONResponse(controller.latest().payload())
         except RuntimeError as exc:
             raise ServiceError(503, str(exc)) from exc
-
-    @app.get(prefix + "/api/frame")
-    def frame():
-        """One coherent frame; matrices are [y][x], temperatures always Celsius."""
-        return JSONResponse(latest().payload())
 
     add_contract_routes(app, controller, prefix=prefix)
     return app
@@ -132,8 +131,11 @@ def add_contract_routes(app, controller, *, prefix=""):
         raw = values[0] if values else "0"
         if len(values) > 1 or not raw.isascii() or not raw.isdecimal():
             raise ServiceError(400, "Event sequence must be a nonnegative integer.")
+        instances = request.query_params.getlist("instance")
+        if len(instances) > 1:
+            raise ServiceError(400, "Event instance must occur at most once.")
         try:
-            return controller.events.since(int(raw))
+            return controller.events.since(int(raw), instance=instances[0] if instances else None)
         except ValueError as exc:
             raise ServiceError(400, str(exc)) from exc
 

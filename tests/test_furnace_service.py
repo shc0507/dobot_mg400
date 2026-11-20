@@ -130,6 +130,24 @@ def writes(transport):
     return [packet for packet in transport.requests if len(packet) == 8 and packet[1] == 6]
 
 
+def test_service_instance_survives_reconnect_but_changes_on_recreation(lab):
+    service = lab.service
+    instance = service.status()["instance"]
+    assert instance == service.events.instance
+    service.disconnect(client="operator")
+    assert not service.connected
+    assert service.status()["instance"] == instance
+    service.connect(client="operator")
+    assert service.connected
+    assert service.status()["instance"] == instance
+    service.events.add("info", "Furnace reconnected")
+    assert {event["instance"] for event in service.events.since()["events"]} == {instance}
+    service.close()
+    replacement = lab.make()
+    assert replacement.status()["instance"] != instance
+    assert replacement.status()["instance"] == replacement.events.instance
+
+
 def test_import_and_constructor_are_inert():
     code = """
 import builtins, os, socket, threading, serial

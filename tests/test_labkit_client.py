@@ -92,6 +92,24 @@ def test_first_operation_checks_version_before_dispatch(transport):
     ]
 
 
+def test_event_cursor_includes_the_encoded_service_instance(transport):
+    client = ServiceClient("http://localhost/instrument/", "test-client")
+    transport.responses.append({"events": [], "next": 7, "instance": "process a&b"})
+    assert client.events(7, instance="process a&b")["instance"] == "process a&b"
+    request = transport.calls[-1][0]
+    assert (
+        request.full_url == "http://localhost/instrument/api/events?since=7&instance=process+a%26b"
+    )
+    assert request.get_method() == "GET"
+
+
+@pytest.mark.parametrize("instance", ["", 1, True, "x" * 129, "é", "line\nbreak"])
+def test_invalid_event_instance_is_refused_before_requests(transport, instance):
+    with pytest.raises(ValueError, match="Event instance"):
+        ServiceClient("http://localhost", "test-client").events(instance=instance)
+    assert transport.calls == []
+
+
 def test_stop_skips_describe(transport):
     transport.responses[:] = [{"stop": "confirmed"}]
     assert ServiceClient("http://localhost", "a").stop()["stop"] == "confirmed"

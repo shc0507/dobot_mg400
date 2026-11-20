@@ -18,10 +18,15 @@ def test_bounded_replay_matches_journal_and_owns_its_data(caplog):
     entries = [json.loads(record.message) for record in caplog.records]
     assert entries[0]["fields"] == {"axes": [1, 2]}
     assert entries[0]["ts_unix"] == 123.5
-    assert log.since(0) == {"events": entries[1:], "next": 3}
-    assert log.since(2) == {"events": entries[2:], "next": 3}
-    assert log.since(3) == {"events": [], "next": 3}
-    assert log.since(99) == {"events": [], "next": 3}
+    assert log.since(0)["events"] == entries[1:]
+    assert log.since(0)["gap_reason"] == "history_evicted"
+    assert log.since(0)["oldest"] == 2
+    assert log.since(2)["events"] == entries[2:]
+    assert not log.since(2)["gap"]
+    assert log.since(3)["events"] == []
+    assert log.since(99)["events"] == []
+    assert log.since(99)["gap_reason"] == "cursor_ahead"
+    assert log.since(99)["next"] == 3
     reply = log.since(0)
     reply["events"][0]["fields"]["client"] = "changed"
     assert log.since(1)["events"][0]["fields"]["client"] == "a"
@@ -56,3 +61,34 @@ def test_bad_event_does_not_consume_a_sequence():
     with pytest.raises(ValueError):
         log.add("info", "bad", value=float("nan"))
     assert log.add("info", "valid") == 1
+
+
+def test_process_identity_detects_restart_even_after_counter_overtakes_cursor():
+    old = EventLog(instance="first")
+    old.add("info", "old")
+    new = EventLog(instance="second")
+    for index in range(4):
+        new.add("info", "new", index=index)
+    reply = new.since(1, instance=old.instance)
+    assert reply["instance"] == "second"
+    assert reply["restarted"] and reply["gap_reason"] == "instance_changed"
+    assert [event["seq"] for event in reply["events"]] == [1, 2, 3, 4]
+    assert all(event["instance"] == "second" for event in reply["events"])
+    assert new.since(4, instance="second")["events"] == []
+    assert not new.since(4, instance="second")["gap"]
+
+
+def test_empty_log_has_identity_and_restart_metadata():
+    log = EventLog()
+    assert log.instance != EventLog().instance
+    reply = log.since(0)
+    assert reply["oldest"] == 1 and reply["next"] == 0 and not reply["gap"]
+    assert log.since(0, instance="previous")["restarted"]
+
+
+@pytest.mark.parametrize("instance", ["", "a\n", "é", "a" * 129, 3])
+def test_invalid_instance_is_rejected(instance):
+    with pytest.raises(ValueError):
+        EventLog(instance=instance)
+    with pytest.raises(ValueError):
+        EventLog().since(instance=instance)

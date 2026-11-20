@@ -115,6 +115,7 @@ An overlapping request returns 409. The service does not queue extra operations.
 | `GET api/state` | Model, device, connection, busy state, fault, lease, and latest result summary |
 | `GET api/describe` | Contract version and command parameter descriptions |
 | `GET api/events?since=0` | Service events, also written to the journal |
+| `GET api/results/<job_id>?instance=...` | Result for the specified service process and job, without starting inference |
 
 Read routes need no lease and no request headers.
 Supply `camera` exactly once and no other query parameter on the 3 inference routes.
@@ -163,10 +164,27 @@ A successful command includes full JSON metadata in `last_command.output`.
 Metadata must contain finite JSON values and fit within 256 KiB when encoded as compact ASCII JSON.
 Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
-`last_result` holds `camera`, `action`, `count`, and `finished_at` of the latest successful operation.
+`last_result` holds `instance`, `job_id`, `camera`, `action`, `count`, and `finished_at` of the latest successful operation.
 A live service reports `connected=false` until its first successful frame operation.
 Each failed operation sets `fault`. The next successful operation clears it. Only a failure with 503 sets `connected` to `false`.
 While `fault` is set, the calibration skill and the drift check refuse to run. First complete 1 successful read, for example `GET api/detect`.
+
+### Final events and result lookup
+
+`state.instance` identifies the current service process and matches `instance` in events and results. A service restart changes this value. Identify a job by `(instance, job_id)`. For asynchronous commands, `job_id` equals the response `command_id`.
+
+Each accepted job, including inference reads, generates exactly 1 final event after completion and the cancellation decision. Event `result` and `status` both contain `ok`, `failed` or `stopped`. Cancelled jobs publish no successful result. Event fields also include `instance`, `job_id`, `source`, `action`, `camera` and `finished_at`, without images or full detection arrays. `source` is `vision`. `finished_at` records job completion in Unix seconds, and `observed_at` is `null` when capture time is unknown.
+
+Result lookup requires exactly 1 `instance` query parameter and accepts no other query parameters. It requires no lease. Responses are:
+
+| HTTP status | Lookup result |
+| --- | --- |
+| 200 | `available=true`, with `status` equal to `ok`, `failed` or `stopped`. Successful results contain `output`. Failed or stopped results have `output=null`. |
+| 202 | `available=false`, `status=pending`, `reason=pending`. |
+| 404 | `available=false`, `status=unavailable`, `reason=not_found`. |
+| 410 | `available=false`, `status=unavailable`. Expiration or eviction gives `reason=expired_or_evicted`. A process mismatch gives `reason=restarted`. |
+
+The cache retains at most 100 results for at most 600 s each, with at most 8 MiB of compact ASCII JSON records. It retains no images. If a result is missing, lookup never substitutes the latest result from another job. In unavailable responses, `instance` identifies the current process and `requested_instance` preserves the query value.
 
 ## Camera-to-robot calibration
 

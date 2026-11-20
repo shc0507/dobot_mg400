@@ -65,6 +65,20 @@ AREAS = [
         ["test_console_sample_transfer.py", "test_console_preview.py"],
     ),
     ("src/orchestrator/web/*", ["test_console*.py", "test_dashboard*.py", "test_agent_cli*.py"]),
+    (
+        "src/orchestrator/agent_connect/*",
+        [
+            "test_agent_connect.py",
+            "test_agent_connect_samples.py",
+            "test_agent_connect_stream.py",
+            "test_agent_connect_state.py",
+            "test_agent_connect_integration.py",
+            "test_agent_connect_observations.py",
+            "test_agent_connect_live.py",
+            "test_dashboard_passport.py",
+        ],
+    ),
+    ("scripts/agent_portal.py", ["test_agent_connect.py", "test_agent_connect_live.py"]),
     ("src/orchestrator/agent*.py", ["test_agent_cli*.py", "test_orchestrator_cli.py"]),
     ("scripts/console_font.py", ["test_console.py"]),
     (

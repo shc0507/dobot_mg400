@@ -72,6 +72,9 @@ def test_npz_keeps_raw_ir_temperatures_and_metadata_from_one_frame():
 
 def test_demo_start_stop_reconnect_and_no_stale_frame():
     service = CameraService(demo=True)
+    instance = service.snapshot()["instance"]
+    assert instance == service.events.instance
+    assert CameraService(demo=True).snapshot()["instance"] != instance
     try:
         assert service.status()["state"] == "disconnected"
         service.connect()
@@ -83,11 +86,14 @@ def test_demo_start_stop_reconnect_and_no_stale_frame():
         assert service.command("gain", "low")["ok"]
         wait_until(lambda: service.status()["camera_stats"]["gain"] == "low")
         service.disconnect()
+        assert service.snapshot()["instance"] == instance
         with pytest.raises(RuntimeError, match="No camera frame"):
             service.latest()
         service.connect()
         wait_until(lambda: service.status()["state"] == "streaming")
         assert service.latest().sequence > frame.sequence
+        assert service.snapshot()["instance"] == instance
+        assert {event["instance"] for event in service.events.since()["events"]} == {instance}
     finally:
         service.disconnect()
 

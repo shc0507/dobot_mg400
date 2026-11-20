@@ -17,16 +17,19 @@
 | 方法和路径 | 请求或响应 |
 | --- | --- |
 | `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool, recovery?: true}}}` |
-| `GET api/state` | `{service, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
+| `GET api/state` | `{service, instance, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
 | `POST api/command` | 请求体为 `{"action": "...", ...}`。返回 `202` 和 `{command_id, state}`。完成结果写入 `state.last_command`。 |
 | `POST api/stop` | 请求体为 `{"wait_s": 0..15}`。返回 `{stop, state}`。`stop` 为 `confirmed`、`pending` 或 `unconfirmed`。任何客户端均可随时停止。重复请求安全。服务可接受命名的停止参数，只停止 1 个部分，例如炉子的 `gas_channel`。 |
 | `POST api/heartbeat` | 获取或续期调用方的租约。其他客户端持有租约时，返回 `409`。 |
 | `POST api/renew` | 仅续期调用方持有且未过期的租约。否则返回 `409`。 |
 | `POST api/release` | 仅当调用方持有租约时释放它。 |
-| `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`。同一批事件也写入服务日志。 |
+| `GET api/events?since=<seq>&instance=<instance>` | `{events: [{instance, seq, ts_unix, level, message, fields}], next, instance, oldest, gap, gap_reason, restarted}`。请求中的 `instance` 可省略。同一批事件也写入服务日志。 |
 
 - `fault` 为 `null` 或 `{code, message}`。`last_command` 为 `null` 或 `{id, action, client, result, message, finished_at}`。最终结果为 `ok`、`failed`、`rejected` 或 `stopped`。命令执行期间，服务可以报告 `running`，例如位移台的移动或校准。客户端轮询，直到得到最终结果。
 - 设备字段名包含单位：`pv_c`、`ramp_c_per_min`、`flow_pct`、`x_mm`、`r_deg`。
+- `state.instance` 标识 1 个服务进程。设备重连保留此值。服务重启更换此值。事件和回放响应使用同一值。
+- 保存响应的 `instance` 和 `next`，用于下次事件查询。请求的实例不同时，返回新进程保留的全部事件。即使新进程序号超过旧游标，也按此规则返回。未提供实例时，仅按 `since` 选择事件。
+- `oldest` 是保留的首个序号。没有事件时，它等于 `next + 1`。`gap` 表示事件不连续。`gap_reason` 为 `instance_changed`、`cursor_ahead`、`history_evicted` 或 `null`。仅当请求的实例不同，`restarted` 才为真。按服务、实例和序号存储带实例的事件。仅当服务省略实例时，沿用基于时间戳的事件标识。
 - POST 请求必须携带 `Content-Type: application/json` 和 `X-MG400-Client`。客户端 ID 包含 1 至 128 个可打印 ASCII 字符。
 - 错误响应使用 `{"error": "..."}`：`400` 请求无效，`409` 状态或租约冲突，`415` 非 JSON，`503` 设备连接丢失。
 - 服务监听回环地址，不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。Lab Console 控制套接字拒绝 `Origin` 与 `Host` 不同的 WebSocket。

@@ -133,7 +133,8 @@ class RobotPanelState:
         self._ownership = ControllerOwnership(host)
         self._lock = threading.RLock()
         self._stop_changed = threading.Condition(self._lock)
-        self.events = EventLog(logger=_PanelJournal())
+        self._instance = secrets.token_hex(8)
+        self.events = EventLog(logger=_PanelJournal(), instance=self._instance)
         self._last_command = None
         self._command_number = 0
         self._pending_commands = {}
@@ -170,7 +171,6 @@ class RobotPanelState:
         self._clearing = False
         self._message = "Start sync to connect to the robot."
         # Snapshot versions order replies within one process. A restart starts a new instance.
-        self._instance = secrets.token_hex(8)
         self._version = 0
         # Keyboard state. _kb_thread is the one preparation or hold worker in flight.
         self._kb_on = False

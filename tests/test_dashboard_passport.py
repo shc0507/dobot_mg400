@@ -84,6 +84,41 @@ def artifact(passport, identity, chip=CHIP):
     )
 
 
+def test_current_location_preserves_exact_chip_and_does_not_modify_history(passport):
+    passport.store.create(saved_recipe(CHIP))
+    before = hashlib.sha256(passport.store.path.read_bytes()).digest()
+    response = passport.client.get("/lab.v1/api/chip/location", query_string={"id": CHIP})
+    assert response.status_code == 200
+    assert response.json["chip_id"] == CHIP
+    assert response.json["sample"]["chip_id"] == CHIP
+    assert response.json["sample"]["location"]["holder"] == "unknown"
+    assert response.json["sample"]["basis"] == "unknown"
+    assert hashlib.sha256(passport.store.path.read_bytes()).digest() == before
+    assert passport.service.lease.snapshot()["holder"] is None
+    assert response.headers["Cache-Control"] == "no-store"
+    assert (
+        passport.client.post(
+            "/lab.v1/api/chip/location",
+            json={"id": CHIP},
+            headers={"X-MG400-Client": "passport-test"},
+        ).status_code
+        == 405
+    )
+
+
+@pytest.mark.parametrize(
+    "query", [{}, {"id": " "}, {"id": CHIP, "holder": "robot"}, [("id", CHIP), ("id", "other")]]
+)
+def test_current_location_rejects_invalid_query_before_read(passport, monkeypatch, query):
+    from orchestrator.agent_connect.samples import SampleTracker
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid query read sample state")
+
+    monkeypatch.setattr(SampleTracker, "samples", forbidden)
+    assert passport.client.get("/lab.v1/api/chip/location", query_string=query).status_code == 400
+
+
 def test_public_shell_and_fixed_assets_never_read_stored_chip_data(passport, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("A public shell read stored chip data")
@@ -678,8 +713,8 @@ class Element {
 }
 const walk = element => [element, ...element.children.flatMap(walk)];
 function browser(href = 'http://localhost:8772/lab/chip') {
-  const nodes = new Map(), requests = [], timers = new Map(), windowEvents = new Map(),
-      locations = [], revoked = [], blobURLs = [];
+  const nodes = new Map(), requests = [], locationRequests = [], timers = new Map(),
+      windowEvents = new Map(), locations = [], revoked = [], blobURLs = [];
   let serial = 0;
   for (const match of html.matchAll(/<(\w+)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
       const element = new Element(match[1]); element.hidden = /\shidden(?:\s|>)/.test(match[0]);
@@ -702,10 +737,11 @@ function browser(href = 'http://localhost:8772/lab/chip') {
         new Proxy({}, { get() { throw new Error('Persistent token'); } }),
     fetch(url, options) { const request = { ...deferred(), url, options };
         options.signal.addEventListener('abort', () => request.reject(new Error('Aborted')));
-        requests.push(request); return request.promise; },
+        (url.includes('/api/chip/location?') ? locationRequests : requests).push(request);
+        return request.promise; },
   });
   return {
-    requests, locations, revoked, blobURLs, nodes,
+    requests, locationRequests, locations, revoked, blobURLs, nodes,
     get: id => nodes.get(id),
     async search(chip = 'chip-A') { nodes.get('chip-id').value = chip;
         nodes.get('chip-id').emit('input'); nodes.get('passport-form').emit('submit');
@@ -713,6 +749,8 @@ function browser(href = 'http://localhost:8772/lab/chip') {
     async respond(index, data, status = 200) { requests[index].resolve({ ok:
         status >= 200 && status < 300, status, json: async () => data, blob: async () => data });
         await drain(); },
+    async respondLocation(index, data, status = 200) { locationRequests[index].resolve({ ok:
+        status >= 200 && status < 300, status, json: async () => data }); await drain(); },
     async click(element) { (typeof element === 'string' ? nodes.get(element) :
         element).emit('click'); await drain(); },
     find(label) {
@@ -737,6 +775,51 @@ async function open(page) {
       'http://localhost').searchParams.get('kind')), ['steps', 'samples', 'artifacts', 'events']);
 }
 const cases = {
+  async sample_location_and_history_are_independent() {
+    const page = browser(); await page.search(' chip / A ');
+    assert.equal(new URL(page.locationRequests[0].url, 'http://localhost').searchParams.get('id'),
+      ' chip / A ');
+    assert.equal(page.get('location-report').disabled, true);
+    assert.equal(page.get('location-unknown').disabled, true);
+    assert.match(page.get('location-control-note').textContent, /Available after operator control/);
+    await page.respondLocation(0, { chip_id: ' chip / A ', sample: {
+      chip_id: ' chip / A ', location: { holder: 'stage_insert', container_id: 'crucible-1',
+        inside_furnace: null },
+      basis: 'inferred', last_known_location: { location: { holder: 'tray_slot', tray_id: 'T1',
+        slot_id: 'A1' } },
+      pending_operation: { action: 'insert', destination: { holder: 'stage_insert' } },
+      last_observation: { source: 'vision', observed_at: null },
+      conflict: '<img src=x> identity differs',
+    } });
+    const shown = page.get('location-values').textContent;
+    assert.match(shown, /Stage Insert \/ crucible-1/); assert.match(shown, /Inferred/);
+    assert.match(shown, /Inside furnaceUnknown/); assert.match(shown, /Tray slot \/ T1 \/ A1/);
+    assert.match(shown, /insert → Stage Insert/);
+    assert.match(shown, /Observation timeTime not recorded/);
+    assert.match(page.get('location-conflict').textContent, /<img src=x>/);
+    assert.equal(walk(page.get('location-values')).some(item => item.tagName === 'IMG'), false);
+    await page.respond(0, pageData('runs', [], null, ' chip / A '));
+    assert.match(page.get('location-values').textContent, /Inferred/);
+    assert.match(page.get('passport-status').textContent, /No recorded runs/);
+  },
+  async sample_location_cancellation_and_failure() {
+    const page = browser(); await page.search('old'); await page.search('new');
+    assert.equal(page.locationRequests[0].options.signal.aborted, true);
+    await page.respondLocation(0, { chip_id: 'old', sample: { chip_id: 'old',
+      location: { holder: 'robot' } } });
+    assert.equal(page.get('location-values').textContent, '');
+    await page.respondLocation(1, { error: 'Unavailable' }, 503);
+    assert.equal(page.get('location-chip').textContent, 'new');
+    assert.match(page.get('location-status').textContent, /unavailable/);
+    await page.respond(1, pageData('runs', [run()], null, 'new'));
+    assert.match(page.get('passport-runs').textContent, /Recorded recipe/);
+    await page.click('pp-lang');
+    assert.equal(page.get('location-heading').textContent, '当前位置');
+    assert.equal(page.get('location-report').textContent, '报告位置');
+    await page.respondLocation(2, { chip_id: 'wrong', sample: null });
+    assert.equal(page.get('location-status').textContent, '当前位置不可用。');
+    await page.hide(); assert.equal(page.get('pp-location').hidden, true);
+  },
   async exact_search_and_secret() {
     const page = browser(); assert.equal(page.requests.length, 0);
     const chip = ' /Chip?#\n ';
@@ -956,6 +1039,8 @@ else { for (const [name, check] of Object.entries(cases)) { await check();
 @pytest.mark.parametrize(
     "case",
     [
+        "sample_location_and_history_are_independent",
+        "sample_location_cancellation_and_failure",
         "exact_search_and_secret",
         "initial_id_decoded_once",
         "raw_url_id_survives_textarea_changes",

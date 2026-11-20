@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from labkit.errors import ServiceError
+from labkit.events import EventLog
 from orchestrator.app import OrchestratorService, create_app
 from orchestrator.clients import SERVICES
 from orchestrator.web import console as console_module
@@ -277,6 +278,7 @@ def test_state_reports_frame_data_without_secrets(rig):
         "process",
         "sample-transfer",
         "twin",
+        "agent-connect",
         "position-finder",
     ]
     assert "readiness" not in body
@@ -526,6 +528,79 @@ def test_events_are_stored_newest_first_and_kept_after_service_restart(rig):
     assert [row["message"] for row in console.event_report(since=last)["events"]] == ["Later"]
 
 
+def test_event_instance_finds_fast_restart_with_a_higher_sequence(rig):
+    console = rig.service.console
+    source = EventLog(instance="stage-before", clock=lambda: 10.0)
+    calls = []
+
+    def read(since=0, *, instance=None):
+        calls.append((since, instance))
+        return source.since(since, instance=instance)
+
+    adapter = SimpleNamespace(events=read)
+    for number in range(2):
+        source.add("info", f"Before {number}")
+    console.pull_events("stage", adapter)
+    source = EventLog(instance="stage-after", clock=lambda: 10.0)
+    for number in range(4):
+        source.add("info", f"After {number}")
+    console.pull_events("stage", adapter)
+    console.pull_events("stage", adapter)
+    assert calls == [(0, None), (2, "stage-before"), (4, "stage-after")]
+    rows = console.event_report(device="stage")["events"]
+    assert len(rows) == 6
+    assert {(row["instance"], row["seq"]) for row in rows} == {
+        (instance, seq)
+        for instance, count in (("stage-before", 2), ("stage-after", 4))
+        for seq in range(1, count + 1)
+    }
+    assert len([row for row in rows if row["seq"] == 1 and row["ts_unix"] == 10]) == 2
+    notices = [
+        event
+        for event in rig.service.events.since()["events"]
+        if event["message"] == "Device service restarted."
+    ]
+    assert len(notices) == 1
+    assert notices[0]["fields"]["instance"] == "stage-after"
+
+
+def test_event_replay_deduplicates_by_instance_and_sequence_without_timestamp(rig):
+    console = rig.service.console
+    source = EventLog(instance="stage-process", clock=lambda: 10.0)
+    source.add("info", "Original")
+    report = source.since()
+    console._merge("stage", report)
+    report["events"][0].update(ts_unix=20.0, message="Repeated")
+    console._merge("stage", report)
+    rows = console.event_report(device="stage")["events"]
+    assert [(row["message"], row["ts_unix"]) for row in rows] == [("Original", 10.0)]
+
+
+def test_event_replay_gap_is_retained_once_in_existing_history(rig):
+    console = rig.service.console
+    source = EventLog(maxlen=2, instance="stage-process")
+    for number in range(3):
+        source.add("info", f"Event {number}")
+    adapter = SimpleNamespace(events=source.since)
+    console.pull_events("stage", adapter)
+    console.pull_events("stage", adapter)
+    console._merge("runs", rig.service.events.since())
+    notices = [
+        row
+        for row in console.event_report()["events"]
+        if row["message"] == "Device event history has a gap."
+    ]
+    assert len(notices) == 1
+    assert notices[0]["level"] == "warning"
+    assert notices[0]["fields"] == {
+        "device": "stage",
+        "instance": "stage-process",
+        "since": 0,
+        "oldest": 2,
+        "gap_reason": "history_evicted",
+    }
+
+
 def test_rehearsal_console_profile_adds_events_only():
     from orchestrator.rehearsal import _DemoClient
 
@@ -565,6 +640,7 @@ def test_workspace_registry_needs_unique_ids_and_both_titles():
         ("process", 40),
         ("sample-transfer", 50),
         ("twin", 60),
+        ("agent-connect", 90),
         ("position-finder", 100),
     ]
     legacy = next(item for item in workspaces if item.id == "position-finder")

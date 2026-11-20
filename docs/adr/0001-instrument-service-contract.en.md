@@ -17,16 +17,19 @@ Use contract version 1. Paths are relative to the configured service base path.
 | Method and path | Request or response |
 | --- | --- |
 | `GET api/describe` | `{service, version, contract: 1, demo, zones, lease_seconds, on_lease_expiry, commands: {name: {params: <JSON Schema>, any_client: bool, recovery?: true}}}` |
-| `GET api/state` | `{service, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
+| `GET api/state` | `{service, instance, seq, ts_unix, demo, connected, busy, locked, fault, lease, last_command, ...}` |
 | `POST api/command` | Body `{"action": "...", ...}`. Return `202` with `{command_id, state}`. Completion appears in `state.last_command`. |
 | `POST api/stop` | Body `{"wait_s": 0..15}`. Return `{stop, state}`, with `stop` equal to `confirmed`, `pending`, or `unconfirmed`. Any client may stop at any time. Repeated requests are safe. A service can accept named stop parameters to stop 1 part, such as the furnace `gas_channel`. |
 | `POST api/heartbeat` | Acquire or renew the caller's lease. Return `409` when another client holds it. |
 | `POST api/renew` | Renew only an unexpired lease that the caller holds. Otherwise, return `409`. |
 | `POST api/release` | Release the lease only when the caller holds it. |
-| `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`. These events also enter the service journal. |
+| `GET api/events?since=<seq>&instance=<instance>` | `{events: [{instance, seq, ts_unix, level, message, fields}], next, instance, oldest, gap, gap_reason, restarted}`. The request's `instance` is optional. These events also enter the service journal. |
 
 - `fault` is `null` or `{code, message}`. `last_command` is `null` or `{id, action, client, result, message, finished_at}`. Final results are `ok`, `failed`, `rejected`, or `stopped`. A service can report `running` while a command is in progress, as the stage does for a move or calibration. Clients poll until a final result.
 - Include units in device fields: `pv_c`, `ramp_c_per_min`, `flow_pct`, `x_mm`, `r_deg`.
+- `state.instance` identifies 1 service process. A device reconnect preserves it. A service restart changes it. Event rows and replay responses use the same value.
+- Save the response `instance` with `next` for the next event query. A different requested instance returns the new process's retained history, even when its sequence exceeds the old cursor. Without a requested instance, selection uses only `since`.
+- `oldest` is the first retained sequence, or `next + 1` when no events remain. `gap` reports missing continuity. `gap_reason` is `instance_changed`, `cursor_ahead`, `history_evicted`, or `null`. `restarted` is true only when the requested instance differs. Store identified events by service, instance, and sequence. Use the legacy timestamp identity only when the service omits its instance.
 - POST requests require `Content-Type: application/json` and `X-MG400-Client`. A client ID contains 1 to 128 printable ASCII characters.
 - Errors use `{"error": "..."}`: `400` invalid request, `409` state or lease conflict, `415` non-JSON, `503` lost device link.
 - Services listen on loopback and check no token, `Host`, or `Origin`. The VPN is the access boundary. The Lab Console control socket refuses a WebSocket whose `Origin` differs from `Host`.

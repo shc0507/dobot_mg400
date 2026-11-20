@@ -1131,7 +1131,15 @@ def test_contract_commands_cannot_take_or_release_control(rig, action):
 def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):
     state, _, _ = rig
     caplog.set_level(logging.INFO, logger="mg400.web_control")
-    assert state.events.since(0) == {"events": [], "next": 0}
+    assert state.events.since(0) == {
+        "events": [],
+        "next": 0,
+        "instance": state.snapshot()["instance"],
+        "oldest": 1,
+        "gap": False,
+        "gap_reason": None,
+        "restarted": False,
+    }
     with state._lock:
         state._message = "fixture state message"
         state._message = "fixture state message"
@@ -1142,6 +1150,7 @@ def test_contract_events_preserve_existing_journal_lines_once(rig, caplog):
     replay = state.events.since(0)
     assert [entry["message"] for entry in replay["events"]] == panel_log(caplog)
     assert replay["next"] == 5
+    assert all(entry["instance"] == state.snapshot()["instance"] for entry in replay["events"])
     assert [entry["seq"] for entry in state.events.since(2)["events"]] == [3, 4, 5]
     assert panel_log(caplog).count("fixture state message") == 1
     assert all(entry["fields"] == {} for entry in replay["events"])

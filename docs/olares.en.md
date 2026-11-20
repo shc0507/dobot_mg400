@@ -317,7 +317,7 @@ With NVENC, a stream above `1280x720` has only an H.265 preview, except the side
 RTP cannot carry a JPEG wider than 2040, so ffmpeg reads the MJPEG of this stream through HTTP.
 A camera can send fewer frames than its mode. Each frame gets its arrival time as timestamp, so the preview frame rate is the real frame rate.
 The go2rtc 1.9.14 release does not split RTP aggregation packets. When ffmpeg puts a small frame and its SEI into 1 packet, the browser stops to decode after the first frame.
-Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`).
+Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). The H.264 NVENC encoder also removes SEI (`-bsf:v filter_units=remove_types=6`). If not, the MP4 preview loses the 2 small frames after each keyframe.
 NVENC cuts a `3840x2160` frame into 2 slices, and ffmpeg also puts them into 1 packet. Thus a large preview must use go2rtc with the patch `deploy/go2rtc/aggregation-packets.patch`.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture. Some cameras send cut frames first when capture starts. go2rtc with the patch `deploy/go2rtc/v4l2-cut-jpeg.patch` drops frames without a JPEG end marker.

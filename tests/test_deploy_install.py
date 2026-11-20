@@ -1620,6 +1620,8 @@ def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
     assert "-c:v h264_nvenc" in h264 and "-fps_mode passthrough" in h264
     # The encoder keeps the RTP timestamps, not a grid of the guessed input rate.
     assert "-enc_time_base:v 1/90000" in h264
+    # go2rtc 1.9.14 MP4 loses a small frame that ffmpeg aggregates with its SEI.
+    assert h264.endswith('-bsf:v filter_units=remove_types=6"')
     assert "-forced-idr 1" in h264 and "-force_key_frames expr:gte(t,n_forced)" in h264
     assert "libx264" not in rendered
     for number in range(1, 4):

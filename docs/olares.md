@@ -316,7 +316,7 @@ ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发�
 RTP 不能传输宽度大于 2040 的 JPEG，因此 ffmpeg 通过 HTTP 读取该流的 MJPEG。
 摄像头实际发送的帧率可以低于模式帧率。每帧以到达时间为时间戳，因此预览帧率与实际帧率相同。
 go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
-因此 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。
+因此 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。H.264 NVENC 编码器也去掉 SEI（`-bsf:v filter_units=remove_types=6`），否则 MP4 预览在每个关键帧后丢失 2 个小帧。
 NVENC 把 `3840x2160` 的帧分成 2 个 slice，ffmpeg 也把它们合成 1 个包。大尺寸预览因此必须用带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
 单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。有的摄像头启动采集后先发出截断的帧。带补丁 `deploy/go2rtc/v4l2-cut-jpeg.patch` 的 go2rtc 丢弃没有 JPEG 结束标记的帧。

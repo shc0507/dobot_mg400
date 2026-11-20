@@ -334,10 +334,13 @@ H264_X264 = (
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
 # The GPU encoder uses about 13 % of 1 CPU core per 1280x720 preview, not 31 %.
+# h264_nvenc adds an SEI to each frame. ffmpeg sends a small frame and its SEI in 1 RTP
+# aggregation packet, and the go2rtc 1.9.14 MP4 output loses that frame: the 2 small frames
+# after each keyframe, about 7 % of frames. Without SEI, ffmpeg sends each frame alone.
 H264_NVENC = (
     '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -level:v 4.1 -preset:v p4'
     " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough -enc_time_base:v 1/90000"
-    ' -force_key_frames expr:gte(t,n_forced)"\n'
+    ' -force_key_frames expr:gte(t,n_forced) -bsf:v filter_units=remove_types=6"\n'
 )
 
 

@@ -2,20 +2,12 @@
 
 import math
 import time
-from contextlib import closing
-from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
-from labkit import ports
+from cameras import go2rtc
 
 from .protocol import ControllerError
 
 MAX_JPEG_BYTES = 4 * 1024 * 1024
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 class ReferenceCamera:
@@ -28,31 +20,12 @@ class ReferenceCamera:
 
         if not isinstance(stream, str) or not NAME.fullmatch(stream):
             raise ControllerError("Invalid reference stream name.")
-        url = ports.url("go2rtc", f"api/frame.jpeg?src={stream}")
-        opener = self.opener or build_opener(ProxyHandler({}), _NoRedirect())
         try:
-            with closing(opener.open(url, timeout=2)) as response:
-                if response.status != 200 or response.geturl() != url:
-                    raise ControllerError("Reference camera returned an unexpected response.")
-                deadline = self.clock() + 2
-                data = bytearray()
-                while True:
-                    if self.clock() >= deadline:
-                        raise ControllerError("Reference camera read timed out.")
-                    # HTTPResponse.read1 performs at most one buffered/raw read.
-                    # read(size) can wait for many receives while a peer drips bytes.
-                    chunk = response.read1(min(65536, MAX_JPEG_BYTES + 1 - len(data)))
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if len(data) > MAX_JPEG_BYTES:
-                        raise ControllerError("Reference camera JPEG exceeds 4 MiB.")
-                if self.clock() >= deadline:
-                    raise ControllerError("Reference camera read timed out.")
-            return bytes(data)
-        except HTTPError as exc:
-            exc.close()
-            raise ControllerError("Reference camera request failed.") from exc
+            return go2rtc.read_jpeg(
+                stream, timeout=2, max_bytes=MAX_JPEG_BYTES, opener=self.opener, clock=self.clock
+            )
+        except go2rtc.FrameError as exc:
+            raise ControllerError(f"Reference camera: {exc}") from exc
         except (OSError, ValueError) as exc:
             raise ControllerError("Reference camera request failed.") from exc
 

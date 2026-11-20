@@ -35,7 +35,7 @@ def load_regions(path=DEFAULT_ROI_PATH):
             data = tomllib.load(source)
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         raise ValueError(f"Cannot read thermal regions from {path}: {exc}") from exc
     if set(data) - {"regions"} or not isinstance(data.get("regions", {}), dict):
         raise ValueError("The thermal region file must contain only a regions table.")

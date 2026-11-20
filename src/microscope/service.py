@@ -72,6 +72,8 @@ RECORDING_ACTIONS = (
     "record_with_sequence",
     "set_stabilization",
 )
+# Commands that use only the microscope camera. Their failures do not stop motors.
+CAMERA_ACTIONS = (*RECORDING_ACTIONS, "snapshot")
 
 
 @dataclass(frozen=True)
@@ -1453,7 +1455,8 @@ class MicroscopeService(TurretCalibrationMixin):
         if action == "snapshot" and "path" in args:
             if not isinstance(args["path"], str) or not args["path"] or len(args["path"]) > 4096:
                 raise ValueError("Snapshot path must be a nonempty bounded string")
-            run_path(args["path"])
+            if os.path.lexists(run_path(args["path"])):
+                raise ValueError("Snapshot path already exists")
 
     def _check_nudge(self, steps):
         """Refuse a nudge before motion unless it stays inside the measured window."""
@@ -1894,16 +1897,23 @@ class MicroscopeService(TurretCalibrationMixin):
         except _Unidentified as error:
             # No turret turn started. Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
-        except (ValueError, CommandRejected) as error:
-            outcome, message = "failed", str(error)
-            self.stop("command-refused", 0, keep_recording=True)
         except Exception as error:
-            outcome, message = "failed", str(error)
-            if not job.cancel.is_set():
-                self._latch_fault("command", message)
+            if job.action in CAMERA_ACTIONS:
+                # A camera-only command never moves a motor: a refusal or failure
+                # (existing path, reused recording ID, camera start) keeps the
+                # motors, the focus reference and the lock as they are.
+                outcome = "stopped" if job.cancel.is_set() else "failed"
+                message = str(error)
+            elif isinstance(error, (ValueError, CommandRejected)):
+                outcome, message = "failed", str(error)
+                self.stop("command-refused", 0, keep_recording=True)
             else:
-                outcome = "stopped"
-            self.stop("command-failure", 0, keep_recording=True)
+                outcome, message = "failed", str(error)
+                if not job.cancel.is_set():
+                    self._latch_fault("command", message)
+                else:
+                    outcome = "stopped"
+                self.stop("command-failure", 0, keep_recording=True)
         finally:
             with self._lock:
                 if job.cancel.is_set() and outcome == "ok":

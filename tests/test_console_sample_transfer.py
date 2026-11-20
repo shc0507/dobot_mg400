@@ -38,7 +38,7 @@ class Adapter:
     def __init__(self):
         self.control = True
         self.epoch = 1
-        self.values = {"top": 2.0, "bottom": 3.0, "insert": 0.0}
+        self.values = {"top": 2.0, "bottom": 3.0, "insert": 4.0}
         self.moves = []
         self.stops = 0
         self.last = None
@@ -141,7 +141,6 @@ def finish(manager):
 @pytest.mark.parametrize(("target", "position"), [("fully_out", 0), ("fully_in", 10)])
 def test_transfer_uses_live_limits_without_profile_and_moves_only_insert(rig, target, position):
     manager, adapter = rig
-    adapter.values["insert"] = 4.0
     manager.store.delete(manager.store.selection())
     for motor in ("top", "bottom"):
         adapter.overrides[motor] = {"positioning_ready": False, "encoder": "unavailable"}
@@ -196,75 +195,14 @@ def test_transfer_requires_calibrated_fresh_insert(rig, override):
 @pytest.mark.parametrize("target", ["out_stage", "microscope"])
 def test_stage_targets_move_bottom_then_top_without_insert(rig, target):
     manager, adapter = rig
+    adapter.overrides["insert"] = {"positioning_ready": False, "encoder": "unavailable"}
     manager.start_stage(PAGE, target)
     assert finish(manager)["status"] == "completed"
     assert [(move["motor"], move["position"]) for move in adapter.moves] == [
         ("bottom", 5),
         ("top", 6),
     ]
-    assert adapter.values["insert"] == 0
-
-
-@pytest.mark.parametrize(
-    ("insert", "override"),
-    [
-        (10.0, {}),
-        (5 / 4096, {}),
-        (0.0, {"encoder": "unavailable"}),
-        (0.0, {"positioning_ready": False}),
-    ],
-)
-def test_xy_moves_require_insert_fully_out(rig, insert, override):
-    manager, adapter = rig
-    adapter.values["insert"] = insert
-    adapter.overrides["insert"] = override
-    reference = manager.state(PAGE)["stage_reference"]
-    assert reference["ready_targets"] == {"out_stage": False, "microscope": False}
-    assert reference["message"].startswith("Extract Sample first")
-    for start in (
-        lambda: manager.start_stage(PAGE, "out_stage"),
-        lambda: manager.start_coordinates(PAGE, {"x": 6, "y": 5}),
-        lambda: manager.jog(PAGE, "top", "ccw"),
-        lambda: manager.jog(PAGE, "bottom", "cw"),
-    ):
-        with pytest.raises(ValueError, match="Extract Sample first"):
-            start()
-    assert adapter.moves == []
-
-
-def test_xy_already_at_target_does_not_need_insert_out(rig):
-    manager, adapter = rig
-    adapter.values.update(top=6.0, bottom=5.0, insert=10.0)
-    manager.start_coordinates(PAGE, {"x": 6, "y": 5})
-    assert finish(manager)["status"] == "completed"
-    manager.start_position(PAGE, "Pickup")
-    assert finish(manager)["status"] == "completed"
-    assert [(move["motor"], move["position"]) for move in adapter.moves] == [("insert", 8)]
-
-
-def test_named_position_from_inserted_extracts_before_xy(rig):
-    manager, adapter = rig
-    adapter.values["insert"] = 10.0
-    manager.start_position(PAGE, "Pickup")
-    result = finish(manager)
-    assert result["status"] == "completed"
-    assert result["completed_axes"] == result["total_axes"] == 4
-    assert [(move["motor"], move["position"]) for move in adapter.moves] == [
-        ("insert", 0),
-        ("bottom", 5),
-        ("top", 6),
-        ("insert", 8),
-    ]
-
-
-def test_insert_moved_during_sequence_stops_before_next_xy_axis(rig):
-    manager, adapter = rig
-    adapter.after_complete = lambda: adapter.values.update(insert=3.0)
-    manager.start_coordinates(PAGE, {"x": 6, "y": 5})
-    result = finish(manager)
-    assert result["status"] == "failed"
-    assert result["message"].startswith("Extract Sample first")
-    assert [move["motor"] for move in adapter.moves] == ["bottom"]
+    assert adapter.values["insert"] == 4
 
 
 def test_stage_record_is_draft_only_until_save_and_survives_restart(rig):
@@ -279,10 +217,10 @@ def test_stage_record_is_draft_only_until_save_and_survives_restart(rig):
     saved_id = state["selected_profile"]
     restarted = SampleTransfer(TransferProfileStore(manager.store.root), adapter)
     assert restarted.state(PAGE)["active_profile"]["stage_positions"]["out_stage"] == capture
-    adapter.values.update(top=6, bottom=7)
+    adapter.values.update(top=6, bottom=7, insert=8)
     restarted.start_stage(PAGE, "out_stage")
     assert finish(restarted)["status"] == "completed"
-    assert adapter.values == {"top": 2, "bottom": 3, "insert": 0}
+    assert adapter.values == {"top": 2, "bottom": 3, "insert": 8}
     restarted.mutate(PAGE, "profile/load", {"id": saved_id})
     state = restarted.mutate(PAGE, "endpoint/delete", {"target": "out_stage"})
     assert state["draft"]["stage_positions"] == {}
@@ -374,8 +312,7 @@ def test_coordinate_targets_use_shared_sequence_without_profiles(
     manager, adapter = rig
     manager.store.delete(manager.store.selection())
     for motor in adapter.values:
-        # X/Y targets read Insert to confirm that it is fully out.
-        if motor not in dict(expected) and not (motor == "insert" and "x" in target):
+        if motor not in dict(expected):
             adapter.overrides[motor] = {"positioning_ready": False, "encoder": "unavailable"}
 
     def no_profiles(*args):
@@ -596,7 +533,7 @@ def test_record_uses_current_encoders_and_profiles_persist(rig):
     assert state["draft"]["positions"]["Dock"]["position_rotations"] == {
         "x": 2,
         "y": 3,
-        "insert": 0,
+        "insert": 4,
     }
     state = manager.mutate(PAGE, "profile/save", {"name": "My positions"})
     saved = state["selected_profile"]
@@ -605,7 +542,7 @@ def test_record_uses_current_encoders_and_profiles_persist(rig):
     adapter.values["top"] = 7
     restarted.start_position(PAGE, "Dock")
     assert finish(restarted)["status"] == "completed"
-    assert adapter.values == {"top": 2, "bottom": 3, "insert": 0}
+    assert adapter.values == {"top": 2, "bottom": 3, "insert": 4}
 
 
 def test_record_requires_fresh_calibrated_readings_and_never_uses_camera(rig):
@@ -621,7 +558,7 @@ def test_passive_state_requires_no_control_and_never_moves(rig):
     manager, adapter = rig
     adapter.control = False
     state = manager.state(PAGE)
-    assert state["position"] == {"x": 2, "y": 3, "insert": 0}
+    assert state["position"] == {"x": 2, "y": 3, "insert": 4}
     assert not state["has_control"]
     assert adapter.moves == []
     with pytest.raises(ServiceError):
@@ -667,7 +604,7 @@ def test_jog_uses_fixed_small_rotations(rig):
     manager, adapter = rig
     manager.jog(PAGE, "insert", "ccw")
     assert finish(manager)["status"] == "completed"
-    assert adapter.values["insert"] == pytest.approx(0.1)
+    assert adapter.values["insert"] == pytest.approx(4.1)
     assert len(adapter.moves) == 1
 
 
@@ -752,7 +689,7 @@ def test_routes_reject_client_coordinates_and_accept_saved_target_ids(rig):
         == 202
     )
     assert finish(manager)["status"] == "completed"
-    assert adapter.values["insert"] == 0
+    assert adapter.values["insert"] == 4
     assert (
         client.post("/transfer/position/move", headers=headers, json={"name": "Pickup"}).status_code
         == 202

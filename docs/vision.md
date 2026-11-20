@@ -58,7 +58,7 @@ GPU 内存配置在模型加载前执行。
 
 标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
-配置或启动失败时，退出码为 2。
+配置无效时，退出码为 2，systemd 不重启服务。模型加载、相机或服务运行失败时，退出码为 1，systemd 在 3 s 后重启服务。
 
 使用 CUDA 时，服务先调用 `torch.cuda.set_per_process_memory_fraction`，再加载定位器。
 该比例限制本进程的 PyTorch 分配量。其他 CUDA 分配仍可能使用额外内存。

@@ -53,7 +53,8 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 
 Demo mode uses simulated motors and generated microscope and ArUco frames.
 It uses synthetic focus limits and clearance. These values do not establish safe settings for hardware.
-The service opens its devices only when it starts. Invalid configuration exits with status `2`.
+The service opens its devices only when it starts. Invalid configuration exits with status `2`, and systemd does not restart the service.
+A device or serving failure exits with status `1`, and systemd restarts the service after 10 s. Each start resets the controller board.
 On `SIGINT`, `SIGTERM`, or `SIGHUP`, it cancels work, stops and disables the motors, closes devices, and exits.
 Cleanup failures produce a nonzero exit status.
 
@@ -150,9 +151,11 @@ The next client must acquire control before that deadline. Release does not gran
 If the check fails or the deadline expires, the service stops and disables both motors and invalidates zero.
 
 Explicit stop, lease expiry, firmware reset, and focus-reference changes invalidate the service's zero.
-A refused or failed command also stops both motors and invalidates zero, for example a focus move past the limits. Only a command that cannot identify the objective keeps zero.
+The service refuses a focus move past the limits with HTTP 409 before motion. Zero stays known.
+A refused or failed command also stops both motors and invalidates zero. Only a command that cannot identify the objective keeps zero.
 Unknown command or stop outcomes latch a fault and lock ordinary commands.
 Stop remains available, but successful stop does not clear that fault.
+`stop_recording` and `record_with_sequence` with `enabled: false` also remain available.
 After resolving the cause, reconnect through a controlled service restart and establish zero again.
 Never retry unknown motion automatically or re-establish zero from a cached position.
 
@@ -253,6 +256,7 @@ Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It 
 When `MG400_FURNACE_ARCHIVE_DIR` is set, finalization copies the directory to `<archive>/<recording_id>/` and never replaces an existing copy.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.
+A refused or failed command and a latched fault stop the motors, but they do not end a recording. Use `stop_recording` to finalize the recording.
 The optional `wait_s` observes motor and recording cleanup within one budget of `0..15` seconds.
 `pending` means accepted cleanup remains. `unconfirmed` reports a cleanup failure.
 The service remains busy until accepted recording work ends. Check the stop result before new work.

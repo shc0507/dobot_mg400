@@ -910,7 +910,11 @@
     }
 
     function onKeyDown(event) {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.ctrlKey || event.metaKey || event.altKey || /^(Meta|Control|Alt|OS)/.test(String(event.code || event.key || ""))) {
+        // A browser can drop the key-up of a held key while a shortcut modifier is down.
+        if (kb.held.size || sh.active) { disarm("modifier"); stageOff(); }
+        return;
+      }
       const key = kb.on ? jogKey(event) : null;
       const stage = sh.on ? holdKey(event) : null;
       const tag = String(event.target?.tagName || "").toUpperCase();
@@ -1713,6 +1717,9 @@
           root.addEventListener("keyup", onKeyUp);
           root.addEventListener("blur", onBlur);
           root.addEventListener("pagehide", onBlur);
+          // A context menu or a drag takes the key-up events away from the page.
+          root.addEventListener("contextmenu", onBlur);
+          root.addEventListener("dragstart", onBlur);
           root.addEventListener("pointerup", buttonUp);
           root.addEventListener("pointercancel", buttonUp);
         }
@@ -1726,7 +1733,7 @@
       destroy() {
         this.hide();
         removeLanguage?.(); removeState?.();
-        for (const [event, handler] of [["keydown", onKeyDown], ["keyup", onKeyUp], ["blur", onBlur], ["pagehide", onBlur], ["pointerup", buttonUp], ["pointercancel", buttonUp]]) root.removeEventListener?.(event, handler);
+        for (const [event, handler] of [["keydown", onKeyDown], ["keyup", onKeyUp], ["blur", onBlur], ["pagehide", onBlur], ["contextmenu", onBlur], ["dragstart", onBlur], ["pointerup", buttonUp], ["pointercancel", buttonUp]]) root.removeEventListener?.(event, handler);
         root.document?.removeEventListener?.("visibilitychange", onVisibility);
         root.document?.removeEventListener?.("click", onGlobalStop, true);
         rootNode = null;

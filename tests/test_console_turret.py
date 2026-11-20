@@ -1,5 +1,6 @@
 """Turret calibration proxy keeps the Console's page-to-device lease mapping."""
 
+import inspect
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ import pytest
 from flask import Blueprint, Flask, jsonify, request
 
 from labkit.errors import ServiceError
+from orchestrator.web.console import Console
 from orchestrator.web.turret import MAX_PROFILE_BYTES, register
 
 HEADERS = {"X-MG400-Client": "page-one"}
@@ -64,6 +66,14 @@ def rig():
         return jsonify(error=str(error)), 400
 
     return SimpleNamespace(client=app.test_client(), calls=calls, state=state, outcome=outcome)
+
+
+def test_rig_stubs_match_the_real_console_methods():
+    """The stubs below stand in for these Console methods; a removed method fails here."""
+    expected = {"read": ["device", "path"], "operator": ["device", "page", "path", "data"]}
+    expected["control"] = ["page"]
+    for name, params in expected.items():
+        assert list(inspect.signature(getattr(Console, name)).parameters)[1:] == params
 
 
 def test_reads_map_service_holder_to_page_without_mutating_shared_state(rig):

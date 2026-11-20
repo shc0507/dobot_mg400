@@ -89,7 +89,9 @@ def main(argv=None, *, environ=None, service_factory=VisionService, server_facto
     except KeyboardInterrupt:
         pass
     except Exception as error:
-        parser.exit(2, f"Vision startup or serving failed: {error}\n")
+        # Status 2 means a configuration refusal, which systemd does not restart.
+        # A model, camera or serving failure exits 1, so systemd retries it.
+        parser.exit(1, f"Vision startup or serving failed: {error}\n")
     finally:
         for number in signals:
             signal.signal(number, signal.SIG_IGN)

@@ -7,6 +7,7 @@ MOVE_ORDER = ("bottom", "top", "insert")
 SPEED = 0.25
 JOG_ROTATIONS = 0.1
 ACTIVE_CALIBRATIONS = {"lower", "upper", "center"}
+INSERT_IN = "Extract Sample first. X/Y move only while Insert is fully out."
 
 
 def finite(value):
@@ -54,6 +55,24 @@ def target_ready(state, motor, target):
         and lower <= target <= upper
         and finite(axis.get("tolerance"))
         and axis["tolerance"] > 0
+    )
+
+
+def needs_move(state, motor, target):
+    axis = motors(state).get(motor, {})
+    position, tolerance = axis.get("position_rotations"), axis.get("tolerance")
+    return not (finite(position) and finite(tolerance) and abs(position - target) <= tolerance)
+
+
+def insert_out(state):
+    """The furnace tube is fixed to the X/Y stage: X/Y move only with a calibrated Insert at 0."""
+    return target_ready(state, "insert", 0.0) and not needs_move(state, "insert", 0.0)
+
+
+def xy_blocked(state, targets):
+    """True when a target moves X or Y while Insert is not fully out."""
+    return not insert_out(state) and any(
+        motor != "insert" and needs_move(state, motor, target) for motor, target in targets
     )
 
 

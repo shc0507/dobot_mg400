@@ -10,15 +10,18 @@ from uuid import uuid4
 from labkit.errors import ServiceError
 from orchestrator.transfer_motion import (
     AXES,
+    INSERT_IN,
     JOG_ROTATIONS,
     SPEED,
     coordinates,
     finite,
     fresh,
     idle,
+    insert_out,
     motors,
     sequence,
     target_ready,
+    xy_blocked,
 )
 from orchestrator.transfer_profiles import (
     STAGE_POSITIONS,
@@ -111,15 +114,23 @@ def stage_reference(state, profile=None):
         )
         for name, position in targets.items()
     }
+    xy_ready = all(ready_targets.values())
+    if xy_ready:
+        ready_targets = {
+            name: not xy_blocked(state, sequence(position, stage_only=True))
+            for name, position in targets.items()
+        }
     ready = all(ready_targets.values())
     if not compatible(profile):
         message = "Select a saved stage coordinate profile in Calibration."
     elif not all(value is not None for value in targets.values()):
         message = "Record the missing Out stage or Microscope position, then save the profile."
-    elif not ready:
+    elif not xy_ready:
         message = (
             "Calibrate X/Y in Motion and keep saved targets within their current travel limits."
         )
+    elif not ready:
+        message = INSERT_IN
     else:
         message = ""
     return {
@@ -352,6 +363,8 @@ class SampleTransfer:
                         motor=motor, target_rotations=target, message=f"Moving {motor}."
                     )
                 if abs(axis["position_rotations"] - target) > axis["tolerance"]:
+                    if xy_blocked(stage, [(motor, target)]):
+                        raise ValueError(INSERT_IN)
                     self._check(operation)
                     params = {
                         "motor": motor,
@@ -417,6 +430,8 @@ class SampleTransfer:
         stage = self._preflight(page)
         if not all(target_ready(stage, motor, value) for motor, value in targets):
             raise ValueError("Auto calibrate the stage and keep targets within its current limits.")
+        if xy_blocked(stage, targets):
+            raise ValueError(INSERT_IN)
         return self._launch(page, target, stage, targets)
 
     def start(self, page, target):
@@ -452,6 +467,9 @@ class SampleTransfer:
             raise ValueError("Choose a position from the selected saved profile.")
         stage = self._preflight(page)
         targets = sequence(capture["position_rotations"])
+        if xy_blocked(stage, targets):
+            # Extract before X/Y move, then insert to the saved coordinate.
+            targets = [("insert", 0.0), *targets]
         if not all(target_ready(stage, motor, value) for motor, value in targets):
             raise ValueError(
                 "Auto calibrate all axes and keep the saved position within their current limits."
@@ -466,6 +484,8 @@ class SampleTransfer:
         axis = motors(stage)[motor]
         if not fresh(stage, axis) or not axis.get("available"):
             raise ValueError("Wait for fresh, idle encoder feedback before jogging.")
+        if motor != "insert" and not insert_out(stage):
+            raise ValueError(INSERT_IN)
         target = axis["position_rotations"] + JOG_ROTATIONS * (1 if direction == "ccw" else -1)
         self._launch(page, None, stage, [(motor, target)], jog=direction)
         return self.state(page)

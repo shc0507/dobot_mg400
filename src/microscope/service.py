@@ -65,6 +65,13 @@ NUDGE_SPEED = 40
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.
 PREVIEW_SIZE = (1296, 972)
+# Camera-only commands. Motor faults and motor stops do not cancel them.
+RECORDING_ACTIONS = (
+    "start_recording",
+    "stop_recording",
+    "record_with_sequence",
+    "set_stabilization",
+)
 
 
 @dataclass(frozen=True)
@@ -797,13 +804,9 @@ class MicroscopeService(TurretCalibrationMixin):
         # The copied authority deadline is checked without a lease/service lock
         # inversion, including from the compiler/archive cancellation callback.
         with self._lock:
-            if (
-                recording is not self._recording
-                or recording.cancel.is_set()
-                or self._closed
-                or self._stopping
-                or self._fault
-            ):
+            # A motor stop or fault does not end the recording: only Stop, lease
+            # loss and shutdown cancel it.
+            if recording is not self._recording or recording.cancel.is_set() or self._closed:
                 raise SideCaptureCancelled("Recording authority was revoked")
 
     def _recording_metadata(self, recording):
@@ -1050,7 +1053,7 @@ class MicroscopeService(TurretCalibrationMixin):
                             status="failed", error="Camera recording shutdown is unconfirmed"
                         )
                     self._latch_fault("recording", "Camera recording shutdown is unconfirmed")
-                    self.stop("recording-cleanup-failed", 0)
+                    self.stop("recording-cleanup-failed", 0, keep_recording=True)
             with self._lock:
                 if recording is self._recording:
                     self._recording = None
@@ -1325,15 +1328,15 @@ class MicroscopeService(TurretCalibrationMixin):
                 self.lease.poll()
                 if self._motor is not None and self._motor.fault:
                     if self._latch_fault("motor", self._motor.fault):
-                        self.stop("motor-monitor", 0)
+                        self.stop("motor-monitor", 0, keep_recording=True)
             except Exception as error:
                 if self._latch_fault("monitor", str(error)):
-                    self.stop("motor-monitor", 0)
+                    self.stop("motor-monitor", 0, keep_recording=True)
 
     def _sync_motor_fault(self):
         if self._motor is not None and self._motor.fault:
             if self._latch_fault("motor", self._motor.fault):
-                self.stop("motor-monitor", 0)
+                self.stop("motor-monitor", 0, keep_recording=True)
 
     def _latch_fault(self, code, message):
         with self._lock:
@@ -1341,13 +1344,11 @@ class MicroscopeService(TurretCalibrationMixin):
             self._fault = self._fault or {"code": code, "message": str(message)}
             self._reference = None
             self._seq += 1
-            if self._job is not None:
+            # The lock refuses new motor work. An active recording continues and
+            # stop_recording can still finalize it.
+            if self._job is not None and self._job.action not in RECORDING_ACTIONS:
                 self._job.cancel.set()
             self._cancel_turret_session_locked()
-            if self._recording is not None:
-                self._recording.cancel.set()
-                self._recording.finish.set()
-                self._recording_sequence["armed"] = False
             return first
 
     def _lease_deadline(self):
@@ -1423,12 +1424,7 @@ class MicroscopeService(TurretCalibrationMixin):
     def _arguments(self, action, args):
         if not isinstance(args, dict) or action not in self.describe()["commands"]:
             raise ValueError("Unknown microscope command or parameters")
-        if action in (
-            "start_recording",
-            "stop_recording",
-            "record_with_sequence",
-            "set_stabilization",
-        ):
+        if action in RECORDING_ACTIONS:
             self._recording_arguments(action, args)
             return
         required = {
@@ -1476,15 +1472,19 @@ class MicroscopeService(TurretCalibrationMixin):
         self._arguments(action, args)
         self._sync_motor_fault()
         deadline = self._lease_deadline()
+        ending = action == "stop_recording" or (
+            action == "record_with_sequence" and not args["enabled"]
+        )
         with self._lock:
             if not self._started or self._closed:
                 raise ServiceError(503, "Microscope is not connected")
-            if self._fault:
+            # Ending a recording uses only the camera, so a lock or a motor stop permits it.
+            if self._fault and not ending:
                 raise ServiceError(409, "Microscope is locked; only stop is allowed")
             if (
                 self._job is not None
                 or self._turret_session is not None
-                or self._stopping
+                or (self._stopping and not ending)
                 or self._recording_draining()
             ):
                 raise ServiceError(409, "Microscope is busy")
@@ -1507,6 +1507,11 @@ class MicroscopeService(TurretCalibrationMixin):
                 and self._reference is None
             ):
                 raise ServiceError(409, "focus position unknown")
+            if action == "focus_move" and self._status is not None:
+                # Refuse before dispatch: a refused job stops the motors and clears focus zero.
+                low, high = self.config.focus_limits
+                if not low <= self._status.focus.position + args["steps"] <= high:
+                    raise ServiceError(409, "Focus move exceeds the configured limits")
             if action == "objective_nudge":
                 self._check_nudge(args["steps"])
             if action == "home_focus" and not self.config.home_switch:
@@ -1536,16 +1541,22 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._seq += 1
                 job.done.set()
                 self._latch_fault("worker", "Microscope command worker could not start")
-                self.stop("worker-start-failed", 0)
+                self.stop("worker-start-failed", 0, keep_recording=True)
                 if isinstance(error, Exception):
                     raise ServiceError(503, "Microscope command worker could not start") from error
                 raise
             return job.ident
 
     def _check_job_locked(self, job):
-        if job is not self._job or job.cancel.is_set() or self._closed or self._stopping:
+        camera = job.action in RECORDING_ACTIONS
+        if (
+            job is not self._job
+            or job.cancel.is_set()
+            or self._closed
+            or (self._stopping and not camera)
+        ):
             raise SideCaptureCancelled("Microscope command was stopped")
-        if self._fault:
+        if self._fault and not camera:
             raise RuntimeError(self._fault["message"])
 
     def _check_job(self, job):
@@ -1874,34 +1885,29 @@ class MicroscopeService(TurretCalibrationMixin):
                 result = self._autofocus(job, motor)
             elif job.action == "snapshot":
                 result = self._save_snapshot(job)
-            elif job.action in (
-                "start_recording",
-                "stop_recording",
-                "record_with_sequence",
-                "set_stabilization",
-            ):
+            elif job.action in RECORDING_ACTIONS:
                 result = self._recording_command(job)
             self._check_job(job)
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
-            self.stop("command-cancel", 0)
+            self.stop("command-cancel", 0, keep_recording=True)
         except _Unidentified as error:
             # No turret turn started. Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except (ValueError, CommandRejected) as error:
             outcome, message = "failed", str(error)
-            self.stop("command-refused", 0)
+            self.stop("command-refused", 0, keep_recording=True)
         except Exception as error:
             outcome, message = "failed", str(error)
             if not job.cancel.is_set():
                 self._latch_fault("command", message)
             else:
                 outcome = "stopped"
-            self.stop("command-failure", 0)
+            self.stop("command-failure", 0, keep_recording=True)
         finally:
             with self._lock:
                 if job.cancel.is_set() and outcome == "ok":
-                    self.stop("completion-authority-expired", 0)
+                    self.stop("completion-authority-expired", 0, keep_recording=True)
                     outcome, message, result = "stopped", "Microscope command was stopped", None
                 if job is self._job:
                     self._last_command = dict(
@@ -1927,7 +1933,10 @@ class MicroscopeService(TurretCalibrationMixin):
                 message_detail=message,
             )
 
-    def stop(self, client, wait_s=0):
+    def stop(self, client, wait_s=0, *, keep_recording=False):
+        # Internal motor stops (refused or failed commands, motor faults) pass
+        # keep_recording=True. Stop from a client, lease loss and shutdown end
+        # the recording without finalization.
         if (
             isinstance(wait_s, bool)
             or not isinstance(wait_s, (int, float))
@@ -1939,10 +1948,12 @@ class MicroscopeService(TurretCalibrationMixin):
                 # All accepted work and the current motor cleanup have drained.
                 # Teardown owns the devices now; Stop cannot reopen dispatch.
                 return "unconfirmed" if self._recording_stop_fault else self._stop_outcome
-            if self._job is not None:
+            if self._job is not None and not (
+                keep_recording and self._job.action in RECORDING_ACTIONS
+            ):
                 self._job.cancel.set()
             self._cancel_turret_session_locked()
-            if self._recording is not None:
+            if self._recording is not None and not keep_recording:
                 self._recording.cancel.set()
                 self._recording.finish.set()
                 self._recording_sequence["armed"] = False

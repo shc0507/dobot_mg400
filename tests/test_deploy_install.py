@@ -1379,12 +1379,7 @@ def test_proxy_rendering_keeps_verified_origins_and_upgrade_defaults(host, modul
     # The orchestrator upstream port is fixed. The settings cannot change it.
     proxy_settings(host, MG400_PROXY_BIND="::1", MG400_ORCH_PORT="9001")
     settings = module.parse_settings(host.settings.read_text())
-    registry = module.load_services(host.code / "deploy/services.toml")
-    config = module.render_proxy(
-        module.Host(host.root, source=host.code),
-        settings,
-        module.enabled_services(registry, "proxy"),
-    )
+    config = module.render_proxy(module.Host(host.root, source=host.code), settings)
     assert "bind [::1]" in config
     assert "import instrument 127.0.0.1:8772" in config
     assert "import instrument 127.0.0.1:1985" in config

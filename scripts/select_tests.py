@@ -5,6 +5,7 @@ from the arguments or, without arguments, one per line from stdin. Print one
 test file per line, or `tests` when the full suite must run.
 """
 
+import ast
 import re
 import sys
 from fnmatch import fnmatch
@@ -138,6 +139,8 @@ AREAS = [
     ("*.md", []),
     ("docs/*", []),
     (".agents/*", []),
+    # .claude/skills is a symlink to .agents/skills, so git reports the bare path.
+    (".claude/skills", []),
     (".claude/skills/*", []),
     ("skills-lock.json", []),
     ("LICENSE", []),
@@ -147,30 +150,75 @@ AREAS = [
 ]
 
 
-def importers(package, tests):
-    """Return the test files that import `package`, directly or through a test helper."""
+IMPORT = re.compile(r"""^\s*(?:from|import)\s+(\w+)|import_module\(\s*["'](\w+)""", re.MULTILINE)
+# A test or helper can load a repository file by path, for example with runpy.
+LOADED = re.compile(r"""["'/]((?:apps|deploy|examples|scripts)/[\w./-]+)""")
 
-    def users(name):
-        statement = re.compile(rf"^\s*(?:from|import)\s+{re.escape(name)}\b", re.MULTILINE)
-        return {f for f in tests.glob("*.py") if statement.search(f.read_text(encoding="utf-8"))}
 
-    direct = users(package)
-    helpers = {f.stem for f in direct if not f.name.startswith("test_")}
-    found = {f for f in direct if f.name.startswith("test_")}
-    for helper in helpers:
-        found |= {f for f in users(helper) if f.name.startswith("test_")}
-    return {f.name for f in found}
+def _imports(path, root):
+    """Return the top-level module names that `path` imports, also through files it loads."""
+    text = path.read_text(encoding="utf-8")
+    names = {a or b for a, b in IMPORT.findall(text)}
+    for relative in LOADED.findall(text):
+        loaded = root / relative
+        if loaded.is_file() and loaded != path:
+            names |= {a or b for a, b in IMPORT.findall(loaded.read_text(encoding="utf-8"))}
+    return names
+
+
+def _fixtures(conftest):
+    """Return the fixture names of `conftest` and the module names that each one imports."""
+    fixtures = {}
+    for node in ast.parse(conftest.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.FunctionDef):
+            names = set()
+            for item in ast.walk(node):
+                if isinstance(item, ast.ImportFrom) and item.module:
+                    names.add(item.module.split(".")[0])
+                elif isinstance(item, ast.Import):
+                    names |= {alias.name.split(".")[0] for alias in item.names}
+            # A fixture that requests another fixture also depends on its imports.
+            fixtures[node.name] = names | {arg.arg for arg in node.args.args}
+    return fixtures
+
+
+def importers(packages, tests, root=None):
+    """Return the test files that import one of `packages`, directly or indirectly.
+
+    Follow imports through test helpers, files that a test loads by path, and the
+    fixtures of tests/conftest.py. The area table lists the packages that import an area.
+    """
+    root = tests.parent if root is None else root
+    deps = {}
+    for helper in tests.glob("*.py"):
+        if not helper.name.startswith("test_") and helper.name != "conftest.py":
+            deps[helper.stem] = _imports(helper, root)
+    conftest = tests / "conftest.py"
+    fixtures = _fixtures(conftest) if conftest.is_file() else {}
+    deps.update(fixtures)
+    reached = set(packages)
+    while True:
+        more = {name for name, used in deps.items() if used & reached} - reached
+        if not more:
+            break
+        reached |= more
+    used = {name for name in fixtures if name in reached}
+    found = set()
+    for test in tests.glob("test_*.py"):
+        text = test.read_text(encoding="utf-8")
+        if _imports(test, root) & reached or any(re.search(rf"\b{n}\b", text) for n in used):
+            found.add(test.name)
+    return found
 
 
 def select(changed, root=ROOT):
     """Return the pytest targets for the changed paths."""
     tests = root / "tests"
     patterns = set(ALWAYS)
+    # The area table can miss a module that imports a changed package.
+    parts = [Path(path).parts for path in changed]
+    packages = {p[1] for p in parts if len(p) > 2 and p[0] == "src"}
     for path in changed:
-        # The area table can miss a module that imports the changed package.
-        parts = Path(path).parts
-        if len(parts) > 2 and parts[0] == "src":
-            patterns.update(importers(parts[1], tests))
         if fnmatch(path, "tests/test_*.py"):
             patterns.add(Path(path).name)
             continue
@@ -182,6 +230,8 @@ def select(changed, root=ROOT):
         if targets is None or FULL in targets:
             return [FULL]
         patterns.update(targets)
+    if packages:
+        patterns.update(importers(packages, tests, root))
     files = {f for p in patterns for f in tests.glob(p)}
     return sorted(f.relative_to(root).as_posix() for f in files)
 

@@ -198,6 +198,11 @@ void wake(MotorState &m) {
   digitalWrite(m.sleepPin, HIGH);
   m.wakeStartedUs = micros();
   m.power = Power::Waking;
+  // SLEEP high returns the A4988 translator to its Home microstep. The rotor then moves
+  // up to 2 full steps to a Home equilibrium. Friction can hold it until the first pulses
+  // move the field, so allow that reverse movement in the guard of this motion.
+  const long snap = static_cast<long>(2.0f * countsPerRotation / m.stepsPerRevolution) + 1;
+  m.directionOriginCounts = m.originCounts += m.direction == Direction::Clockwise ? -snap : snap;
 }
 bool prepareMotion(MotorState &m, bool refresh = true) {
   if (!initialized || m.mode != Mode::Idle || m.fault != Fault::None) return false;
@@ -338,13 +343,19 @@ void feedback(MotorState &m, const Encoders::Reading &r) {
     return;
   }
   // Count actual pulse attempts before declaring a stall: 0.001 rev/s can
-  // legitimately take seconds between steps.
-  if (labs(r.counts - m.progressCounts) >=
+  // legitimately take seconds between steps. Progress is only encoder travel in the
+  // direction of the pulses sent since the anchor. A rotor blocked by an obstruction
+  // bounces back up to 2 full steps each electrical cycle; that bounce is not progress.
+  const long pulseTravel = pulses - m.progressPulses;
+  const long countTravel = r.counts - m.progressCounts;
+  if (pulseTravel == 0) {
+    m.progressCounts = r.counts; // No pulse since the anchor: follow the shaft.
+  } else if ((pulseTravel > 0 ? countTravel : -countTravel) >=
       maximum(2.0f * EncoderConfig::EncoderNoiseCounts + 1.0f, tolerance * 0.5f)) {
     m.progressCounts = r.counts;
     m.progressPulses = pulses;
     m.lastProgressMs = millis();
-  } else if (labs(pulses - m.progressPulses) >= maximum(8.0f, ppr * 0.05f) &&
+  } else if (labs(pulseTravel) >= maximum(8.0f, ppr * 0.05f) &&
              millis() - m.lastProgressMs >= 1500) {
     fail(m, Fault::Stall);
     return;

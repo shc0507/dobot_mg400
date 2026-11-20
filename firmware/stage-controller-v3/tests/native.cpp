@@ -30,6 +30,18 @@ uint16_t physicalSpr[3] = {200,200,200};
 long pulseCount[3] = {}, reversePulses[3] = {};
 bool online[3] = {true,true,true}, magnet[3] = {true,true,true}, inverted[3] = {};
 bool jammed[3] = {};
+// A one-sided obstruction: the rotor bounces against it instead of freezing.
+int wallSide[3] = {};
+double wallAt[3] = {}, field[3] = {};
+// A4988 translator microstep within one electrical cycle, 0 = Home.
+int translator[3] = {};
+bool homeOnWake[3] = {};
+// 0: the rotor reaches the Home equilibrium 20 ms after wake. N: friction holds it
+// until pulse N moves the field, as measured on the bench Bottom axis.
+int snapPulses = 0;
+uint64_t snapAtUs[3] = {};
+long snapAtPulse[3] = {};
+double pendingSnap[3] = {}; // Field minus rotor, counts.
 int dropEvery[3] = {};
 bool accelerationSensitive[3] = {};
 double rotorPulseRate[3] = {};
@@ -50,6 +62,27 @@ int axisForChannel(uint8_t c) { assert(c<3); return c==0 ? 0 : c==1 ? 2 : 1; }
 int divisor() {
   int bits=outputs[MotorPins::MS1] | (outputs[MotorPins::MS2]<<1) | (outputs[MotorPins::MS3]<<2);
   return bits==7 ? 16 : bits==3 ? 8 : bits==2 ? 4 : bits==1 ? 2 : 1;
+}
+const uint8_t sleepPins[] = {MotorPins::BottomSleep,MotorPins::TopSleep,MotorPins::InsertSleep};
+// One electrical cycle is 4 full steps. Torque pushes toward the field for half a
+// cycle; beyond that the rotor slips back to the equilibrium behind the obstruction.
+double electricalCycle(int axis) { return 4*4096.0/physicalSpr[axis]; }
+double againstWall(int axis) {
+  const double lead=wallSide[axis]*(field[axis]-wallAt[axis]);
+  if(lead<=0) return field[axis];
+  const double cycles=lead/electricalCycle(axis);
+  return cycles-std::floor(cycles)<0.5 ? wallAt[axis]
+         : field[axis]-wallSide[axis]*electricalCycle(axis)*std::ceil(cycles);
+}
+void applySnap(int axis) {
+  if((snapAtUs[axis] && clockUs>=snapAtUs[axis]) ||
+     (snapAtPulse[axis] && pulseCount[axis]>=snapAtPulse[axis])) {
+    // The rotor moves to the nearest equilibrium of the present field.
+    const double cycle=electricalCycle(axis);
+    const double snap=pendingSnap[axis]-cycle*std::floor(pendingSnap[axis]/cycle+0.5);
+    physical[axis]+=snap; field[axis]+=snap;
+    snapAtUs[axis]=0; snapAtPulse[axis]=0; pendingSnap[axis]=0;
+  }
 }
 }
 FakeSerial Serial;
@@ -72,10 +105,21 @@ int analogRead(uint8_t pin) {
 }
 void digitalWrite(uint8_t pin,uint8_t level) {
   assert(pin<20);
+  for (int i=0;i<3;++i) if (homeOnWake[i] && pin==sleepPins[i] && level==HIGH && outputs[pin]==LOW) {
+    // SLEEP high returns the translator to Home. The rotor then moves to the nearest
+    // Home equilibrium, up to 2 full steps away in either direction.
+    pendingSnap[i]=-translator[i]*electricalCycle(i)/(4*divisor());
+    translator[i]=0;
+    if(snapPulses) snapAtPulse[i]=pulseCount[i]+snapPulses; else snapAtUs[i]=clockUs+20000;
+  }
   for (int i=0;i<3;++i) if (pin==pairs[i].step && level==HIGH && outputs[pin]==LOW) {
     ++pulseCount[i];
     int sign=outputs[pairs[i].dir]==HIGH ? 1 : -1;
     if(sign<0) ++reversePulses[i];
+    translator[i]=((translator[i]+sign)%(4*divisor())+4*divisor())%(4*divisor());
+    const bool frictionHeld=snapAtPulse[i]!=0; // The field moves; the rotor does not.
+    if(frictionHeld) pendingSnap[i]+=sign*4096.0/(physicalSpr[i]*divisor());
+    applySnap(i);
     bool accelerationDrop=false;
     if(accelerationSensitive[i]) {
       // A rotor can accelerate at 500 pulses/s^2 and capture a drive within 80 pulses/s.
@@ -87,7 +131,11 @@ void digitalWrite(uint8_t pin,uint8_t level) {
       accelerationDrop=std::fabs(requested-rotorPulseRate[i])>80;
       if(accelerationDrop) ++accelerationDrops[i];
     }
-    if(!jammed[i] && !accelerationDrop && !(dropEvery[i] && pulseCount[i]%dropEvery[i]==0))
+    if(frictionHeld) {
+    } else if(wallSide[i]) {
+      field[i] += sign * 4096.0/(physicalSpr[i]*divisor());
+      physical[i] = againstWall(i);
+    } else if(!jammed[i] && !accelerationDrop && !(dropEvery[i] && pulseCount[i]%dropEvery[i]==0))
       physical[i] += sign * 4096.0/(physicalSpr[i]*divisor());
     if(checkPhysicalBounds[i]) {
       assert(physical[i]>=testLower[i]-1e-6);
@@ -114,6 +162,7 @@ uint8_t FakeWire::requestFrom(uint8_t address,uint8_t length) {
   assert(address==0x36 && length>0 && length<=sizeof(readBuffer));
   int axis=axisForChannel(channel);
   if(!online[axis]) return 0;
+  applySnap(axis);
   long count=static_cast<long>(std::llround(physical[axis] * (inverted[axis] ? -1 : 1)));
   if(noisy[axis]) count += (millis()/12)%2 ? 2 : -2;
   uint16_t raw=static_cast<uint16_t>((count%4096+4096)%4096);
@@ -163,11 +212,13 @@ void reset() {
     analogInputs[i]=1023;
     switchPlant[i]=false;
     online[i]=magnet[i]=true; inverted[i]=(i!=0); jammed[i]=false; dropEvery[i]=0;
+    wallSide[i]=0; translator[i]=0; homeOnWake[i]=false; snapAtUs[i]=snapAtPulse[i]=0; pendingSnap[i]=0;
     noisy[i]=false; checkPhysicalBounds[i]=false;
     shortRaw[i]=shortStatus[i]=false; registerPointer[i]=0;
     rawRequests[i]=statusRequests[i]=0;
     statusOverride[i]=255;
   }
+  snapPulses=0;
   Serial.input.clear(); Serial.output.clear();
   Serial.roomProvider=nullptr; Serial.byteObserver=nullptr;
   commandLength=0; discardLine=false;
@@ -1078,7 +1129,7 @@ void testHeldRampReferenceAndRepeatedPresses() {
       assert(MotorControl::startHold());
       assert(control.referenceSpeed==0 && control.outputSpeed==0);
       const auto started=control.lastControlMs;
-      const auto origin=control.originCounts;
+      const auto origin=control.targetCounts; // Reference start; the guard anchor moves back on wake.
       float previousOutput=0; auto previousFeedback=started;
       for(int ms=0;ms<2500;++ms) {
         advance(1);
@@ -1463,10 +1514,11 @@ void testHeldDirectionPauseRecoveryAndSlowSpeed() {
       MotorControl::stopRotation(); assert(state(motor).directionWarnings==1 && !state(motor).directionPaused);
     }
   // A one-sample spike may return to the original coordinate before the stable retry.
-  reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
+  reset(); assert(MotorControl::startHold());
+  const long startAnchor=MotorControl::motors[0].originCounts; injectHeldReverse(0,40);
   manualPosition(0,0); advance(140);
   assert(!state().directionPaused && state().fault==Fault::None && state().directionWarnings==1);
-  assert(MotorControl::motors[0].originCounts==0 && state().bounds==0);
+  assert(MotorControl::motors[0].originCounts==startAnchor && state().bounds==0);
 }
 void testHeldDirectionHardBudgetFrequencyAndInstability() {
   for(long amount: {32L,33L,63L,64L,100L}) {
@@ -1477,14 +1529,14 @@ void testHeldDirectionHardBudgetFrequencyAndInstability() {
   }
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
   advance(130); assert(!state().directionPaused);
-  manualPosition(0,-64); advance(15); // Only24 further reverse counts: fixed original anchor still faults.
+  manualPosition(0,MotorControl::motors[0].originCounts-64); advance(15); // Only24 further reverse counts: fixed original anchor still faults.
   assert(state().fault==Fault::Direction && state().directionWarnings==2 && !state().directionPaused);
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
-  manualPosition(0,-64); advance(15); // Same still-paused episode must not increment again.
+  manualPosition(0,MotorControl::motors[0].originCounts-64); advance(15); // Same still-paused episode must not increment again.
   assert(state().fault==Fault::Direction && state().directionWarnings==1);
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
   for(int i=0;i<10 && state().rotating;++i) {
-    manualPosition(0,i%2 ? -40 : -48); advance(60);
+    manualPosition(0,MotorControl::motors[0].originCounts-(i%2 ? 40 : 48)); advance(60);
     if(state().rotating) assert(MotorControl::keepHoldAlive());
   }
   assert(!state().rotating && state().fault==Fault::Direction && state().directionWarnings==1);
@@ -1505,8 +1557,9 @@ void testHeldDirectionHardBudgetFrequencyAndInstability() {
       advance(100); if(state().rotating) assert(MotorControl::keepHoldAlive());
     }
     assert(!state().rotating && state().fault==Fault::Direction);
-    assert(state().directionWarnings>=1 && std::labs(Encoders::get(0).counts)>=64 &&
-           std::labs(Encoders::get(0).counts)<96);
+    // Measured from the hard anchor, which the wake moved back by the snap allowance.
+    const long reverse=std::labs(Encoders::get(0).counts-MotorControl::motors[0].originCounts);
+    assert(state().directionWarnings>=1 && reverse>=64 && reverse<96);
   }
 }
 void testHeldDirectionCancellationAndStrictOtherModes() {
@@ -1701,6 +1754,74 @@ void emitCalibrationTrace(bool positioning=false) {
 #endif
   std::cout<<Serial.output;
 }
+void testBouncingStall() {
+  // A blocked hybrid stepper does not freeze: each electrical cycle pulls the rotor
+  // back up to 2 full steps, then pushes it into the obstruction again.
+  for(bool jitter: {false,true}) for(Direction dir: {Direction::Clockwise,Direction::Counterclockwise}) {
+    reset(); noisy[0]=jitter;
+    const int side=dir==Direction::Clockwise ? 1 : -1;
+    field[0]=physical[0]; wallAt[0]=physical[0]+side*0.5*4096; wallSide[0]=side;
+    assert(MotorControl::setDirection(dir)); assert(MotorControl::rotateRevolutions(5));
+    unsigned long elapsed=0; double bounce=0;
+    while(state().rotating && elapsed<40000) {
+      advance(10); elapsed+=10;
+      if(side*(field[0]-wallAt[0])>0) bounce=std::max(bounce,side*(wallAt[0]-physical[0]));
+    }
+    // Contact comes after about 2.5 s. The push must end 1.5 s later, not at the 37 s timeout.
+    if(state().fault!=Fault::Stall || elapsed>4500)
+      std::cerr<<"bouncing stall fault="<<int(state().fault)<<" elapsed="<<elapsed<<"\n";
+    assert(state().fault==Fault::Stall && elapsed<=4500 && bounce>=20);
+    assert(side*(physical[0]-wallAt[0])<=1e-6);
+  }
+}
+void testDriverWakeSnap() {
+  // SLEEP high returns the A4988 translator to Home. The rotor snaps up to 2 full steps
+  // either way, during the wake delay or, held by friction, after the first pulses.
+  struct Case { Direction dir; int microsteps; float rotations; };
+  const Direction cw=Direction::Clockwise, ccw=Direction::Counterclockwise;
+  for(int held: {0,1}) {
+    auto sleeping=[held](int microsteps) {
+      reset(); homeOnWake[0]=true; translator[0]=microsteps; snapPulses=held;
+    };
+    // 14/18 snap 1.75 full steps against cw/ccw. 17/15 snap 1.875 full steps past a
+    // 0.001-rotation target, so the move corrects backward toward the command origin.
+    for(Case c: {Case{cw,14,.1f},Case{ccw,18,.1f},Case{cw,17,.001f},Case{ccw,15,.001f}}) {
+      sleeping(c.microsteps);
+      assert(MotorControl::setDirection(c.dir));
+      const float origin=state().position;
+      assert(MotorControl::rotateRevolutions(c.rotations));
+      finish();
+      const float expected=origin+(c.dir==cw ? -c.rotations : c.rotations);
+      assert(std::fabs(state().position-expected)<=state().tolerance+1.0/4096);
+      assert(state().directionWarnings==0);
+    }
+    // A snap against a hold is not a direction warning.
+    for(Direction dir: {cw,ccw}) {
+      sleeping(dir==cw ? 14 : 18);
+      assert(MotorControl::setDirection(dir));
+      const float origin=state().position;
+      assert(MotorControl::startHold());
+      for(int i=0;i<5;++i) { advance(200); assert(MotorControl::keepHoldAlive()); }
+      MotorControl::stopAll();
+      assert(state().fault==Fault::None && state().directionWarnings==0);
+      assert((dir==cw ? origin-state().position : state().position-origin)>.05f);
+    }
+    // Calibration starts its first seek from a sleeping driver.
+    sleeping(14); plantForCalibration(0);
+    assert(MotorControl::calibrate()); finishCalibration(Bottom);
+    // Each sleep repeats the snap, as in the bench trials: 0.0085 rotations is 1.7 full steps.
+    sleeping(0);
+    for(int i=0;i<8;++i) {
+      advance(10100); assert(outputs[MotorPins::BottomSleep]==LOW);
+      finite(.0085f, i<4 ? cw : ccw);
+    }
+    // Reverse motion beyond the snap allowance still faults.
+    sleeping(0);
+    assert(MotorControl::rotateRevolutions(.1f)); advance(30);
+    manualPosition(0,MotorControl::motors[0].originCounts-40); advance(30);
+    assert(!state().rotating && state().fault==Fault::Direction);
+  }
+}
 int main(int argc, char **argv) {
   if(argc==2 && std::strcmp(argv[1],"--trace")==0) { emitTelemetryTrace(); return 0; }
   if(argc==2 && std::strcmp(argv[1],"--calibration-trace")==0) { emitCalibrationTrace(); return 0; }
@@ -1713,6 +1834,8 @@ int main(int argc, char **argv) {
   testHoldFeedbackAndWatchdog(); std::cout<<"held velocity feedback, stop and watchdog passed\n";
   testFaultsAndRecovery(); std::cout<<"stall/sign/I2C/magnet/stale faults and explicit recovery passed\n";
   testSlowMovesAndSleep(); std::cout<<"slow movement and driver sleep/wake passed\n";
+  testBouncingStall(); std::cout<<"rotor bouncing at an obstruction faults stall in both directions passed\n";
+  testDriverWakeSnap(); std::cout<<"driver wake snap before the first pulse: moves, holds, calibration and repeated sleeps passed\n";
   testProtocolAndBounds(); std::cout<<"serial protocol and numerical bounds passed\n";
   testTimerRollover(); std::cout<<"millis/micros rollover passed\n";
   testRegisterReadsAndLiveDiagnostics();

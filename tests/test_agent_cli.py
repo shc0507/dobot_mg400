@@ -603,12 +603,33 @@ def test_do_aborts_a_held_run_once():
 
 
 def test_do_names_the_devices_to_take():
-    routes = run_routes(["running"])
+    routes = run_routes(["completed"])
     routes["api/runs"] = (409, {"error": "Take control of these devices first: robot, vision."})
     agent, http = make(routes)
     code, result = run_cli(["do", "chip-pick"], agent)
     assert code == 1 and result["hint"] == "labctl robot take; labctl vision take"
     assert http.sent("api/release") == [{}]
+
+
+def test_a_second_do_of_the_session_is_refused_before_the_lease():
+    routes = run_routes(["running"])
+    running = routes["api/state"](None)[1]
+    routes["api/state"] = (200, {**running, "lease": {"holder": "agent-t"}})
+    agent, http = make(routes)
+    for argv in (["do", "slot-state"], ["do", "no-such-recipe"], ["chip", "locate", "g1"]):
+        code, result = run_cli(argv, agent)
+        assert code == 1 and result["error"]["code"] == "busy" and result["run_id"] == "r1"
+    assert http.sent("api/heartbeat") == http.sent("api/runs") == http.sent("api/release") == []
+
+
+def test_a_refused_start_keeps_the_lease_of_an_open_run():
+    # 2 do calls of 1 session start at the same time; the second one is refused.
+    routes = run_routes(["running"])
+    routes["api/runs"] = (409, {"error": "Take control of these devices first: robot."})
+    agent, http = make(routes)
+    code, result = run_cli(["do", "slot-state"], agent)
+    assert code == 1 and result["error"]["code"] == "not_controlled"
+    assert http.sent("api/heartbeat") == [{}] and http.sent("api/release") == []
 
 
 def test_chip_locate_prints_the_slot_result():

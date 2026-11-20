@@ -318,7 +318,17 @@
     return out;
   }
 
-  /** Play 1 fragmented MP4 stream in a video element. onFail runs at most once, but not after stop. */
+  /** What a view that failed plays next: "h264" or "mjpeg" at once, or null for the same format after
+   * the backoff. H.265 turns into H.264 only when the browser or the host cannot play it (unplayable),
+   * not when the host does not answer, for example while go2rtc restarts. */
+  function fallbackFor(video, played, hevc, unplayable) {
+    if (!video || played) return null;
+    if (hevc) return unplayable ? "h264" : null;
+    return "mjpeg";
+  }
+
+  /** Play 1 fragmented MP4 stream in a video element. onFail(unplayable) runs at most once, but not
+   * after stop. unplayable is true when the browser cannot play the stream or the host has none (404). */
   function playH264(video, url, onFail) {
     const Source = mediaSource();
     const source = new Source();
@@ -329,18 +339,20 @@
       if (stopped) return;
       stopped = true;
       abort.abort();
-      video.removeEventListener("error", fail);
+      video.removeEventListener("error", decodeFailed);
       video.removeAttribute("src");
       video.srcObject = null;
       video.load?.();
       if (objectUrl) root.URL.revokeObjectURL(objectUrl);
     }
 
-    function fail() {
+    function fail(unplayable) {
       if (stopped) return;
       stop();
-      onFail();
+      onFail(unplayable);
     }
+
+    const decodeFailed = () => fail(true);
 
     function feed() {
       if (stopped || !buffer || buffer.updating) return;
@@ -358,14 +370,16 @@
         const step = chase(video.currentTime, ranges.start(ranges.length - 1), end);
         if (step.seek !== null) video.currentTime = step.seek;
         video.playbackRate = step.rate;
-      } catch { fail(); }
+      } catch { fail(true); }
     }
 
     async function pump() {
+      let unplayable = false;
       try {
         const response = await root.fetch(url, { cache: "no-store", signal: abort.signal });
         const type = response.headers.get("Content-Type") || "";
-        if (!response.ok || !response.body || !Source.isTypeSupported(type)) throw new Error("No H.264 preview");
+        unplayable = response.status === 404 || (response.ok && (!response.body || !Source.isTypeSupported(type)));
+        if (!response.ok || unplayable) throw new Error("No H.264 preview");
         buffer = source.addSourceBuffer(type);
         buffer.mode = "segments";
         buffer.addEventListener("updateend", feed);
@@ -376,14 +390,14 @@
           queue.push(value);
           queued += value.byteLength;
           // A page that cannot keep up restarts the stream at the newest frame.
-          if (queued > MAX_QUEUE) break;
+          if (queued > MAX_QUEUE) { unplayable = true; break; }
           feed();
         }
       } catch { /* The stream ended or failed. */ }
-      fail();
+      fail(unplayable);
     }
 
-    video.addEventListener("error", fail);
+    video.addEventListener("error", decodeFailed);
     source.addEventListener("sourceopen", pump, { once: true });
     if (Source === root.ManagedMediaSource) {
       video.disableRemotePlayback = true;
@@ -648,7 +662,7 @@
         this.img.hidden = true;
         this.video.hidden = false;
         this.hevc = hevcSupported();
-        this.stopVideo = playH264(this.video, videoUrl(this.view, this.hevc), () => { if (generation === this.generation) this.failed(); });
+        this.stopVideo = playH264(this.video, videoUrl(this.view, this.hevc), unplayable => { if (generation === this.generation) this.failed(unplayable); });
         this.videoRate = meter();
         this.stopCount = countFrames(this.video, this.videoRate);
       } else {
@@ -684,15 +698,18 @@
       this.paint();
     }
 
-    failed() {
+    failed(unplayable = false) {
       if (!this.running || (!this.stopVideo && this.img && this.img.src === BLANK)) return;
       this.failures++;
       this.live = false;
-      // H.265 that never played retries at once as H.264, and H.264 as MJPEG: the browser or
-      // the host cannot play it. A failed MJPEG stream retries as H.264.
-      const fallback = Boolean(this.stopVideo && !this.played);
-      if (fallback && this.hevc) hevcFailed = true;
-      else if (this.video) this.mjpeg = fallback;
+      // H.265 that never played retries at once as H.264 when the browser or the host cannot play
+      // it, and H.264 as MJPEG. A failed MJPEG stream retries as H.264. H.265 without an answer
+      // retries as H.265: H.264 would turn a 4K camera into full-size MJPEG for the page, and that
+      // fills the VPN link.
+      const next = fallbackFor(Boolean(this.stopVideo), this.played, this.hevc, unplayable);
+      const fallback = next !== null;
+      if (next === "h264") hevcFailed = true;
+      else if (this.video) this.mjpeg = next === "mjpeg";
       this.halt();
       if (this.retry) clearTimeout(this.retry);
       const generation = this.generation;
@@ -1202,6 +1219,6 @@
 
   return {
     tile, install, VIEWS, i18n, engine,
-    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalTemperatures, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, chase, frameRate, meter, measure, current, modeLine, rowFor },
+    logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalTemperatures, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, fallbackFor, chase, frameRate, meter, measure, current, modeLine, rowFor },
   };
 });

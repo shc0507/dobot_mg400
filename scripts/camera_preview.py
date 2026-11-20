@@ -443,19 +443,24 @@ class Preview(BaseHTTPRequestHandler):
     def video(self, source, hevc=False):
         """Relay the H.265 or H.264 preview of 1 camera unchanged. go2rtc names the codec for MSE.
 
-        A host without NVENC has no H.265 preview. The viewer then gets H.264.
+        A host without NVENC has no H.265 preview. The viewer then gets H.264. The status is
+        404 when go2rtc has none of the asked previews, so the console plays the next format.
+        Any other failure is 502, for example while go2rtc restarts, and the console retries.
         """
         upstream = None
+        missing = True
         for codec in ("h265", "h264") if hevc else ("h264",):
             try:
                 upstream = urllib.request.urlopen(
                     f"{GO2RTC}/api/stream.mp4?src={source}_{codec}", timeout=5
                 )
                 break
+            except urllib.error.HTTPError as error:
+                missing = missing and error.code == 404
             except (OSError, HTTPException):
-                continue
+                missing = False
         if upstream is None:
-            self.send_error(502)
+            self.send_error(404 if missing else 502)
             return
         with upstream:
             content_type = upstream.headers.get("Content-Type", "")

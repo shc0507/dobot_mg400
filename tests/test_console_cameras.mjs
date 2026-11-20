@@ -122,6 +122,20 @@ test("USB cameras and the microscope play H.264 from the proxy; the thermal view
   assert.equal(logic.videoUrl("thermal", true), null);
 });
 
+test("H.265 turns into H.264 only when it cannot play, not when the host does not answer", () => {
+  // The browser cannot decode it, or the host has no such preview (404).
+  assert.equal(logic.fallbackFor(true, false, true, true), "h264");
+  // go2rtc restarts: retry H.265 after the backoff, so a 4K camera does not turn into MJPEG.
+  assert.equal(logic.fallbackFor(true, false, true, false), null);
+  // H.264 that never played turns into MJPEG.
+  assert.equal(logic.fallbackFor(true, false, false, false), "mjpeg");
+  assert.equal(logic.fallbackFor(true, false, false, true), "mjpeg");
+  // A stream that played, and an MJPEG stream, retry the same format.
+  assert.equal(logic.fallbackFor(true, true, true, true), null);
+  assert.equal(logic.fallbackFor(true, true, false, false), null);
+  assert.equal(logic.fallbackFor(false, false, false, false), null);
+});
+
 test("a playing microscope tile is live", () => {
   const relay = { id: "microscope", fps: null };
   cameras.engine.status.set("microscope", relay);

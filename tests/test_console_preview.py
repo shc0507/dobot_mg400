@@ -384,22 +384,16 @@ def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(c
     def values(stage):
         return {motor["id"]: motor["position_rotations"] for motor in stage["motors"]}
 
-    # X/Y move only while Insert is fully out.
-    position({"insert": 0})
-    wait_stage(client, settled)
-    seen.clear()
     position({"x": 0.7, "y": 0.65})
     reached = wait_stage(client, settled)
     assert seen == ["bottom", "top"]
-    assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0}, abs=0.002)
+    assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0.5}, abs=0.002)
     seen.clear()
     position({"insert": 0.3})
     reached = wait_stage(client, settled)
     assert seen == ["insert"]
     assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0.3}, abs=0.002)
     assert service.sample_transfer.pages == {}
-    position({"insert": 0})
-    wait_stage(client, settled)
 
     for path, identity in (
         ("/lab/api/console/stop/stage", "another-page"),
@@ -427,7 +421,7 @@ def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(c
         assert state["stage_operation"]["status"] == "stopped"
         assert state["stage"]["stop_epoch"] > before
         assert values(stopped)["top"] == pytest.approx(0.7, abs=0.002)
-        assert values(stopped)["insert"] == pytest.approx(0, abs=0.002)
+        assert values(stopped)["insert"] == pytest.approx(0.3, abs=0.002)
     assert "preview-test" not in service.sample_transfer.pages
     assert not (tmp_path / "calibration" / "sample-transfer").exists()
 
@@ -485,9 +479,7 @@ def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path
     assert all(value == pytest.approx(0.5, abs=0.002) for value in capture.values())
     saved = transfer_action(client, "profile/save", {"name": "Encoder positions"})
     transfer_action(client, "profile/select", {"id": saved["draft"]["id"]})
-    # Change all axes, then require Extract -> Bottom -> Top -> Insert.
-    transfer_action(client, "move", {"target": "fully_out"})
-    assert transfer_idle(client)["operation"]["status"] == "completed"
+    # Change all axes, then require the recorded Bottom -> Top -> Insert sequence.
     for motor in ("bottom", "top", "insert"):
         transfer_action(client, "jog", {"motor": motor, "direction": "ccw"})
         assert transfer_idle(client)["operation"]["status"] == "completed"
@@ -506,7 +498,7 @@ def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path
         client.post("/lab/api/console/heartbeat", json={}, headers=HEADERS)
         time.sleep(0.03)
     assert state["operation"]["status"] == "completed", state["operation"]
-    assert seen == ["insert", "bottom", "top", "insert"]
+    assert seen == ["bottom", "top", "insert"]
     assert state["position"] == pytest.approx(capture, abs=0.002)
     # Transfer uses the live Insert bounds before any XY stage target is recorded.
     reference = state["transfer_reference"]["targets_rotations"]
@@ -519,8 +511,7 @@ def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path
         assert reached["position"] == pytest.approx(
             {"x": capture["x"], "y": capture["y"], "insert": target}, abs=0.002
         )
-    transfer_action(client, "move", {"target": "fully_out"})
-    insert = transfer_idle(client)["position"]["insert"]
+    insert = reached["position"]["insert"]
     for endpoint, target in (("out_stage", 0.3), ("microscope", 0.7)):
         for motor in ("bottom", "top"):
             result = client.post(

@@ -59,7 +59,7 @@
 
 **Stage position** 保留 X/Y 和 Insert 行程图，供新的位置来源使用。没有来源时，读数显示 **—**，图中不显示位置标记。Motion 不启动 Position Finder，不采集其相机图像，也不使用其校准。电机脉冲计数不作为测量坐标。
 
-取得位移台控制权、反馈未过期且限位已标定时，双击 X/Y 图或 Insert 行程图可选择目标。闪烁标记显示目标，当前位置标记保留。在 5 s 内点击 **Confirm move**，或点击 **Cancel**。未确认的目标到期后清除，不移动电机。X/Y 先移动 Bottom，再移动 Top，Insert 不变。Insert 目标只移动 Insert。炉管相对 X/Y 固定，因此 Insert 已校准且在坐标 `0` 的容差内时，X/Y 才移动，否则拒绝移动。坐标使用圈数，不修改已存配置。STOP 取消移动并清除目标。
+取得位移台控制权、反馈未过期且限位已标定时，双击 X/Y 图或 Insert 行程图可选择目标。闪烁标记显示目标，当前位置标记保留。在 5 s 内点击 **Confirm move**，或点击 **Cancel**。未确认的目标到期后清除，不移动电机。X/Y 先移动 Bottom，再移动 Top，Insert 不变。Insert 目标只移动 Insert。坐标使用圈数，不修改已存配置。STOP 取消移动并清除目标。
 
 视图：
 
@@ -222,11 +222,11 @@ Monitor 使用所选的已保存配置。草稿修改在保存后才用于监测
 
 **Extract Sample** 只将 Insert 移到坐标 `0`。**Insert Sample** 只将 Insert 移到固件当前的上限。这些动作要求 Insert 已校准且反馈未过期，不需要已存配置。坐标 `0` 必须在当前限位内。X/Y 不移动。
 
-在 **Calibration** 中，为 **Move Out Stage** 和 **Move to Microscope** 记录 X/Y 位置，再选择 **Save profile**。每条记录只包含 X 和 Y 编码器圈数。在 Operate 中，各按钮使用所选已存配置的目标，先移动 Bottom，再移动 Top。Insert 不移动。记录这些位置不要求 Insert 已校准。移动时，Insert 必须已校准且完全取出。先点击 **Extract Sample**。缺少目标、目标超出限位或 Insert 未取出时，对应动作不可用。
+在 **Calibration** 中，为 **Move Out Stage** 和 **Move to Microscope** 记录 X/Y 位置，再选择 **Save profile**。每条记录只包含 X 和 Y 编码器圈数。在 Operate 中，各按钮使用所选已存配置的目标，先移动 Bottom，再移动 Top。Insert 不移动，记录这些位置也不要求 Insert 已校准。缺少目标或目标超出限位时，对应动作不可用。
 
-在 **Calibration** 中手动调整电机到目标位置。每次按键移动 0.1 转。X/Y 按键要求 Insert 完全取出。输入位置名称，再选择 **Record position**。服务器记录各轴新鲜、静止的编码器坐标。**Record again** 替换草稿中的该位置。保存配置后，才能在 Operate 使用这些位置。
+在 **Calibration** 中手动调整电机到目标位置。每次按键移动 0.1 转。输入位置名称，再选择 **Record position**。服务器记录各轴新鲜、静止的编码器坐标。**Record again** 替换草稿中的该位置。保存配置后，才能在 Operate 使用这些位置。
 
-在 **Operate** 中，**Move to position** 使用所选的已存配置。移动顺序为 Bottom、Top、Insert。Insert 未取出且 X/Y 需要移动时，先将 Insert 移到 `0`。每次只移动 1 个轴。当前轴达到固件报告的容差后，才启动下一轴。已在容差内的轴跳过。固件控制各次绝对移动。反馈过期、故障、失去控制权或停止都会取消剩余动作。此工作区尚未实现芯片识别和机械臂转移。
+在 **Operate** 中，**Move to position** 使用所选的已存配置。移动顺序为 Bottom、Top、Insert，每次只移动 1 个轴。当前轴达到固件报告的容差后，才启动下一轴。已在容差内的轴跳过。固件控制各次绝对移动。反馈过期、故障、失去控制权或停止都会取消剩余动作。此工作区尚未实现芯片识别和机械臂转移。
 
 新配置的默认名称为 `Stage Coordinate Calibration YYYY-MM-DD`，日期取浏览器当前的本地日期。**Save profile** 保存新配置。有命名位置或 X/Y 目标时，同时选中该配置。编辑当前所选配置后保存，即使结果为空也会选中，因此移除全部已存目标会禁用对应动作。取出和插入不依赖配置。**Load draft** 继续编辑，不切换所选配置。列表支持 **Select**、**Delete**、**Upload JSON** 和 **Download**。可以删除草稿中的单个位置或 X/Y 目标，再保存。草稿修改在保存前不会改变已存目标。选择配置不会移动电机。
 

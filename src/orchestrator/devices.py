@@ -15,23 +15,56 @@ from .clients import SERVICES
 STATE_S = 0.25
 EVENTS_S = 1.0
 STALE_S = 3
-# State history: a row at each phase or normalized change, else at most one per SAMPLE_S.
+# State history: a row at each phase or normalized change, at most one per SAMPLE_S for
+# a value change, and one each HEARTBEAT_S without a change, so a gap means no reads.
 SAMPLE_S = 10.0
+HEARTBEAT_S = 300.0
 KEEP_S = 30 * 24 * 3600
 PRUNE_S = 3600.0
-# Top-level state keys that change at each read. A change in only these keys writes no row.
-VOLATILE = (
-    "ts_unix",
-    "seq",
-    "version",
-    "sampled_at",
-    "sample_time",
-    "fps",
-    "frames",
-    "frame_age_s",
-    "frame_sequence",
-    "camera_stats",
+# State keys, at any depth, that change at each read: clocks, counters, ages and raw
+# sensor counts. A change in only these keys writes no row.
+VOLATILE = frozenset(
+    {
+        "ts_unix",
+        "seq",
+        "version",
+        "sampled_at",
+        "sample_time",
+        "fps",
+        "frames",
+        "frame_age_s",
+        "frame_sequence",
+        "camera_stats",
+        "remaining_s",
+        "finished_at",
+        "telemetry_age_ms",
+        "limit_telemetry_age_ms",
+        "encoder_age_ms",
+        "encoder_raw",
+        "switch_raw",
+    }
 )
+# Numeric state keys with read noise. A change smaller than the step from the last
+# stored row writes no row. Stage positions are rotations; robot values are mm and degrees.
+NOISE = {
+    "position": 0.002,
+    "position_rotations": 0.002,
+    "measured_speed": 0.01,
+    "joints": 0.05,
+    "actual": 0.05,
+}
+
+
+def changed(old, new, key=None):
+    """True when the state new differs from old in a key that has a meaning."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        return any(changed(old.get(k), new.get(k), k) for k in (old.keys() | new.keys()) - VOLATILE)
+    if isinstance(old, list) and isinstance(new, list):
+        return len(old) != len(new) or any(changed(a, b, key) for a, b in zip(old, new))
+    step = NOISE.get(key)
+    if step and type(old) in {int, float} and type(new) in {int, float}:
+        return abs(new - old) >= step
+    return old != new
 
 
 def _flag(value):
@@ -136,11 +169,11 @@ class Devices:
         state = entry["state"]
         row = normalize(name, state, entry["describe"]) if entry["phase"] == "ready" else {}
         key = (entry["phase"], row)
-        values = {k: v for k, v in state.items() if k not in VOLATILE} if state else None
         last = self.recorded.get(name)
         now = time.time()
-        if last and last[0] == key and (last[1] == values or now - last[2] < SAMPLE_S):
-            return
+        if last and last[0] == key and now - last[2] < HEARTBEAT_S:
+            if now - last[2] < SAMPLE_S or not changed(last[1], state):
+                return
         try:
             store.add_device_state(name, now, entry["phase"], row, state)
             with self.lock:
@@ -151,7 +184,7 @@ class Devices:
                 store.prune_devices(now - KEEP_S)
         except Exception:
             return  # The store is closed or unavailable; the next read tries again.
-        self.recorded[name] = (key, values, now)
+        self.recorded[name] = (key, copy.deepcopy(state), now)
 
     def _run(self, name):
         adapter = description = None

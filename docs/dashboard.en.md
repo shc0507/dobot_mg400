@@ -50,7 +50,7 @@ The workspaces send manual commands through the console. The console forwards ea
 - **Control** follows **Getting started**. It has 1 row for each device with **Take control** or **Release**, and **Release all**. See [Control](#control).
 - **Run** shows the current run and its steps. The card shows only while a run exists. See [run control and recovery](#run-control-and-recovery).
 - **Events** merges the `api/events` of each service, newest first. You can filter for warnings or for 1 service. Only a warning or an error shows its level. A successful vision inference is not an event.
-- The orchestrator keeps the events and the device state changes in `/var/lib/mg400/runs/runs.db` for 30 days. They stay after a service restart. A device whose values change gets at most 1 state row each 10 s. `api/console/history` and `labctl all history` read the state rows.
+- The orchestrator keeps the events and the device state changes in `/var/lib/mg400/runs/runs.db` for 30 days. They stay after a service restart. A device whose values change gets at most 1 state row each 10 s. A phase or status change gets a row at once. Clocks, counters, data ages, raw sensor counts, lease countdowns and small read noise in positions, speeds and joint angles are not changes. A device without changes gets 1 row each 5 min, so a gap in the rows means that the orchestrator did not read the device. `api/console/history` and `labctl all history` read the state rows.
 - **Safety** gives **Stop heat and gas** and **Stop all gas**. **STOP ALL MOTION** is in the header. Each button acts on 1 press. The stop result band shows the results.
 
 ### Motion workspace

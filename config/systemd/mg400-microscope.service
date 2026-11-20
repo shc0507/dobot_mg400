@@ -13,7 +13,10 @@ Environment=LD_LIBRARY_PATH=/usr/local/lib/mg400
 WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv/bin/python -m microscope
 Restart=on-failure
-RestartSec=3
+# Each start resets the Arduino, so retry less often.
+RestartSec=10
+# A startup refusal (exit status 2) is a configuration error: do not restart.
+# A device, model or serving failure exits 1 and restarts.
 RestartPreventExitStatus=2
 UMask=0077
 # Do not kill accepted camera or motor cleanup while it is still draining.

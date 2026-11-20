@@ -58,7 +58,7 @@ Command-line options override environment settings. Empty environment values use
 
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
-Configuration and startup failures exit with status 2.
+Invalid configuration exits with status 2, and systemd does not restart the service. A model load, camera or serving failure exits with status 1, and systemd restarts the service after 3 s.
 
 For CUDA, the service calls `torch.cuda.set_per_process_memory_fraction` before loading the localizer.
 The fraction limits PyTorch allocations for this process. Other CUDA allocations can use additional memory.

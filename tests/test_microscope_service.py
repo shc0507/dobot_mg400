@@ -107,8 +107,21 @@ def test_cli_rejects_bad_settings_before_construction(port):
     assert error.value.code == 2
 
 
+def test_cli_refuses_invalid_measured_configuration_with_status_two(monkeypatch):
+    from microscope import calibrate
+
+    monkeypatch.setattr(calibrate, "SWITCH_FOCUS", 10**9)
+    with pytest.raises(SystemExit) as error:
+        microscope_main.main(
+            [],
+            environ={},
+            service_factory=lambda *_args, **_kwargs: pytest.fail("service constructed"),
+        )
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize("failure", ["startup", "server", "service_close"])
-def test_cli_failure_still_cleans_both_resources_and_exits_two(monkeypatch, failure):
+def test_cli_failure_still_cleans_both_resources_and_exits_one(monkeypatch, failure):
     handlers = fake_cli_signal(monkeypatch)
     service, server = AdapterService(), SimpleNamespace(closed=False)
 
@@ -133,7 +146,8 @@ def test_cli_failure_still_cleans_both_resources_and_exits_two(monkeypatch, fail
             service_factory=lambda config, demo: service,
             server_factory=make_server,
         )
-    assert error.value.code == 2 and server.closed
+    # Status 1 lets systemd restart after a missing device or a serving failure.
+    assert error.value.code == 1 and server.closed
     assert service.closed or failure == "service_close"
     assert handlers == {2: 0, 15: 0, 1: 0}
 

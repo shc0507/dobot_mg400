@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -225,6 +226,41 @@ def test_killed_cli_during_do_holds_the_run(runs):
     while not orchestrator_state(runs)["active_run"]["closed"]:
         assert time.monotonic() < deadline
         time.sleep(0.1)
+    request = urllib.request.Request(runs + "api/release", b"{}", headers)
+    opener.open(request, timeout=5).close()
     code, result = labctl(runs, "all", "session", session="kill")
     assert [item["lent"] for item in result["control"]] == [False]
     assert labctl(runs, "all", "release", session="kill")[0] == 0
+
+
+def test_a_second_do_of_the_session_leaves_the_run_running(runs):
+    assert labctl(runs, "robot", "take", session="twice")[0] == 0
+    process = subprocess.Popen(
+        [sys.executable, "-m", "orchestrator", "do", "robot-wait"]
+        + ["--url", runs, "--session", "twice"],
+        stdout=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 20
+    while (active := orchestrator_state(runs).get("active_run") or {}).get("closed", True) or (
+        active.get("step") != 1
+    ):
+        assert time.monotonic() < deadline, (active, process.poll())
+        time.sleep(0.1)
+    for argv in (("do", "robot-wait"), ("do", "no-such-recipe"), ("chip", "locate", "g1")):
+        code, result = labctl(runs, *argv, session="twice")
+        assert code == 1 and result["error"]["code"] == "busy", result
+        assert result["run_id"] == active["run_id"]
+    assert orchestrator_state(runs)["active_run"]["status"] == "running"
+    # The first do still holds its lease: Ctrl-C aborts its run.
+    process.send_signal(signal.SIGINT)
+    output, _ = process.communicate(timeout=20)
+    result = json.loads(output)
+    assert process.returncode == 130 and result["run_id"] == active["run_id"], result
+    deadline = time.monotonic() + 20
+    while not orchestrator_state(runs)["active_run"]["closed"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.1)
+    assert orchestrator_state(runs)["active_run"]["status"] == "aborted"
+    code, result = labctl(runs, "all", "session", session="twice")
+    assert [item["lent"] for item in result["control"]] == [False]
+    assert labctl(runs, "all", "release", session="twice")[0] == 0

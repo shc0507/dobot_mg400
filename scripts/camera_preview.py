@@ -115,8 +115,6 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
             if (
                 headers.get_content_type() != "image/jpeg"
                 or not 4 <= len(frame) <= max_frame
-                or not frame.startswith(b"\xff\xd8")
-                or not frame.endswith(b"\xff\xd9")
                 or (
                     headers.get("Content-Length") is not None
                     and int(headers["Content-Length"]) != len(frame)
@@ -124,12 +122,22 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
             ):
                 raise ValueError("Invalid or incomplete JPEG frame")
             del buffer[: next_part + 2]
-            yield frame
+            # A camera can send cut frames without a JPEG end marker. The 4K camera does
+            # this for about 0.5 s after its stream starts. Skip them.
+            if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
+                yield frame
+
+
+def still_mode(stream):
+    """Largest AC410 mode. A camera above 1280x720 keeps its own: the 4K one has no 4000x3000."""
+    if stream in CAMERAS.preloaded:
+        return STILL_MODE
+    return CAMERAS.mode(CAMERAS.streams.index(stream) + 1)
 
 
 def still_overlay(stream):
-    """Return the go2rtc overlay that streams only `stream`, at the largest MJPEG mode."""
-    width, height, fps = STILL_MODE
+    """Return the go2rtc overlay that streams only `stream`, at its still mode."""
+    width, height, fps = still_mode(stream)
     lines = []
     for name, device in zip(CAMERAS.streams, CAMERAS.devices):
         source = (
@@ -190,7 +198,7 @@ def grab_still(stream):
                     size = jpeg_size(frame)
                 except RuntimeError:
                     continue
-                if now - start >= STILL_SETTLE_S and size == STILL_MODE[:2]:
+                if now - start >= STILL_SETTLE_S and size == still_mode(stream)[:2]:
                     return frame
         raise OSError("The camera sent no full-resolution frame")
     finally:
@@ -302,6 +310,15 @@ class CameraFeed:
                 time.sleep(0.5)
 
 
+def first_complete_frame(feed):
+    """Start an idle camera for 1 frame. go2rtc's frame.jpeg returns its first frame, often cut."""
+    feed.start()
+    try:
+        return feed.wait_after(0, timeout=5)[1]
+    finally:
+        feed.release()
+
+
 def stream_fps(query):
     """Return the frame rate cap of 1 stream request, or None for an unknown query."""
     if not query:
@@ -370,11 +387,15 @@ class Preview(BaseHTTPRequestHandler):
         if query or route not in STREAMS:
             self.send_error(404)
             return
+        stream = STREAMS[route]
         try:
-            with urllib.request.urlopen(
-                GO2RTC + "/api/frame.jpeg?src=" + STREAMS[route], timeout=2
-            ) as upstream:
-                body = upstream.read()
+            if stream in CAMERAS.preloaded:
+                with urllib.request.urlopen(
+                    GO2RTC + "/api/frame.jpeg?src=" + stream, timeout=2
+                ) as upstream:
+                    body = upstream.read()
+            else:
+                body = first_complete_frame(FEEDS[stream])
         except (urllib.error.URLError, OSError):
             self.send_error(502)
             return

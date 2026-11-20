@@ -271,10 +271,11 @@ def test_mjpeg_parser_rejects_content_length_mismatch(preview, length):
 
 @pytest.mark.parametrize("frame", [b"not-jpeg", b"\xff\xd8no-end", b"no-start\xff\xd9"])
 @pytest.mark.parametrize("lengths", [False, True])
-def test_mjpeg_parser_rejects_missing_jpeg_markers(preview, frame, lengths):
+def test_mjpeg_parser_skips_frames_without_jpeg_markers(preview, frame, lengths):
     module, _ = preview
-    with pytest.raises(ValueError):
-        next(module.iter_mjpeg(ChunkedUpstream(multipart([frame], lengths))))
+    good = b"\xff\xd8good\xff\xd9"
+    upstream = ChunkedUpstream(multipart([frame, good], lengths))
+    assert list(module.iter_mjpeg(upstream)) == [good]
 
 
 @pytest.mark.parametrize("lengths", [False, True])
@@ -555,15 +556,48 @@ def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch)
         "MG400_CAMERA_DEVICES",
         ",".join(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)),
     )
-    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,1600x1200@30")
+    monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,3840x2160@30,640x480@30,640x480@30")
     module = load_preview()
-    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, True, True]
+    assert [feed.on_demand for feed in module.FEEDS.values()] == [False, True, False, False, True]
     for route in ("", "preview.js", "camera4/detections.json"):
         assert request(module, route)[0] == 404
     upstream.assert_not_called()
     assert request(module, "camera4.jpg")[2] == b"\xff\xd8camera-frame\xff\xd9"
     upstream.assert_called_once_with("http://127.0.0.1:1984/api/frame.jpeg?src=camera4", timeout=2)
     assert all(feed.thread is None for feed in module.FEEDS.values())
+
+
+def test_large_camera_snapshot_skips_cut_start_frames_and_stops_the_camera(preview, monkeypatch):
+    _, upstream = preview
+    monkeypatch.setenv("MG400_CAMERA_MODES", "3840x2160@30,640x480@30,640x480@30")
+    module = load_preview()
+    closed = Event()
+    stream = MJPEG([b"\xff\xd8cut", b"\xff\xd8cut-again", b"\xff\xd8whole\xff\xd9"])
+    stream.seek(len(stream.getvalue()) - len(b"--frame--"))
+    stream.write(b"--frame\r\n")
+    stream.seek(0)
+    read1 = stream.read1
+    # The camera keeps streaming until the reader closes the connection.
+    stream.read1 = lambda size: read1(size) or (closed.wait(2), b"")[1]
+    upstream.side_effect = lambda *_args, **_kwargs: stream
+    feed = module.FEEDS["camera1"]
+    status, _, body = request(module, "camera1.jpg")
+    reader = feed.thread
+    closed.set()
+    reader.join(timeout=2)
+    assert (status, body) == (200, b"\xff\xd8whole\xff\xd9")
+    upstream.assert_called_once_with(
+        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera1", timeout=None
+    )
+    assert not reader.is_alive() and feed.thread is None and feed.viewers == 0
+
+
+def test_full_still_of_a_large_camera_keeps_its_own_mode(preview, monkeypatch):
+    monkeypatch.setenv("MG400_CAMERA_MODES", "3840x2160@30,640x480@30,640x480@30")
+    module = load_preview()
+    assert module.still_mode("camera1") == (3840, 2160, 30)
+    assert module.still_mode("camera2") == (4000, 3000, 15)
+    assert "&video_size=3840x2160&framerate=30" in module.still_overlay("camera1")
 
 
 def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(preview, monkeypatch):

@@ -556,6 +556,62 @@ def test_stop_reopens_ports_after_a_dead_serial_handle(lab, monkeypatch):
     assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
 
 
+def replug(transport):
+    """Model a USB reset: the old handle stays open but fails; a new open works."""
+
+    def dead(data):
+        raise serial.SerialException("write failed: [Errno 5] Input/output error")
+
+    def reopen():
+        del transport.write, transport.open
+        transport.open()
+
+    transport.write, transport.open = dead, reopen
+
+
+def test_poll_fault_after_furnace_usb_reset_stops_heat_on_a_new_handle(lab):
+    lab.service.start_sequence(
+        recipe(hold=60, gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+    enter_hold(lab)
+    replug(lab.serial)
+    lab.factories.clear()
+    result = lab.service.poll_once()
+    assert result["locked"]
+    assert lab.factories == [("furnace", "sim://furnace")]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert lab.mfc.channel_state(7)["actual_percent"] == 0
+    assert lab.service.connected
+    lab.service.lease.acquire("operator")
+    assert not lab.service.acknowledge(client="operator")["locked"]
+
+
+def test_gas_usb_reset_at_step_change_stops_gas_on_a_new_handle(lab):
+    steps = recipe(30, 0, gas={0: 10}) + recipe(35, 0, gas={0: 20})
+    lab.service.start_sequence(steps, end_gas={0: 5}, end_gas_until_c=26, client="operator")
+    enter_hold(lab)
+    replug(lab.mfc)
+    lab.factories.clear()
+    result = lab.service.poll_once()
+    assert result["locked"]
+    assert lab.factories == [("flow", "sim://mfc")]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
+    assert all(lab.mfc.channel_state(unit)["override"] == "closed" for unit in GAS_UNITS)
+    flow = lab.service.flow_status()
+    assert [channel["target_percent"] for channel in flow["gas_channels"]] == [0, 0, 0]
+
+
+def test_failed_zero_keeps_the_last_gas_target(lab, monkeypatch):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    dead = lambda packet: (_ for _ in ()).throw(OSError("device unplugged"))  # noqa: E731
+    monkeypatch.setattr(lab.mfc, "write", dead)
+    monkeypatch.setattr(lab.mfc, "open", lambda: None)
+    assert lab.service.stop_all_flow()["locked"]
+    assert lab.service.flow_status()["gas_channels"][0]["target_percent"] == 20
+    assert lab.store.load()["gas_plan"]["0"] == 20
+
+
 def test_intent_is_durable_before_first_output(lab, monkeypatch):
     original = lab.service.furnace.set_ramp_rate
 
@@ -688,16 +744,29 @@ def test_disconnect_clears_tracking_and_preserves_failed_stop(lab, monkeypatch, 
     lab.service.start_sequence(recipe(), client="operator")
     if failed:
 
-        def fail():
+        def fail(self):
             raise RuntimeError("STOP failed")
 
-        monkeypatch.setattr(lab.service.furnace, "set_stop", fail)
+        monkeypatch.setattr(Furnace, "set_stop", fail)
     result = lab.service.disconnect(client="operator")
     assert not result["sequence"]["running"]
     assert result["locked"] is failed
     assert lab.store.load()["phase"] == ("fault" if failed else "stopped")
-    # Retain a failed transport for explicit stop attempts instead of detaching it.
-    assert lab.serial.is_open is failed
+
+
+def test_stop_failure_on_one_handle_retries_on_a_new_handle(lab, monkeypatch):
+    lab.service.start_sequence(recipe(), client="operator")
+
+    def fail():
+        raise RuntimeError("STOP failed")
+
+    monkeypatch.setattr(lab.service.furnace, "set_stop", fail)
+    assert not lab.service.stop_sequence()["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert any(
+        event["message"] == "Heat stopped after reopening the furnace port"
+        for event in lab.service.events.since()["events"]
+    )
 
 
 def test_reopen_primes_new_target_before_restoring_normal_valve(lab, monkeypatch):

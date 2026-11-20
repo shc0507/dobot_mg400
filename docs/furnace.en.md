@@ -163,6 +163,8 @@ If all persistent writes and invalidation fail, the service cannot guarantee a d
 **Stop heat and gas** in the console, and `POST /api/stop` cancel remaining steps and attempt both output stops.
 A confirmed response requires verified stopped heat and gas. Otherwise the response remains unconfirmed.
 Without a gas controller, or without gas readback, a stop remains unconfirmed.
+If a stop command fails on an open port, the service closes the port, opens it again, and sends the stop 1 more time. This covers a USB adapter reset. Automatic stops after a fault also do this.
+A gas channel shows a target of 0 % only after the controller accepts the zero setpoint.
 Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
 
 Before host maintenance, coordinate shutdown with all clients.

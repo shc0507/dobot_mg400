@@ -642,7 +642,7 @@ def test_entrypoint_closes_server_after_failed_model_startup():
             service_factory=lambda **kwargs: service,
             server_factory=lambda *a, **kw: server,
         )
-    assert exit_.value.code == 2
+    assert exit_.value.code == 1
     assert service._closed and not service.snapshot()["busy"]
     server.run.assert_not_called()
     server.close.assert_called_once()

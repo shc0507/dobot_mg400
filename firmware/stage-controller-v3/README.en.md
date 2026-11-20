@@ -31,7 +31,7 @@ Normal switch contact stops outward travel. It does not reset the position or ch
 
 Relative moves and holds use measured rotations. Absolute moves require completed calibration, valid bounds and fresh healthy encoder feedback. Resetting the position or changing a bound invalidates completed calibration. Stop cancels calibration and movement without restarting them.
 
-The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². At 200 full steps per revolution, the maximum speed is 0.5 rotations/s. Drivers sleep after 10 s idle. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
+The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². At 200 full steps per revolution, the maximum speed is 0.5 rotations/s. Drivers sleep after 10 s idle. A wake can move a shaft up to 2 full steps. The reverse-direction check allows this movement in the first move after a wake. A move stops with a `stall` fault after at least 1.5 s and 0.05 rotations of pulses without encoder movement in the pulse direction. Back-and-forth movement at an obstruction does not count. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
 
 Positions and bounds are in RAM. Arduino reset or power loss invalidates them. Recalibrate before using absolute targets. A single-turn AS5600 cannot recover rotations made while power was off.
 

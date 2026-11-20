@@ -372,6 +372,13 @@ def test_no_wait_returns_the_command_id_and_wait_finds_it():
     assert code == 0 and result["outcome"] == "ok"
 
 
+def test_wait_without_a_command_id_reads_fresh_state():
+    agent, http = make({"api/console/state/robot": states({"busy": False, "last_command": None})})
+    code, result = run_cli(["robot", "wait"], agent)
+    assert code == 0 and result["outcome"] == "ok"
+    assert http.calls == [("api/console/state/robot?fresh=1", None)]
+
+
 def test_record_start_makes_a_recording_id():
     agent, http = make(
         {

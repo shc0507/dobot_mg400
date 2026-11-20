@@ -1055,7 +1055,9 @@ def test_labkit_client_drives_the_robot_contract():
             wait_for(lambda: not agent.state()["syncing"])
             assert agent.state()["lease"]["holder"] is None
             assert not agent.state()["locked"]
-            assert other.stop()["stop"] in {"confirmed", "pending"}
+            # Any client may stop. Feedback stops with the disconnect, so a stop
+            # that runs 0.25 s later cannot be confirmed; all outcomes are valid.
+            assert other.stop()["stop"] in {"confirmed", "pending", "unconfirmed"}
     finally:
         state.close()
 

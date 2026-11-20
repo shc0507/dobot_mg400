@@ -62,6 +62,8 @@ Shortcuts:
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
 
+Run `microscope zero` only after an operator puts the 50x objective in focus at the clearance position. Do not use it to recover from a failed command: zero at another height moves the focus limits.
+
 Stage coordinates use measured shaft rotations. Absolute `goto` requires completed calibration, valid bounds and fresh encoder feedback. Use Sample Transfer for saved positions. The old stage `home`, `zero` and `pose` shortcuts, and named `goto`, are unsupported.
 
 Each command waits for its result. The default `--timeout` is 300 seconds. `--no-wait` returns after the console accepts the command.
@@ -76,6 +78,7 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 - Take every device of the recipe first. Otherwise the call fails, and `hint` names the `take` commands.
 - The run borrows the session's devices. The console keeps the leases, so the arm stays enabled and the microscope keeps focus zero. During the run, the session cannot command these devices. Stops still work.
 - The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
+- Run 1 `do` at a time in a session. During a run, `do` and `chip locate` of the same session fail with `busy`. The run continues.
 - If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort the run on the Overview.
 - The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
 - The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.

@@ -94,7 +94,9 @@ def main(
             for number, handler in previous.items():
                 signal.signal(number, handler)
     if failure:
-        parser.exit(2, failure + "\n")
+        # Status 2 means a configuration refusal, which systemd does not restart.
+        # A device or serving failure exits 1, so systemd retries it.
+        parser.exit(1, failure + "\n")
     return 0
 
 

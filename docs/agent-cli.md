@@ -62,6 +62,8 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
 
+只在操作员把 50x 物镜在避让位置对焦后，才运行 `microscope zero`。不要用它从失败的命令中恢复：在其他高度置零会移动对焦限位。
+
 位移台坐标使用实测轴圈数。绝对 `goto` 要求完成标定、有效限位和未过期的编码器反馈。已存位置使用 Sample Transfer。旧位移台快捷命令 `home`、`zero`、`pose` 和按名称的 `goto` 均不支持。
 
 每条命令等待其结果。默认 `--timeout` 为 300 秒。`--no-wait` 在控制台接受命令后返回。
@@ -76,6 +78,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
+- 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
 - 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。

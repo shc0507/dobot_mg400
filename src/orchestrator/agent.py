@@ -116,7 +116,8 @@ def hint(device, code, state=None):
     if device == "robot" and state.get("alarms"):
         return "labctl robot clear-alarm"
     if device == "microscope" and state.get("focus_zero_known") is False:
-        return "labctl microscope zero"
+        # Never hint `zero`: FOCUS ZERO at an arbitrary height shifts the focus limits.
+        return "labctl microscope state"
     return {
         "not_controlled": f"labctl {device} take",
         "held_by_other": "labctl all session",
@@ -541,6 +542,12 @@ class Agent:
         info = {"recipe": recipe}
         try:
             self.beat()
+            # All calls of this session share 1 orchestrator lease. A second do
+            # would release it at its end, and the release holds the first run.
+            status, state = self.http.request("api/state")
+            if status == 200 and (state.get("lease") or {}).get("holder") == self.page:
+                message = "This session already runs a recipe. Wait for it to end."
+                return failure("busy", message, run_id=self._open_run(state), **info)
             status, body = self.http.request("api/heartbeat", {})
         except Unreachable as error:
             return failure("unreachable", str(error), **info)
@@ -577,10 +584,13 @@ class Agent:
         finally:
             done.set()
             worker.join(BEAT_S * 3)
-            try:
-                self.http.request("api/release", {})
-            except Unreachable:
-                pass
+            # A refused start leaves the lease to a run that another do of this
+            # session started at the same time.
+            if run_id is not None or self._open_run() is None:
+                try:
+                    self.http.request("api/release", {})
+                except Unreachable:
+                    pass
         if run_id is not None:
             result.update(run_id=run_id, steps=self._steps(run_id))
         try:
@@ -596,6 +606,20 @@ class Agent:
             return None
         active = body.get("active_run") if status == 200 else None
         return active.get("run_id") if isinstance(active, dict) else None
+
+    def _open_run(self, state=None):
+        """Return the ID of the run that is not closed, or None."""
+        if state is None:
+            try:
+                status, state = self.http.request("api/state")
+            except Unreachable:
+                return None
+            if status != 200:
+                return None
+        active = state.get("active_run")
+        if isinstance(active, dict) and not active.get("closed", True):
+            return active.get("run_id")
+        return None
 
     def _abort(self, run_id):
         try:

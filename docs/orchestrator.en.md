@@ -275,6 +275,8 @@ For a live held run, use the runner's recovery prompt instead.
 
 On failure or timeout, the runner revokes the failed step and requests a stop from every acquired service. With `on_fail = "hold"`, it retains the leases and waits for a person. It never retries the failed step.
 
+A run that holds the robot also holds when another client stops or disables the robot: **STOP ALL MOTION**, **Stop arm**, **Disable**, or `labctl robot stop`. This includes a run that `labctl run` starts. The runner reads the robot state before each robot command and during each step. A resume accepts all earlier stops.
+
 At the prompt, enter `abort` to terminate the run. To continue after manual completion, enter `manually-completed` and supply a nonempty resolution note. The old worker, helper calls, and in-flight service operations must finish. The runner then requires fresh stop confirmation or verified robot rest after an explicit manual `disable`. Robot rest requires the latest command to confirm successful disable, current disabled and idle feedback, and no keyboard activity. Without this proof, and during ordinary stop, hold, abort, or cleanup, the runner sends Stop.
 
 Every service must be healthy, retain ownership, and report `busy = false` and `locked = false`. Generic services also require `fault = null`, and any reported instance ID must match. The robot requires fresh syncing feedback, `robot_error = false`, `stop_unconfirmed = false`, and a valid unchanged instance ID. The runner never disables the robot automatically. Lease loss or audit persistence failure prevents resumption. The runner records manual completion and continues with the next step, while a refused resolution keeps the run held.

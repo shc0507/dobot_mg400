@@ -262,7 +262,7 @@ uv run --no-default-groups --group vision --group stage python scripts/console_p
 
 打开 `http://127.0.0.1:8790/lab/#sample-transfer`，检查两个视图、已存配置、手动调整和 STOP。记录或移动位置前，在 Motion 校准模拟位移台。转移配置保存在 `work/console-preview/calibration/sample-transfer/`。
 
-旧版模拟配置使用 `3840 × 2880` 图像。已有的 `640 × 480` 配置保持不变。配置存储和替换方法参见[本地预览配置](../DEV_NOTE.md#配置与模拟数据)。
+旧版模拟配置使用 `3840 × 2880` 图像。已有的 `640 × 480` 配置保持不变。如须重置本地配置，先停止预览，把 `work/console-preview/calibration/twin/` 改成未使用的备份名称。下次启用旧版功能时重新创建 `Mock stage`。
 
 其他设备控制仍不可用。本地校准配置保存在 `work/console-preview/`，不修改 Olares 上的配置。首次启用旧版功能时，如果配置目录不存在，则创建 `Mock stage`。模拟运动无法验证实际精度或真实设备命令。
 

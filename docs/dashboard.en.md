@@ -262,7 +262,7 @@ Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3
 
 Open `http://127.0.0.1:8790/lab/#sample-transfer` to inspect both views, saved profiles, manual adjustment and STOP. Calibrate the simulated stage in Motion before recording or moving to positions. Transfer profiles persist under `work/console-preview/calibration/sample-transfer/`.
 
-Legacy mock profiles use `3840 × 2880` images. Existing `640 × 480` profiles remain unchanged. See [local preview profiles](../DEV_NOTE.en.md#profiles-and-mock-data) for profile storage and replacement instructions.
+Legacy mock profiles use `3840 × 2880` images. Existing `640 × 480` profiles remain unchanged. To reset the local profile store, stop the preview and rename `work/console-preview/calibration/twin/` to an unused backup name. The next legacy activation creates `Mock stage` again.
 
 Other device controls remain unavailable. Local calibration profiles persist under `work/console-preview/` and do not change Olares profiles. First legacy activation creates a `Mock stage` profile if its directory is absent. Synthetic movement cannot validate physical accuracy or real device commands.
 

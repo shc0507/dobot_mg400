@@ -29,9 +29,9 @@ def normalize_base_path(value):
     return value.rstrip("/")
 
 
-def create_app(*, demo=False, auto_connect=True, service=None, base_path="/"):
+def create_app(*, demo=False, auto_connect=True, service=None, base_path="/", regions=None):
     prefix = normalize_base_path(base_path)
-    controller = service or CameraService(demo=demo)
+    controller = service or CameraService(demo=demo, regions=regions)
 
     @asynccontextmanager
     async def lifespan(app):

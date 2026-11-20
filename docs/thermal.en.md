@@ -100,8 +100,7 @@ Do not use automatic development reload while acquiring camera data.
 ### Settings and access
 
 The service listens on `127.0.0.1:8768` with the base path `/`. `--bind`, `--port`, and `--base-path` change them.
-Invalid settings exit with status 2 before opening a listener or camera.
-An invalid region file is read after the listener opens. Then the process exits with status 1.
+Invalid settings or an invalid region file exit with status 2 before opening a listener or camera.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 
 ## Console thermal view
@@ -303,7 +302,7 @@ For example, `x0=159, y0=119, x1=160, y1=120` selects the last sensor pixel.
 The service reads this file once during construction, before camera startup.
 Restart the service after editing it.
 A missing file leaves the named-region map empty. Explicit coordinate queries still work.
-An invalid file prevents startup: the CLI exits with status 1, and the managed unit keeps restarting. The service never substitutes example regions.
+An invalid file prevents startup: the CLI exits once with status 2, and the managed unit does not restart. The service never substitutes example regions.
 An embedded application can select another path with `CameraService(roi_path=...)`.
 
 ### Region readings

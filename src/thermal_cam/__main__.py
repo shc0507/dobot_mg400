@@ -31,8 +31,8 @@ def main():
     if not args.bind or args.bind != args.bind.strip():
         parser.error("--bind must be a nonempty address without surrounding whitespace")
     try:
-        # The service reads this file at startup; a bad file must stop before bind.
-        roi.load_regions(roi.DEFAULT_ROI_PATH)
+        # Read the file once, before bind: a bad file exits 2, which systemd does not restart.
+        regions = roi.load_regions(roi.DEFAULT_ROI_PATH)
     except ValueError as exc:
         parser.error(str(exc))
     host = args.bind
@@ -74,7 +74,12 @@ def main():
         from .app import create_app
 
         print(f"Thermal Master P1 {'[SIMULATED DEMO]' if args.demo else '[REAL CAMERA]'}: {url}")
-        app = create_app(demo=args.demo, auto_connect=not args.no_connect, base_path=prefix or "/")
+        app = create_app(
+            demo=args.demo,
+            auto_connect=not args.no_connect,
+            base_path=prefix or "/",
+            regions=regions,
+        )
         server = uvicorn.Server(uvicorn.Config(app, host=host, port=args.port, workers=1))
         try:
             server.run(sockets=[listener])

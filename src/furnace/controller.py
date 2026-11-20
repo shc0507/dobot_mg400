@@ -1038,10 +1038,22 @@ class Furnace(object):
     def check_ramp_time(self, temp, rate):
         """Refuse a ramp longer than the program-time limit. Read only, write nothing."""
         target = min(float(temp), self.config.max_c)
-        rate = min(float(rate), self.config.max_ramp)
         _, _, scale = self.get_temperature_format()
+        # Use the rate that set_ramp_rate writes: rounding can make it slower.
+        rate = self._raw_ramp_rate(rate, scale) / scale
         start = read_register(self.controller, PV_REGISTER) / scale
         check_program_minutes(abs(target - start) / rate)
+
+    def _raw_ramp_rate(self, rate, scale):
+        """Return the controller-scaled SPR value for a ramp rate, capped at max_ramp."""
+        rate = MFCFlowController._finite_number(rate, "Ramp rate")
+        if rate <= 0:
+            raise ValueError("Ramp rate must be greater than zero.")
+        rate = min(rate, self.config.max_ramp)
+        raw_rate = min(round(rate * scale), math.floor(self.config.max_ramp * scale))
+        if raw_rate <= 0:
+            raise ValueError("Ramp rate is below the controller resolution")
+        return raw_rate
 
     def get_program_step(self):
         """Read the controller's current internal program step number."""
@@ -1070,15 +1082,8 @@ class Furnace(object):
             rate = self.config.max_ramp
             print(f"Set to max ramp ({self.config.max_ramp})")
 
-        _, decimal_places, scale = self.get_temperature_format()
-        raw_rate = min(round(rate * scale), math.floor(self.config.max_ramp * scale))
-        if raw_rate <= 0:
-            raise ValueError("Ramp rate is below the controller resolution")
-        write_register(
-            self.controller,
-            SPR_REGISTER,
-            raw_rate,
-        )
+        _, _, scale = self.get_temperature_format()
+        write_register(self.controller, SPR_REGISTER, self._raw_ramp_rate(rate, scale))
         return rate
 
     # Adjust the current setpoint by a relative amount and return the new target.

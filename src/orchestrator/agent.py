@@ -501,7 +501,9 @@ class Agent:
         deadline = self.clock() + timeout
         while True:
             try:
-                state = self._read(device).get("state")
+                # Without a command id the idle check must skip the device cache,
+                # which can still show busy=false from before the last command.
+                state = self._read(device, fresh=command_id is None).get("state")
             except (Unreachable, ServiceError):
                 state = None
             if isinstance(state, dict):

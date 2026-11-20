@@ -25,7 +25,7 @@
 | `POST api/release` | 仅当调用方持有租约时释放它。 |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`。同一批事件也写入服务日志。 |
 
-- `fault` 为 `null` 或 `{code, message}`。`last_command` 为 `null` 或 `{id, action, client, result, message, finished_at}`。结果为 `ok`、`failed`、`rejected` 或 `stopped`。
+- `fault` 为 `null` 或 `{code, message}`。`last_command` 为 `null` 或 `{id, action, client, result, message, finished_at}`。最终结果为 `ok`、`failed`、`rejected` 或 `stopped`。命令执行期间，服务可以报告 `running`，例如位移台的移动或校准。客户端轮询，直到得到最终结果。
 - 设备字段名包含单位：`pv_c`、`ramp_c_per_min`、`flow_pct`、`x_mm`、`r_deg`。
 - POST 请求必须携带 `Content-Type: application/json` 和 `X-MG400-Client`。客户端 ID 包含 1 至 128 个可打印 ASCII 字符。
 - 错误响应使用 `{"error": "..."}`：`400` 请求无效，`409` 状态或租约冲突，`415` 非 JSON，`503` 设备连接丢失。

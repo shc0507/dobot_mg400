@@ -320,8 +320,8 @@ The go2rtc 1.9.14 release does not split RTP aggregation packets. When ffmpeg pu
 Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`).
 NVENC cuts a `3840x2160` frame into 2 slices, and ffmpeg also puts them into 1 packet. Thus a large preview must use go2rtc with the patch `deploy/go2rtc/aggregation-packets.patch`.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
-Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture.
-The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
+Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture. Some cameras send cut frames first when capture starts. go2rtc with the patch `deploy/go2rtc/v4l2-cut-jpeg.patch` drops frames without a JPEG end marker.
+The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. A camera with a mode above `1280x720` keeps its own mode. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
 
 `camera1` shares the original hub's USB 2 connection with the thermal camera and controllers.
 `camera2`, `camera3`, and `camera4` share the second hub's USB 2 connection.

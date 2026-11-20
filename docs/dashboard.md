@@ -108,7 +108,7 @@
 - camera1 到 camera4 和显微镜直接从代理加载。画面以摄像头帧率播放 `/camera/<view>.mp4` 的 H.264 视频。宽度大于 640 的画面最多 4 Mbit/s，使用 NVENC 时为 3 Mbit/s。更小的画面最多 2 Mbit/s，显微镜画面最多 3 Mbit/s。使用 NVENC 时，大于 `1280x720` 的摄像头只有 H.265 预览。见[摄像头](olares.md#摄像头)。
 - 浏览器支持 HEVC 时，画面先请求 `/camera/<view>.mp4?codec=h265`。H.265 画面没有开始播放时，该页面改用 H.264。
 - 浏览器或主机无法播放 H.264 时，camera1 到 camera4 改为加载 `/camera/<view>.mjpeg` 的 MJPEG。摄像头预览只向每个观看者发送最新画面。画面墙和侧栏中的画面最多每秒 3 帧，大画面最多每秒 6 帧。
-- camera1 到 camera4 的 **Snapshot** 从 `/camera/<view>.full.jpg` 下载 `4000x3000` JPEG。这次模式切换会暂时暂停其他摄像头流，随后恢复。同一时间只拍 1 张。
+- camera1 到 camera4 的 **Snapshot** 从 `/camera/<view>.full.jpg` 下载 `4000x3000` JPEG。模式高于 `1280x720` 的摄像头按自己的模式拍摄。这次模式切换会暂时暂停其他摄像头流，随后恢复。同一时间只拍 1 张。
 - 控制台转发热成像帧。显微镜视图无法播放 H.264 时，使用 `/camera/microscope.mjpeg`。其 **Snapshot** 从 `/camera/microscope.png` 下载无损 `2592x1944` PNG，不要求控制权。
 - 显微镜作业运行时，camera3 的 **Snapshot** 返回 `409`，因为物镜切换要读取侧视流。
 - 显微镜代理只发送最新完整帧。墙面和侧栏每秒最多 10 帧，大图每秒最多 30 帧。

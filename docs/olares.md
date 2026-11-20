@@ -319,8 +319,8 @@ go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 
 因此 H.265 编码器去掉 SEI（`-bsf:v filter_units=remove_types=39|40`）。
 NVENC 把 `3840x2160` 的帧分成 2 个 slice，ffmpeg 也把它们合成 1 个包。大尺寸预览因此必须用带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
-单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。
-全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
+单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。有的摄像头启动采集后先发出截断的帧。带补丁 `deploy/go2rtc/v4l2-cut-jpeg.patch` 的 go2rtc 丢弃没有 JPEG 结束标记的帧。
+全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。模式高于 `1280x720` 的摄像头保持自己的模式。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
 
 `camera1` 与热像仪和控制器共用原集线器的 USB 2 连接。
 `camera2`、`camera3` 和 `camera4` 共用第二个集线器的 USB 2 连接。

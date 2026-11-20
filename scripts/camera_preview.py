@@ -127,9 +127,16 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
             yield frame
 
 
+def still_mode(stream):
+    """Largest AC410 mode. A camera above 1280x720 keeps its own: the 4K one has no 4000x3000."""
+    if stream in CAMERAS.preloaded:
+        return STILL_MODE
+    return CAMERAS.mode(CAMERAS.streams.index(stream) + 1)
+
+
 def still_overlay(stream):
-    """Return the go2rtc overlay that streams only `stream`, at the largest MJPEG mode."""
-    width, height, fps = STILL_MODE
+    """Return the go2rtc overlay that streams only `stream`, at its still mode."""
+    width, height, fps = still_mode(stream)
     lines = []
     for name, device in zip(CAMERAS.streams, CAMERAS.devices):
         source = (
@@ -190,7 +197,7 @@ def grab_still(stream):
                     size = jpeg_size(frame)
                 except RuntimeError:
                     continue
-                if now - start >= STILL_SETTLE_S and size == STILL_MODE[:2]:
+                if now - start >= STILL_SETTLE_S and size == still_mode(stream)[:2]:
                     return frame
         raise OSError("The camera sent no full-resolution frame")
     finally:

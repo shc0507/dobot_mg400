@@ -566,6 +566,14 @@ def test_fourth_camera_still_route_keeps_fixed_destination(preview, monkeypatch)
     assert all(feed.thread is None for feed in module.FEEDS.values())
 
 
+def test_full_still_of_a_large_camera_keeps_its_own_mode(preview, monkeypatch):
+    monkeypatch.setenv("MG400_CAMERA_MODES", "3840x2160@30,640x480@30,640x480@30")
+    module = load_preview()
+    assert module.still_mode("camera1") == (3840, 2160, 30)
+    assert module.still_mode("camera2") == (4000, 3000, 15)
+    assert "&video_size=3840x2160&framerate=30" in module.still_overlay("camera1")
+
+
 def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera2")
     module = load_preview()

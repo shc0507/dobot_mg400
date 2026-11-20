@@ -1,0 +1,39 @@
+diff --git a/pkg/v4l2/producer.go b/pkg/v4l2/producer.go
+index 663d0a9..9f55c40 100644
+--- a/pkg/v4l2/producer.go
++++ b/pkg/v4l2/producer.go
+@@ -3,6 +3,7 @@
+ package v4l2
+ 
+ import (
++	"bytes"
+ 	"errors"
+ 	"net/url"
+ 	"strings"
+@@ -106,10 +107,12 @@ func (c *Producer) Start() error {
+ 		return err
+ 	}
+ 
+-	var bitstream bool
++	var bitstream, jpeg bool
+ 	switch c.Medias[0].Codecs[0].Name {
+ 	case core.CodecH264, core.CodecH265:
+ 		bitstream = true
++	case core.CodecJPEG:
++		jpeg = true
+ 	}
+ 
+ 	for {
+@@ -120,6 +123,12 @@ func (c *Producer) Start() error {
+ 
+ 		c.Recv += len(buf)
+ 
++		// Some cameras send cut frames for a short time after the stream starts.
++		// Drop a JPEG frame without its end marker.
++		if jpeg && !bytes.HasSuffix(buf, []byte{0xFF, 0xD9}) {
++			continue
++		}
++
+ 		if len(c.Receivers) == 0 {
+ 			continue
+ 		}

@@ -31,7 +31,7 @@
 | `/var/lib/mg400/furnace` | 炉控状态和持久锁，文件为 `0600` | `1000:1000`，`0750` |
 | `/var/lib/mg400/runs` | 编排器记录和显微镜运行输出，文件为 `0600` 或 `0640` | `1000:1000`，`0750` |
 | `/var/lib/mg400/zones` | 区域配置和保留占用，文件为 `0640` 或 `0600` | `1000:1000`，`0750` |
-| `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14，带补丁 `deploy/go2rtc/aggregation-packets.patch` | `root:root`，`0755` |
+| `/usr/local/lib/mg400/go2rtc` | 摄像头采集程序 go2rtc 1.9.14，带 `deploy/go2rtc/` 中的补丁 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/labctl` | 日常命令，链接到 `/opt/mg400/deploy/labctl` | 无 |
@@ -63,13 +63,13 @@
 - 主机能访问 PyPI。`uv sync` 从 PyPI 下载依赖。
 - 主机有一个网口直连机械臂，地址为 `192.168.1.10/24`。
 - 该网口能连接机械臂的 TCP `29999`、`30003` 和 `30004`。
-- 使用摄像头时，准备带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc 1.9.14 Linux 程序。
-  该补丁让 go2rtc 拆分 H.265 的 RTP 聚合包。大于 `1280x720` 的摄像头的 H.265 预览必须用它。
+- 使用摄像头时，准备带 `deploy/go2rtc/` 中补丁的 go2rtc 1.9.14 Linux 程序。
+  `aggregation-packets.patch` 让 go2rtc 拆分 H.265 的 RTP 聚合包。`v4l2-cut-jpeg.patch` 让 go2rtc 丢弃没有 JPEG 结束标记的帧。大于 `1280x720` 的摄像头必须用这 2 个补丁。
   在装有 Go 的电脑上构建：
 
   ```sh
   git clone --depth 1 --branch v1.9.14 https://github.com/AlexxIT/go2rtc.git
-  git -C go2rtc apply /path/to/dobot_mg400/deploy/go2rtc/aggregation-packets.patch
+  git -C go2rtc apply /path/to/dobot_mg400/deploy/go2rtc/*.patch
   cd go2rtc && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o go2rtc .
   ```
 

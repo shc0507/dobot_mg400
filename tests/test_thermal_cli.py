@@ -130,6 +130,7 @@ def test_reserved_socket_handoff_and_cleanup(monkeypatch, server_fails, sockets)
         "demo": True,
         "auto_connect": False,
         "base_path": "/",
+        "regions": {},
     }
     assert captured["listener"].fileno() == -1
     with socket.socket() as next_instance:
@@ -178,6 +179,7 @@ def test_old_settings_are_ignored_and_options_apply(monkeypatch, sockets, overri
             "demo": True,
             "auto_connect": False,
             "base_path": "/lab/thermal" if override else "/",
+            "regions": {},
         }
         return sentinel
 
@@ -215,3 +217,28 @@ def test_invalid_region_file_exits_2_before_bind(monkeypatch, tmp_path, capsys):
         cli.main()
     assert error.value.code == 2
     assert "Region 'bad' must define exactly x0, y0, x1 and y1." in capsys.readouterr().err
+
+
+def test_region_file_is_read_once_before_bind(monkeypatch, tmp_path, sockets):
+    """The app gets the checked regions; a file change after bind cannot crash startup."""
+    path = tmp_path / "rois.toml"
+    path.write_text("[regions.crucible]\nx0=2\ny0=5\nx1=5\ny1=7\n")
+    monkeypatch.setattr(cli.roi, "DEFAULT_ROI_PATH", path)
+    monkeypatch.setattr(sys, "argv", ["thermal-cam", "--demo", "--no-connect"])
+    real_create_app = app.create_app
+
+    def fake_app(**kwargs):
+        path.write_text("[regions\n")  # A bad edit after the check must not be read.
+        return real_create_app(**kwargs)
+
+    class FakeServer:
+        def __init__(self, config):
+            self.app = config.app
+
+        def run(self, sockets):
+            regions = self.app.state.camera.describe()["regions"]
+            assert regions == {"crucible": {"x0": 2, "y0": 5, "x1": 5, "y1": 7}}
+
+    monkeypatch.setattr(app, "create_app", fake_app)
+    monkeypatch.setattr(uvicorn, "Server", FakeServer)
+    assert cli.main() == 0

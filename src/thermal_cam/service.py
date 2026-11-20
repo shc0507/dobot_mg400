@@ -147,11 +147,13 @@ class CameraService:
         demo=False,
         camera_factory: Callable | None = None,
         roi_path=DEFAULT_ROI_PATH,
+        regions=None,
         clock=None,
     ):
         self.source = "demo" if demo else "camera"
         self.clock = clock or (lambda: time.monotonic())
-        self.regions = load_regions(roi_path)
+        # The CLI passes the regions it checked before bind, so the file is read once.
+        self.regions = load_regions(roi_path) if regions is None else regions
         # The CLI's Uvicorn configuration sends INFO records from this logger
         # to stderr, which the service journal captures. No logging is configured
         # at module import, and embedded applications keep control of logging.

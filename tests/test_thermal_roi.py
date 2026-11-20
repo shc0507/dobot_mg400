@@ -268,6 +268,7 @@ def test_missing_region_file_allows_coordinates_but_not_names(tmp_path):
         "[regions.bad]\nx0=1\ny0=1\nx1=161\ny1=2\n",
         "[regions.bad]\nx0=1\ny0=1\nx1=2\ny1=121\n",
         "[regions.bad]\nx0=1\ny0=1\nx1=2\ny1=2\nrotation=90\n",
+        "a=" + "[" * 5000 + "]" * 5000,
     ],
 )
 def test_invalid_config_fails_before_camera_factory(tmp_path, content):

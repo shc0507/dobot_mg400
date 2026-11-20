@@ -423,7 +423,8 @@ def test_real_control_rechecks_browser_authority_before_sending(monkeypatch, rev
         state.command({"action": "enable"}, "browser-a")
         wait_for(lambda: not state.snapshot()["busy"])
         assert connected
-        assert sent == [b"ResetRobot()"]
+        # The failed operation's stop and the panel's stop request each send ResetRobot().
+        assert sent == [b"ResetRobot()"] * 2
         assert state.snapshot()["locked"]
         assert state._control.stopped
     finally:
@@ -610,10 +611,11 @@ def test_disconnect_feedback_loss_invalidates_cached_stop_without_an_owner(
         rig.wait(lambda s: not s["busy"] and s["stop_unconfirmed"])
         snapshot = rig.snapshot()
         assert snapshot["locked"] and snapshot["controller_id"] is None
-        assert "use the physical emergency stop" in snapshot["message"]
+        assert "Robot feedback is absent or stale" in snapshot["message"]
         assert rig.state._ownership.held
         assert "DisableRobot()" not in rig.controller.sent()
-        assert rig.controller.sent().count("ResetRobot()") == 1
+        # The stop after the feedback failure sends ResetRobot() again.
+        assert rig.controller.sent().count("ResetRobot()") == 2
     finally:
         monkeypatch.setattr(rig._feed, "read_latest", original)
         resume.set()
@@ -657,7 +659,7 @@ def test_short_retained_feedback_gap_allows_disable_after_feedback_returns(
 
 
 @pytest.mark.parametrize("mode,error", [(7, False), (9, False), (5, True)])
-def test_cached_stop_requires_fresh_idle_feedback_without_an_error(make_sim_rig, mode, error):
+def test_stop_after_a_confirmed_stop_sends_reset_again(make_sim_rig, mode, error):
     rig = make_sim_rig()
     rig.connect()
     rig.command("stop_sync")
@@ -667,13 +669,45 @@ def test_cached_stop_requires_fresh_idle_feedback_without_an_error(make_sim_rig,
         lambda s: s["feedback_fresh"] and s["robot_mode"] == mode and s["robot_error"] == error
     )
     rig.state.command({"action": "stop"}, "browser-b")
-    rig.wait(lambda s: not s["busy"] and s["stop_unconfirmed"])
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["id"].endswith(":3"))
     snapshot = rig.snapshot()
     assert snapshot["locked"] and snapshot["syncing"]
-    assert snapshot["last_command"]["result"] == "failed"
-    assert "use the physical emergency stop" in snapshot["message"]
-    assert rig.controller.sent().count("ResetRobot()") == 1
+    assert rig.controller.sent().count("ResetRobot()") == 2
     assert "DisableRobot()" not in rig.controller.sent()
+    if mode == 7:
+        # The controller stops the moving arm, so this stop is confirmed.
+        assert snapshot["last_command"]["result"] == "stopped"
+        assert snapshot["robot_mode"] == 5 and not snapshot["stop_unconfirmed"]
+    else:
+        assert snapshot["last_command"]["result"] == "failed"
+        assert snapshot["stop_unconfirmed"]
+        assert "Clear alarm" in snapshot["message"]
+
+
+def test_stop_and_disable_after_failed_ones_reach_the_controller(make_sim_rig):
+    rig = make_sim_rig()
+    rig.connect()
+    rig.wait(lambda s: s["feedback_fresh"] and s["robot_mode"] == 5)
+    rig.controller.rejecting = True
+    rig.command("stop")
+    rig.wait(lambda s: not s["busy"] and s["stop_unconfirmed"])
+    rig.controller.rejecting = False
+    # The arm still moves after the failed stop. STOP ALL and labctl stop use state.stop().
+    rig.controller.update(mode=7)
+    rig.wait(lambda s: s["robot_mode"] == 7)
+    assert rig.state.stop("stop-all", 3)["stop"] == "unconfirmed"
+    rig.wait(lambda s: not s["busy"] and s["robot_mode"] == 5)
+    assert rig.controller.sent().count("ResetRobot()") == 2
+    rig.controller.rejecting = True
+    rig.command("disable")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "disable")
+    rig.controller.rejecting = False
+    rig.command("disable")
+    rig.wait(lambda s: not s["busy"] and s["robot_mode"] == 4)
+    snapshot = rig.snapshot()
+    # An earlier unconfirmed stop keeps the lock until Recover.
+    assert snapshot["locked"] and snapshot["stop_unconfirmed"] and snapshot["recoverable"]
+    assert rig.controller.sent().count("DisableRobot()") == 2
 
 
 def test_same_owner_start_sync_does_not_cancel_its_pending_disconnect(rig):

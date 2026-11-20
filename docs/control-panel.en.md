@@ -151,6 +151,7 @@ An unconfirmed stop without an alarm shows a warning, and the button reads `Reco
 Check the robot state, then click `Recover`. The service disables the robot through a new control instance, confirms that it is stationary, and clears the warning.
 A service restart is not necessary.
 While a stop is unconfirmed, the service message shows the recovery procedure. A later successful stop does not replace this message.
+While a stop is unconfirmed, each `Stop`, `STOP ALL MOTION` and `Disable` request still sends its command to the controller.
 
 ### Controller not in TCP/IP mode
 

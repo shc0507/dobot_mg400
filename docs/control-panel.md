@@ -151,6 +151,7 @@ client.command("vacuum", operation="suck")
 核实机械臂状态，再点击 `Recover`。服务在新的控制实例上下使能、确认静止并清除警告。
 不需要重启服务。
 停止未确认期间，服务消息提示恢复方法，之后的成功停止不覆盖此提示。
+停止未确认期间，每次 `Stop`、`STOP ALL MOTION` 和 `Disable` 请求仍向控制器发送命令。
 
 ### 控制器不在 TCP/IP 模式
 

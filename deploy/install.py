@@ -318,6 +318,9 @@ def camera_capture_sizes(value, devices, side_stream=""):
 #   90000 fps, and hevc_nvenc then gives each frame almost no bits.
 # - -fps_mode passthrough: each source frame goes out once, with its own timestamp. A
 #   guessed rate does not add or drop frames. x264 budgets its bitrate at 30 fps.
+# - -enc_time_base:v 1/90000: the encoder keeps the 90 kHz RTP timestamps. By default its
+#   time base is 1/(guessed rate), for example 1/27.75 s. Timestamps of a 30 fps source
+#   then fall on a coarser grid: 2 frames 1 tick apart, then a gap, about 8 % of frames.
 # - A keyframe each second: a viewer that joins a running encoder waits at most 1 s.
 #   NVENC makes each forced keyframe an IDR frame, so a viewer can start on it.
 FFMPEG_RTSP = (
@@ -326,13 +329,14 @@ FFMPEG_RTSP = (
 )
 H264_X264 = (
     '  h264: "-c:v libx264 -g 50 -profile:v high -level:v 4.1 -preset:v superfast'
-    " -tune:v zerolatency -pix_fmt:v yuv420p -fps_mode passthrough -x264-params fps=30"
+    " -tune:v zerolatency -pix_fmt:v yuv420p -fps_mode passthrough -enc_time_base:v 1/90000"
+    " -x264-params fps=30"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
 # The GPU encoder uses about 13 % of 1 CPU core per 1280x720 preview, not 31 %.
 H264_NVENC = (
     '  h264: "-c:v h264_nvenc -g 50 -bf 0 -profile:v high -level:v 4.1 -preset:v p4'
-    " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
+    " -tune:v ll -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough -enc_time_base:v 1/90000"
     ' -force_key_frames expr:gte(t,n_forced)"\n'
 )
 
@@ -345,7 +349,7 @@ H264_NVENC = (
 # therefore needs go2rtc built with deploy/go2rtc/aggregation-packets.patch.
 H265_NVENC = (
     '  h265: "-c:v hevc_nvenc -g 50 -bf 0 -profile:v main -preset:v p4 -tune:v ll'
-    " -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough"
+    " -forced-idr 1 -pix_fmt:v yuv420p -fps_mode passthrough -enc_time_base:v 1/90000"
     ' -force_key_frames expr:gte(t,n_forced) -bsf:v filter_units=remove_types=39|40"\n'
 )
 # RTP cannot carry a JPEG wider than 2040 pixels, so a large preview reads the MJPEG stream

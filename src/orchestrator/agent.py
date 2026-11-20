@@ -116,7 +116,8 @@ def hint(device, code, state=None):
     if device == "robot" and state.get("alarms"):
         return "labctl robot clear-alarm"
     if device == "microscope" and state.get("focus_zero_known") is False:
-        return "labctl microscope zero"
+        # Never hint `zero`: FOCUS ZERO at an arbitrary height shifts the focus limits.
+        return "labctl microscope state"
     return {
         "not_controlled": f"labctl {device} take",
         "held_by_other": "labctl all session",

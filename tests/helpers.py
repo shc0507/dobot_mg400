@@ -159,6 +159,12 @@ class PanelControl:
         self.calls.append("stop")
         return {"ok": self.stop_ok, "error": "Command ordering remains unknown"}
 
+    def send_stop(self):
+        self.stopped = True
+        self.calls.append("send_stop")
+        if self.failure:
+            raise self.failure
+
     def disable(self):
         self.calls.append("disable")
         self.release_disable.wait(2)

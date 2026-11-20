@@ -1161,6 +1161,15 @@ class JointControl:
         """
         return self._stop(jog=jog, jog_speed_percent=jog_speed_percent, repeat=True)
 
+    def send_stop(self):
+        """Permanently cancel this instance and send one ResetRobot(). Do not check rest.
+
+        Use this when this process cannot watch the robot, for example while another
+        program holds the controller lock. The caller reports the stop as unconfirmed.
+        """
+        self.cancel()
+        self._command("ResetRobot()", stopping=True)
+
     def _stop(self, *, jog=False, jog_speed_percent=1, repeat):
         # repeat=False shares any finished stop: the caller follows up on that stop.
         attempts = self._stop_attempts

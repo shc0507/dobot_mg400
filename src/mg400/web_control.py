@@ -808,7 +808,13 @@ class RobotPanelState:
         sends no further command. The worker cancels the parent control after that
         keyboard worker exits, so the stops never overlap.
         """
-        self._ownership.acquire()
+        try:
+            self._ownership.acquire()
+        except RuntimeError as error:
+            if record is None or record["action"] != "stop":
+                raise
+            self._stop_without_ownership(record, error)
+            return
         # A user stop of an idle robot that needs no recovery confirms without the lock.
         unlock = record is not None and not (disabling or disconnect) and self._idle_at_rest()
         self._cancel_generation += 1
@@ -865,6 +871,55 @@ class RobotPanelState:
             self._stop_changed.notify_all()
             return
         self._safety_threads.append(thread)
+
+    def _stop_without_ownership(self, record, error):
+        """Send one ResetRobot() although another program can hold the controller lock.
+
+        That program can drive the arm, and this service cannot watch the robot.
+        The stop stays unconfirmed until Recover.
+        """
+        self._record_fault()
+        self._locked = True
+        self._message = f"Sending ResetRobot() without the robot lock: {error}"
+        record["deferred"] = True
+        self._safety_workers += 1
+        thread = threading.Thread(
+            target=self._send_unowned_stop,
+            args=(record,),
+            daemon=True,
+        )
+        self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
+        try:
+            thread.start()
+        except Exception as start_error:
+            self._safety_workers -= 1
+            self._message = (
+                f"Robot stop could not start: {start_error} Use the physical emergency stop."
+            )
+            self._finish_command(record, "failed", self._message)
+            self._stop_changed.notify_all()
+            return
+        self._safety_threads.append(thread)
+
+    def _send_unowned_stop(self, record):
+        try:
+            self._new_control().send_stop()
+        except Exception as error:
+            message = (
+                f"ResetRobot() without the robot lock failed: {error}. "
+                "Use the physical emergency stop."
+            )
+        else:
+            message = (
+                "ResetRobot() is sent without the robot lock, so the stop is unconfirmed. "
+                "Use the physical emergency stop if the arm moves. "
+                "When the lock is free, start sync and click Recover."
+            )
+        with self._lock:
+            self._safety_workers -= 1
+            self._message = message
+            self._finish_command(record, "failed", message)
+            self._stop_changed.notify_all()
 
     def _stop(self, control, disabling, keyboard=None, check_rest=True, unlock=None):
         try:

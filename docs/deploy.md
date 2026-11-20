@@ -546,7 +546,8 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 
 机器人服务、交互终端和模式切换在连接机械臂前取得文件锁。
 机器人服务的只读模式也使用此锁。
-另一个程序持锁时，新连接返回 `Robot controlled by another panel`。
+另一个程序持锁时，新连接返回 `Robot controlled by another panel`，`Disable` 也被拒绝。
+此时 `Stop` 和 STOP ALL 仍发送 1 次 `ResetRobot()`，但不检查静止，结果为未确认。机器人服务锁定控制。锁空闲后，同步反馈并点击 Recover。
 正常断开后，机器人服务等待反馈线程和命令任务结束，再释放锁。
 停止状态无法确认时，机器人服务停止常规坐标查询，保留反馈和锁，并显示警告。
 检查机械臂，再点击 Recover。重新加载实验室控制台不会清除警告。

@@ -2051,6 +2051,18 @@ def test_stop_records_only_a_minus_one_rejection(monkeypatch, reply, rejection):
     assert control.rejection == rejection
 
 
+def test_send_stop_sends_one_reset_without_feedback(monkeypatch):
+    connection = fake_connection(monkeypatch, [b"0,{},ResetRobot();"])
+    feedback = Mock(side_effect=AssertionError("Feedback must not be read"))
+    control = JointControl("robot.test", feedback)
+    control.send_stop()
+    connection.sendall.assert_called_once_with(b"ResetRobot()")
+    feedback.assert_not_called()
+    assert control.stopped
+    with pytest.raises(RuntimeError, match="stopped"):
+        control.enable()
+
+
 @pytest.mark.parametrize(
     "parts,failure",
     [([b"0,{", b""], ConnectionError), ([TimeoutError("ACK lost")], TimeoutError)],

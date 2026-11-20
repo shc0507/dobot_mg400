@@ -50,8 +50,8 @@ def execute(state, **extra):
     )
 
 
-@pytest.mark.parametrize("action", ["start_sync", "stop", "disable"])
-def test_another_panel_cannot_connect_or_send_safety_commands(rig, action):
+@pytest.mark.parametrize("action", ["start_sync", "disable"])
+def test_another_panel_cannot_connect_or_disable(rig, action):
     state, feed, controls = rig
     connect(state)
     other_feed = Feed()
@@ -65,6 +65,43 @@ def test_another_panel_cannot_connect_or_send_safety_commands(rig, action):
         assert other._control.calls == []
         assert not other.snapshot()["syncing"]
         assert not other.snapshot()["locked"]
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("failure", [None, ConnectionError("Robot is offline")])
+def test_stop_without_the_lock_sends_reset_and_stays_unconfirmed(rig, failure):
+    state, feed, controls = rig
+    connect(state)
+    other_feed = Feed()
+    other_controls = []
+
+    def factory(*args, **kwargs):
+        control = PanelControl(*args, **kwargs)
+        control.failure = failure
+        other_controls.append(control)
+        return control
+
+    other = RobotPanelState("robot.test", connection_factory=other_feed, control_factory=factory)
+    try:
+        for _ in range(2):
+            # Each request sends again, like a stop that holds the lock.
+            assert other.stop("browser-b", wait_s=1)["stop"] == "unconfirmed"
+        wait_for(lambda: not other.snapshot()["busy"])
+        assert [control.calls for control in other_controls] == [[], ["send_stop"], ["send_stop"]]
+        snapshot = other.snapshot()
+        assert snapshot["stop_unconfirmed"] and snapshot["locked"]
+        assert not snapshot["syncing"] and other_feed.connections == 0
+        assert snapshot["last_command"]["action"] == "stop"
+        assert snapshot["last_command"]["result"] == "failed"
+        expected = "Robot is offline" if failure else "ResetRobot() is sent without the robot lock"
+        assert expected in snapshot["message"]
+        assert "physical emergency stop" in snapshot["message"]
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            other.command({"action": "disable"}, "browser-b")
+        # The lock holder keeps its session.
+        assert state.snapshot()["syncing"] and not state.snapshot()["locked"]
+        assert all("send_stop" not in control.calls for control in controls)
     finally:
         other.close()
 

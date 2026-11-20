@@ -999,3 +999,22 @@ def test_ramp_over_program_time_is_refused_before_writes_without_lock(lab):
     assert not status["locked"] and not status["sequence"]["running"]
     service.apply_setpoint(30, 10, client="operator")
     assert len(writes(lab.serial)) > before
+
+
+@pytest.mark.parametrize(("rate", "message"), [(0.149, "controller maximum"), (0.04, "resolution")])
+def test_ramp_rounded_by_the_controller_is_refused_before_writes(lab, rate, message):
+    # 0.149 passes the time check but SPR stores 0.1; 0.04 stores 0.
+    service = lab.make(
+        config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=1000, max_ramp=10)
+    )
+    service.start(background=False)
+    service.lease.acquire("operator")
+    before = len(writes(lab.serial))
+    with pytest.raises(ValueError, match=message):
+        service.apply_setpoint(500, rate, client="operator")
+    with pytest.raises(ValueError, match=message):
+        service.start_sequence(
+            [dict(temperature_c=500, ramp_rate_c_per_min=rate, hold_minutes=1)], client="operator"
+        )
+    assert len(writes(lab.serial)) == before
+    assert not service.status()["locked"]

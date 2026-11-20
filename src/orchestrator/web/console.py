@@ -523,6 +523,28 @@ class Console:
             if fresh is not None:
                 self._close(fresh)
 
+    def operator(self, device, page, path, data):
+        """Send one operator-only service request on this page's lease, once.
+
+        The service refuses it unless this page's identity holds the lease.
+        The turret calibration routes use it; the runner never does.
+        """
+        self.touch(page)
+        item = self._owned(device, page)
+        if item is None:
+            raise ServiceError(409, "Take control of this device first.")
+        try:
+            result = item.adapter.request(path, data)
+        except Exception as exc:
+            outcome = classify(exc)
+            message = str(exc) if outcome == "refused" else "The outcome is unknown."
+            self.service.events.add(
+                "warning", "Console operator action " + outcome + ".", device=device, path=path
+            )
+            return {"outcome": outcome, "error": self.service.dashboard.text(message)}
+        self.service.events.add("info", "Console operator action sent.", device=device, path=path)
+        return {"outcome": "accepted", "result": result if isinstance(result, dict) else None}
+
     def keys(self, page, seq, held):
         """Send one robot held-key set once on this page's robot session. Never retried."""
         item = self._owned("robot", page)

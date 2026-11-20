@@ -12,7 +12,6 @@ import urllib.request
 from labkit import ports
 from labkit.client import _HTTPS, ServiceClient
 from labkit.errors import ServiceError
-from mg400.client import RobotClient, RobotClientError
 
 from .recipe import positive
 
@@ -118,42 +117,123 @@ class ThermalAdapter(ServiceAdapter):
         return self._http.roi(name)
 
 
+STOP_ACTIONS = frozenset({"stop", "disable", "stop_sync"})
+RESULTS = frozenset({"ok", "failed", "rejected", "stopped"})
+POLL_S = 0.05
+
+
+class CommandFailed(RuntimeError):
+    """A robot command did not complete, or its outcome is unknown."""
+
+
+def robot_verdict(state, *, action, command_id, instance, baseline=None):
+    """Judge one accepted robot command from a state read.
+
+    Return ok, failed, rejected, stopped, locked or unknown. Return None while the
+    command is pending. A restart, or a stop that replaced the command, is unknown.
+    baseline is the id of the last command before this one was sent.
+    """
+    if state.get("instance") != instance:
+        return "unknown"
+    last = state.get("last_command")
+    last = last if isinstance(last, dict) else {}
+    stop = action in STOP_ACTIONS
+    if last.get("id") != command_id:
+        replaced = (
+            last.get("id") not in (None, baseline)
+            and last.get("action") in STOP_ACTIONS
+            and last.get("result") != "rejected"
+            and not stop
+        )
+        return "unknown" if replaced else None
+    result = last.get("result")
+    if result not in RESULTS:
+        return "unknown"
+    if result == "stopped" and stop:
+        result = "ok"
+    if result != "ok":
+        return result
+    if state.get("busy") is not False:
+        return None
+    if state.get("stop_unconfirmed") or (state.get("locked") and not stop):
+        return "locked"
+    return "ok"
+
+
 class RobotAdapter(ServiceAdapter):
+    """The robot over instrument contract v1. Commands are accepted, then polled."""
+
     def __init__(self, url, identity, *, timeout=2, tool_file=None):
         super().__init__(url, identity, timeout=timeout)
-        self._robot = RobotClient(url, identity, timeout=timeout)
         # A rehearsal robot names its own synthetic tool. None selects the host tool.
         self.tool_file = tool_file
 
     def acquire(self):
-        self._robot.connect()
-        return self._robot.run("start_sync", timeout=self.timeout)
-
-    def owned(self, state):
-        return state.get("controller_id") == self.identity
-
-    def healthy(self, state):
-        return state.get("syncing") is True and state.get("feedback_fresh") is True
-
-    def heartbeat(self):
-        # RobotClient renews at 0.5 s. Loss is terminal for this run, not a reason
-        # to acquire ownership again through start_sync.
-        if not self._robot.connected or not self.owned(self.state()):
-            raise RuntimeError("Robot connection or control lease was lost.")
+        """Take the lease, which also connects the feedback. Wait until it is fresh."""
+        result = self._http.heartbeat()
+        deadline = time.monotonic() + self.timeout
+        while not self.state().get("connected"):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Robot feedback did not connect.")
+            time.sleep(POLL_S)
+        return result
 
     def run(self, action, *, timeout, **params):
-        return self._robot.run(action, timeout=timeout, **params)
+        """Send one command once, then wait for its result and an idle robot."""
+        before = self.state()
+        instance = before.get("instance")
+        baseline = (before.get("last_command") or {}).get("id")
+        reply = self._http.command(action, **params)
+        state = reply.get("state") if isinstance(reply.get("state"), dict) else before
+        return self._settle(
+            state, action, reply.get("command_id"), instance, baseline, time.monotonic() + timeout
+        )
 
-    def command(self, action, **params):
-        return self._robot.command(action, **params)
+    def _settle(self, state, action, command_id, instance, baseline, deadline):
+        """Read the state until robot_verdict ends the command. Return the final state."""
+        while True:
+            verdict = robot_verdict(
+                state,
+                action=action,
+                command_id=command_id,
+                instance=instance,
+                baseline=baseline,
+            )
+            if verdict == "ok":
+                return state
+            if verdict is not None:
+                last = state.get("last_command") or {}
+                raise CommandFailed(last.get("message") or f"The robot command is {verdict}.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for the robot command.")
+            time.sleep(min(POLL_S, remaining))
+            state = self.state()
+
+    def release(self):
+        """Release the lease and wait for the stop that follows, as the lease stop_sync does."""
+        before = self.state()
+        instance = before.get("instance")
+        baseline = (before.get("last_command") or {}).get("id")
+        self._http.release()
+        deadline = time.monotonic() + self.timeout
+        while True:
+            state = self.state()
+            last = state.get("last_command") or {}
+            if (
+                last.get("id") != baseline
+                and last.get("action") == "stop_sync"
+                and last.get("client") == self.identity
+            ):
+                return self._settle(state, "stop_sync", last["id"], instance, baseline, deadline)
+            if (state.get("lease") or {}).get("holder") != self.identity:
+                return state
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for the robot release.")
+            time.sleep(POLL_S)
 
     def keys(self, seq, held):
-        return self._robot.keys(seq, held)
-
-    def stop(self):
-        # The robot's dedicated HTTP transport includes X-MG400-Panel and
-        # remains independent of an in-flight WebSocket command.
-        return self._robot._http("stop", {"wait_s": min(1, self.timeout / 2)})
+        return self._http.command("keys", seq=seq, held=list(held))
 
     def recovery_stop(self, expected_instance):
         """Confirm explicit manual disable after old work drains, or send Stop.
@@ -205,12 +285,6 @@ class RobotAdapter(ServiceAdapter):
             # Read failures and malformed proof still require an independent stop.
             pass
         return self.stop()
-
-    def release(self):
-        return self._robot.run("stop_sync", timeout=self.timeout)
-
-    def close(self):
-        self._robot.close()
 
 
 class Borrowed:
@@ -300,7 +374,7 @@ class Clients:
             self.acquired.append(name)  # An ambiguous acquisition also needs cleanup.
             try:
                 service.acquire()
-            except (ServiceError, RobotClientError) as exc:
+            except ServiceError as exc:
                 if exc.status in {401, 403, 409}:
                     self.acquired.remove(name)  # An explicit refusal acquired nothing.
                 raise
@@ -421,19 +495,16 @@ class Clients:
             recovery_error = f"{name} still needs manual recovery or no longer belongs to this run."
             if not isinstance(state, dict):
                 raise RuntimeError(recovery_error)
+            fault_free = "fault" in state and state["fault"] is None
             if name == "robot":
-                # The kept robot protocol reports these fields instead of the
-                # generic contract's connected/fault pair.
                 fault_free = (
-                    state.get("mode") == "robot"
+                    fault_free
+                    and state.get("mode") == "robot"
                     and state.get("robot_error") is False
                     and state.get("stop_unconfirmed") is False
                     and isinstance(state.get("instance"), str)
                     and bool(state["instance"].strip())
-                    and state.get("fault") is None
                 )
-            else:
-                fault_free = "fault" in state and state["fault"] is None
             if (
                 not service.owned(state)
                 or not service.healthy(state)

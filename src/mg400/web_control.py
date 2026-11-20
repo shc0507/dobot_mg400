@@ -315,6 +315,8 @@ class RobotPanelState:
         """Run one contract command. Return (command_id, state); keys have no command ID."""
         if not isinstance(payload, dict):
             raise ValueError("Request must be a JSON object")
+        if payload.get("action") in ("start_sync", "stop_sync"):
+            raise ValueError("Take and release control with api/heartbeat and api/release")
         if payload.get("action") == "keys":
             return None, self.keys({k: v for k, v in payload.items() if k != "action"}, client_id)
         with self._lock:
@@ -322,13 +324,11 @@ class RobotPanelState:
             return f"{self._instance}:{self._command_number}", state
 
     def describe(self):
-        """Describe the legacy robot command protocol without changing its payloads."""
+        """Describe the robot commands. Take and release control use the lease routes."""
         empty = {"type": "object", "properties": {}, "additionalProperties": False}
         commands = {
             name: describe_command(empty, any_client=name in {"stop", "disable"})
             for name in (
-                "start_sync",
-                "stop_sync",
                 "enable",
                 "disable",
                 "stop",
@@ -479,24 +479,6 @@ class RobotPanelState:
     def _client(client_id):
         if not isinstance(client_id, str) or not client_id.strip() or len(client_id) > 128:
             raise ValueError("A browser client ID is required")
-
-    def heartbeat(self, client_id):
-        self._client(client_id)
-        with self._lock:
-            self._expire_lease()
-            if self._owner == client_id:
-                self._heartbeat = time.monotonic()
-        return self.snapshot()
-
-    def connection_lost(self, client_id):
-        """Revoke keyboard input at once when the owner's live connection closes.
-
-        The browser lease is unchanged: a page that reconnects in time keeps control.
-        """
-        self._client(client_id)
-        with self._lock:
-            if self._owner == client_id:
-                self._kb_disarm("browser connection closed.")
 
     def _expire_lease(self):
         if self._owner is not None and time.monotonic() - self._heartbeat > self.LEASE_SECONDS:

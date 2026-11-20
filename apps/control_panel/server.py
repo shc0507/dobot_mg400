@@ -1,4 +1,4 @@
-"""Serve the MG400 robot service API: state, contract routes and the WebSocket.
+"""Serve the MG400 robot service API: state and the instrument contract routes.
 
 Run with Python 3.12 or later. Robot mode can send hardware commands.
 """
@@ -9,7 +9,6 @@ import logging
 import logging.handlers
 import queue
 import signal
-import socket
 import sys
 import threading
 import time
@@ -25,22 +24,11 @@ from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
 from mg400.web_control import RobotPanelState  # noqa: E402
-from mg400.websocket import (  # noqa: E402
-    Connection,
-    ConnectionClosed,
-    ProtocolError,
-    accept_key,
-    valid_client_key,
-)
 
 MAX_SEQUENCE = 2**53
 # Robot speed cap: SpeedL and AccL percentages for every motion command.
 MAX_SPEED_L = 20
 MAX_ACC_L = 20
-# The WebSocket message format. Change it when a message changes incompatibly.
-PROTOCOL = 1
-# State fields that change on every read. A change in only these sends no push.
-VOLATILE_FIELDS = {"version", "seq", "ts_unix", "lease"}
 
 
 def normalize_base_path(value):
@@ -62,26 +50,6 @@ def valid_client(value):
         and value.isprintable()
         and bool(value.strip())
     )
-
-
-def dispatch(state, kind, payload, client):
-    """Apply one API request. The HTTP API and the WebSocket share this routing.
-
-    Raise ValueError (400), PermissionError (403) or RuntimeError (409) for a refusal.
-    """
-    if state.mode == "robot":
-        if kind == "heartbeat":
-            if payload != {}:
-                raise ValueError("Heartbeat must be an empty JSON object")
-            return state.heartbeat(client)
-        if kind == "keys":
-            return state.keys(payload, client)
-        return state.command(payload, client_id=client)
-    if kind == "heartbeat":
-        raise ValueError("Heartbeat is only available in robot mode")
-    if kind == "keys":
-        raise PermissionError("Keyboard control is unavailable in read-only mode")
-    return state.command(payload)
 
 
 def refusal_status(error):
@@ -209,342 +177,16 @@ class ReadOnlyPanelState:
             self._reader.join(timeout=2)
 
 
-class SocketSession:
-    """Serve one WebSocket: hello, state pushes, and one reply per request in order.
-
-    The handler thread reads. Sends only queue frames for the connection's writer, so
-    a peer that stops reading never delays the processing of its later requests.
-    """
-
-    HELLO_SECONDS = 3.0
-    # Linux ends a connection whose sent data stays unacknowledged this long.
-    UNACKNOWLEDGED_MS = 5000
-    IDLE_SECONDS = 15.0
-    PUSH_SECONDS = 0.05
-    KEEPALIVE_SECONDS = 1.0
-    PING_SECONDS = 5.0
-    DRAIN_SECONDS = 2.0
-
-    def __init__(self, server, sock, connection, log=None):
-        self.server = server
-        self.client = None
-        self._log = log
-        self._socket = sock
-        self._connection = connection
-        self._registered = False
-        self._done = threading.Event()
-        self._replied = threading.Event()
-        self._pusher = None
-
-    def run(self):
-        if hasattr(socket, "TCP_USER_TIMEOUT"):
-            # Detect a vanished peer in seconds rather than at the 15 s read timeout.
-            try:
-                self._socket.setsockopt(
-                    socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, self.UNACKNOWLEDGED_MS
-                )
-            except OSError:
-                pass
-        try:
-            self.client = self._hello()
-            if self.client is None:
-                return
-            self._socket.settimeout(self.IDLE_SECONDS)
-            if not self.server.register_socket(self):
-                self._refuse(1013, 503, "Too many open panel connections")
-            self._registered = True
-            self._pusher = threading.Thread(target=self._push, name="MG400-ws-push", daemon=True)
-            self._pusher.start()
-            while (text := self._connection.receive()) is not None:
-                self._request(text)
-        except ProtocolError as error:
-            self._close(error.code, None, str(error))
-        except (_Refused, EOFError, OSError, ConnectionClosed):
-            pass
-        except Exception as error:
-            self.server.report_error(f"WebSocket session failed: {repr(error)[:200]}")
-            self._close(1011, None, "The robot service failed")
-        finally:
-            self._done.set()
-            # Revoke keys before the close handshake, which can take seconds.
-            if self._registered:
-                self.server.unregister_socket(self)
-            self._finish()
-            if self._pusher is not None:
-                self._pusher.join(timeout=1)
-
-    def _hello(self):
-        # A slow sender must not hold a connection slot without sending hello.
-        deadline = threading.Timer(self.HELLO_SECONDS, self._connection.abort)
-        deadline.daemon = True
-        self._socket.settimeout(self.HELLO_SECONDS)
-        deadline.start()
-        try:
-            text = self._connection.receive()
-        finally:
-            deadline.cancel()
-        if text is None:
-            return None
-        try:
-            message = json.loads(text)
-        except (ValueError, RecursionError):
-            message = None
-        if (
-            not isinstance(message, dict)
-            or set(message) != {"type", "protocol", "client"}
-            or message["type"] != "hello"
-            or type(message["protocol"]) is not int
-            or not valid_client(message["client"])
-        ):
-            self._refuse(4400, 400, "Send hello with the protocol and a client ID first")
-        if message["protocol"] != PROTOCOL:
-            self._refuse(4426, 426, f"The robot service uses protocol {PROTOCOL}. Reload the page.")
-        return message["client"]
-
-    def _request(self, text):
-        try:
-            message = json.loads(text)
-        except (ValueError, RecursionError):
-            message = None
-        if (
-            not isinstance(message, dict)
-            or set(message) != {"type", "id", "body"}
-            or not isinstance(message["type"], str)
-            or message["type"] not in {"command", "heartbeat", "keys"}
-            or type(message["id"]) is not int
-            or not 0 <= message["id"] <= MAX_SEQUENCE
-        ):
-            self._refuse(4400, 400, "Send requests as JSON objects with type, id and body")
-        reply = {"type": "reply", "id": message["id"]}
-        try:
-            reply["state"] = self.server.dispatch_live(self, message["type"], message["body"])
-            reply["status"] = 200
-        except _Replaced:
-            # Requests still buffered on a replaced connection are stale.
-            raise _Refused from None
-        except Exception as error:
-            status = refusal_status(error)
-            if status is None:
-                self.server.report_error(f"WebSocket {message['type']} request failed: {error!r}")
-                status, error = 500, "The robot service failed to handle the request"
-            reply.update(status=status, error=str(error))
-        if message["type"] == "command" and self._log is not None:
-            self._log_command(message["body"], reply)
-        self._send(reply)
-        # The reply may carry a state the pusher has not seen. Push the current one next.
-        self._replied.set()
-
-    def _log_command(self, body, reply):
-        """Log robot commands like HTTP requests. Keys, heartbeats and pushes stay quiet."""
-        action = body.get("action") if isinstance(body, dict) else None
-        action = action if isinstance(action, str) and action.isidentifier() else "invalid"
-        detail = f" {reply['error']}" if reply["status"] != 200 else ""
-        # A short client prefix tells pages apart without a long ID in every line.
-        self._log(
-            '"WS command %s" %s client=%s%s', action, reply["status"], self.client[:8], detail
-        )
-
-    def _send(self, message):
-        self._connection.send_text(json.dumps(message, allow_nan=False))
-
-    def _push(self):
-        """Push the state on change and at least once per second. Ping every 5 s."""
-        last = None
-        sent = pinged = time.monotonic()
-        try:
-            while not self._done.is_set():
-                now = time.monotonic()
-                # Skip a push while frames wait, so a slow reader gets the latest state later.
-                if not self._connection.backlog:
-                    # Clear only a flag that was seen, so a reply landing now gets the next push.
-                    replied = self._replied.is_set()
-                    if replied:
-                        self._replied.clear()
-                    snapshot = self.server.state.snapshot()
-                    content = {k: v for k, v in snapshot.items() if k not in VOLATILE_FIELDS}
-                    if replied or content != last or now - sent >= self.KEEPALIVE_SECONDS:
-                        self._send({"type": "state", "state": snapshot})
-                        last, sent = content, now
-                if now - pinged >= self.PING_SECONDS:
-                    self._connection.ping()
-                    pinged = now
-                self._done.wait(self.PUSH_SECONDS)
-        except ConnectionClosed:
-            pass
-        except Exception as error:
-            self.server.report_error(f"WebSocket push failed: {error!r}")
-            self._connection.abort()
-
-    def replace(self):
-        """End this connection because the same client opened a newer one."""
-        self._connection.close(4409, "Replaced by a newer connection")
-        deadline = threading.Timer(self.DRAIN_SECONDS, self._connection.abort)
-        deadline.daemon = True
-        deadline.start()
-
-    def evict(self):
-        """End a connection that has not sent hello, to free its slot."""
-        self._connection.abort()
-
-    def stop_service(self):
-        """Send the last state and a going-away close when the service stops."""
-        try:
-            self._send({"type": "state", "state": self.server.state.snapshot()})
-        except Exception:
-            pass
-        self._connection.close(1001, "The robot service stopped")
-
-    def wait_stopped(self, timeout):
-        self._connection.close_written.wait(timeout)
-
-    def _close(self, code, status, error):
-        if status is not None:
-            try:
-                self._send({"type": "error", "status": status, "error": error})
-            except (ConnectionClosed, ValueError):
-                pass
-        self._connection.close(code, error)
-
-    def _refuse(self, code, status, error):
-        self._close(code, status, error)
-        raise _Refused
-
-    def _finish(self):
-        """Close politely, then shut the socket down before the handler closes it.
-
-        The peer's close is awaited briefly, because closing with unread input can reset
-        the connection and lose the close frame. The writer has ended when this returns,
-        so it never writes to a closed and reused descriptor.
-        """
-        connection = self._connection
-        connection.close(1000)
-        if connection.aborted:
-            connection.join()
-            return
-        deadline = threading.Timer(self.DRAIN_SECONDS, connection.abort)
-        deadline.daemon = True
-        deadline.start()
-        try:
-            connection.close_written.wait(self.DRAIN_SECONDS)
-            if connection.close_received is None and connection.close_written.is_set():
-                self._socket.settimeout(self.DRAIN_SECONDS)
-                while connection.receive() is not None:
-                    pass
-        except Exception:
-            pass
-        finally:
-            deadline.cancel()
-            connection.abort()
-            connection.join()
-
-
-class _Refused(Exception):
-    """The session queued its refusal and a close frame."""
-
-
-class _Replaced(Exception):
-    """A newer connection of the same client replaced this session."""
-
-
 class PanelServer(ThreadingHTTPServer):
     daemon_threads = True
-    # Connections after hello, and connections that have not sent hello yet.
-    MAX_SOCKETS = 8
-    MAX_PENDING_SOCKETS = 8
 
     def __init__(self, address, state, base_path="/"):
         self.state = state
         self.base_path = normalize_base_path(base_path)
-        self._sockets_lock = threading.Lock()
-        self._pending = []
-        self._sessions = {}
         super().__init__(address, PanelHandler)
 
-    def admit_socket(self, session):
-        """Track a connection before hello. Evict the oldest one when the queue is full.
-
-        Eviction keeps peers without hello from holding every slot.
-        """
-        with self._sockets_lock:
-            evicted = self._pending[: max(0, len(self._pending) - self.MAX_PENDING_SOCKETS + 1)]
-            del self._pending[: len(evicted)]
-            self._pending.append(session)
-        for old in evicted:
-            old.evict()
-
-    def discharge_socket(self, session):
-        with self._sockets_lock:
-            if session in self._pending:
-                self._pending.remove(session)
-
-    def register_socket(self, session):
-        """Make a session after hello the live connection of its client.
-
-        A newer connection of the same client revokes the keys at once and ends the older
-        connection, whose own end then revokes nothing. Return False when every slot is
-        taken.
-        """
-        with self._sockets_lock:
-            if session in self._pending:
-                self._pending.remove(session)
-            old = self._sessions.get(session.client)
-            if old is None and len(self._sessions) >= self.MAX_SOCKETS:
-                return False
-            if old is not None:
-                # The page lost the older connection, so input armed through it ends now.
-                self._connection_lost(session.client)
-            self._sessions[session.client] = session
-        if old is not None:
-            old.replace()
-        return True
-
-    def dispatch_live(self, session, kind, payload):
-        """Dispatch only while session is its client's live connection.
-
-        The registry lock makes the check and the dispatch atomic with a replacement,
-        so a request from a replaced connection cannot arm keys after the revocation.
-        """
-        with self._sockets_lock:
-            if self._sessions.get(session.client) is not session:
-                raise _Replaced
-            return dispatch(self.state, kind, payload, session.client)
-
-    def unregister_socket(self, session):
-        """Revoke the keys of a client whose live connection ended.
-
-        The registry lock stays held, so a newer connection of the same client cannot
-        register and arm keys before this revocation.
-        """
-        with self._sockets_lock:
-            if self._sessions.get(session.client) is not session:
-                return
-            del self._sessions[session.client]
-            self._connection_lost(session.client)
-
-    def _connection_lost(self, client):
-        # Lock order: the registry lock, then the state lock. connection_lost never blocks.
-        connection_lost = getattr(self.state, "connection_lost", None)
-        if connection_lost is not None:
-            try:
-                connection_lost(client)
-            except Exception as error:
-                self.report_error(f"Keyboard revocation after a lost connection failed: {error!r}")
-
-    def stop_sockets(self, timeout=1.0):
-        """Send each page the final state and a 1001 close. Wait at most timeout in total.
-
-        The writers are daemon threads, so the process must not exit before they write.
-        """
-        with self._sockets_lock:
-            sessions = list(self._sessions.values())
-        for session in sessions:
-            session.stop_service()
-        deadline = time.monotonic() + timeout
-        for session in sessions:
-            session.wait_stopped(max(0.0, deadline - time.monotonic()))
-
     def report_error(self, text):
-        # A blocked stderr must not hold a connection or the registry lock.
+        # A blocked stderr must not hold a connection or the state lock.
         report(text, wait=0)
 
 
@@ -599,115 +241,52 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._send(400, {"error": str(error)})
             else:
                 self._send(200, result)
-        elif path == "/api/ws":
-            self._serve_websocket()
         else:
             self._send(404, {"error": "Not found"})
-
-    def _header_tokens(self, name):
-        values = ",".join(self.headers.get_all(name) or [])
-        return {token.strip().lower() for token in values.split(",")}
-
-    def _serve_websocket(self):
-        upgrade = (("Upgrade", "websocket"), ("Sec-WebSocket-Version", "13"))
-        if (
-            self.request_version != "HTTP/1.1"
-            or "websocket" not in self._header_tokens("Upgrade")
-            or "upgrade" not in self._header_tokens("Connection")
-            or self.headers.get("Sec-WebSocket-Version", "").strip() != "13"
-        ):
-            self._send(426, {"error": "Open api/ws as a version 13 WebSocket"}, headers=upgrade)
-            return
-        key = self.headers.get("Sec-WebSocket-Key", "").strip()
-        if len(self.headers.get_all("Sec-WebSocket-Key") or []) != 1 or not valid_client_key(key):
-            self._send(400, {"error": "The WebSocket key is invalid"})
-            return
-        self.send_response(101)
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", accept_key(key))
-        self.end_headers()
-        # The connection now carries WebSocket frames, never another HTTP request.
-        self.close_connection = True
-        session = SocketSession(
-            self.server,
-            self.connection,
-            Connection(self.connection, self.rfile, self.wfile),
-            log=self.log_message,
-        )
-        self.server.admit_socket(session)
-        try:
-            session.run()
-        finally:
-            self.server.discharge_socket(session)
 
     def do_POST(self):
         self._quiet = False
         path = urlsplit(self.path).path
         base = self.server.base_path
         route = path[len(base) :] if path.startswith(base) else None
-        # Without X-MG400-Panel, a request uses instrument contract v1 (labkit clients).
-        legacy = self.headers.get("X-MG400-Panel") is not None
-        routes = {"api/command", "api/heartbeat", "api/stop"}
-        if route not in (routes if legacy else routes | {"api/renew", "api/release"}):
+        if route not in {"api/command", "api/heartbeat", "api/renew", "api/release", "api/stop"}:
             self._send(404, {"error": "Not found"})
             return
         if self.headers.get("Transfer-Encoding") is not None:
             self._send(400, {"error": "Send the request body with Content-Length"})
             return
         if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-            if legacy:
-                self._send(403, {"error": "Use the panel to send commands"})
-            else:
-                self._send(415, {"error": "Expected Content-Type: application/json"})
-            return
-        if legacy and self.headers.get("X-MG400-Panel") != "1":
-            self._send(403, {"error": "Use the panel to send commands"})
+            self._send(415, {"error": "Expected Content-Type: application/json"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if not 0 < length <= 4096:
                 raise ValueError("Request body must contain 1 to 4096 bytes")
             payload = json.loads(self.rfile.read(length))
-            state = self.server.state
-            if not legacy:
-                status, result = self._contract_post(state, route, payload)
-                self._send(status, result)
-                return
-            client = None
-            if state.mode == "robot":
-                client = self.headers.get("X-MG400-Client", "")
-                if not client or len(client) > 128 or not client.isascii():
-                    raise ValueError("Open the panel to identify this browser")
-            if route == "api/stop":
-                result = self._stop(state, client, payload)
-            else:
-                kind = "heartbeat" if route == "api/heartbeat" else "command"
-                result = dispatch(state, kind, payload, client)
+            status, result = self._contract_post(self.server.state, route, payload)
         except (ValueError, PermissionError, RuntimeError) as error:
             self._send(refusal_status(error), {"error": str(error)})
         else:
-            self._send(200, result)
+            self._send(status, result)
 
     @staticmethod
     def _stop(state, client, payload):
-        if state.mode != "robot":
-            raise PermissionError("Robot stop is unavailable in read-only mode")
-        if not valid_client(client):
-            raise ValueError("A printable ASCII client ID is required")
         if not isinstance(payload, dict) or set(payload) - {"wait_s"}:
             raise ValueError("Stop must be a JSON object with only wait_s")
         return state.stop(client, payload.get("wait_s", 0))
 
     def _contract_post(self, state, route, payload):
         """Serve one contract POST. A refusal of the robot core is a 409 conflict."""
-        client = self.headers.get("X-MG400-Client")
-        if state.mode != "robot":
-            raise PermissionError("Robot control is unavailable in read-only mode")
-        if not valid_client(client):
-            raise ValueError("A printable ASCII client ID is required")
         if not isinstance(payload, dict):
             raise ValueError("Expected a JSON object")
+        if state.mode != "robot":
+            # Read-only mode: start_sync and stop_sync read the feedback. Nothing else works.
+            if route != "api/command":
+                raise PermissionError("Robot control is unavailable in read-only mode")
+            return 200, state.command(payload)
+        client = self.headers.get("X-MG400-Client")
+        if not valid_client(client):
+            raise ValueError("A printable ASCII client ID is required")
         try:
             if route == "api/stop":
                 return 200, self._stop(state, client, payload)
@@ -716,6 +295,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._quiet = payload.get("action") == "keys"
                 command_id, snapshot = state.submit(payload, client)
                 return 202, {"command_id": command_id, "state": snapshot}
+            if payload:
+                raise ValueError("Lease requests take an empty JSON object")
             verb = {"api/heartbeat": state.acquire, "api/renew": state.renew}
             lease = verb.get(route, state.release)(client)
             return 200, {"lease": lease}
@@ -852,8 +433,6 @@ def main(argv=None):
                 state.close()
             snapshot = state.snapshot()
             report(snapshot.get("message", ""))
-            # Open pages show the final state, then a closed connection.
-            server.stop_sockets()
             if snapshot.get("stop_unconfirmed") or snapshot.get("busy"):
                 exit_code = 1
                 report("Robot rest is unconfirmed. Use the physical emergency stop.")

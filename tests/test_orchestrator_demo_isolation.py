@@ -2,7 +2,6 @@
 
 import ipaddress
 import socket
-import threading
 
 import pytest
 
@@ -60,34 +59,9 @@ def test_demo_factories_ignore_production_settings_and_proxies(tmp_path, isolate
                 state = client.state()
                 assert client.owned(state)
                 assert client.healthy(state)
-                # This reaches the actual robot HTTP handler, including its
-                # required panel header, and both generic contract adapters.
+                # This reaches the actual robot HTTP handler and both generic contract adapters.
                 assert client.stop()["stop"] == "confirmed"
                 client.release()
             finally:
                 client.close()
     assert isolated_network
-
-
-@pytest.mark.parametrize("body_error", [False, True])
-def test_demo_context_closes_its_robot_client_workers(tmp_path, isolated_network, body_error):
-    client = None
-    workers = []
-    try:
-        try:
-            with Rehearsal(tmp_path, ("robot",), identity="demo-cleanup") as demo:
-                client = demo.clients["robot"]
-                client.acquire()
-                workers = [client._robot._reader_thread, client._robot._heartbeat_thread]
-                assert all(isinstance(worker, threading.Thread) for worker in workers)
-                assert all(worker.is_alive() for worker in workers)
-                if body_error:
-                    raise RuntimeError("Context body failed")
-        except RuntimeError as error:
-            if not body_error or str(error) != "Context body failed":
-                raise
-        assert not client._robot.connected
-        assert all(not worker.is_alive() for worker in workers)
-    finally:
-        if client is not None:
-            client.close()

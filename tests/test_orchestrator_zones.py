@@ -796,16 +796,17 @@ def test_recover_valid_live_clear_records_the_compared_generation(recover_env):
 
 class FakeRobot:
     identity = "review-run"
+    _lease_seconds = 3
     owned = RobotAdapter.owned
     healthy = RobotAdapter.healthy
 
     def state(self):
         return {
             "mode": "robot",
-            "controller_id": "review-run",
+            "lease": {"holder": "review-run", "remaining_s": 2},
             "instance": "review-robot",
-            "syncing": True,
-            "feedback_fresh": True,
+            "connected": True,
+            "fault": None,
             "robot_error": False,
             "busy": False,
             "locked": False,
@@ -1406,7 +1407,6 @@ def test_repaired_unzoned_command_can_resume_with_manual_completion(tmp_path):
             pass
 
     registry, robot, continued = Registry(), RepairableRobot(), []
-    assert "fault" not in robot.state() and "connected" not in robot.state()
 
     def work(ctx):
         ctx.clients["robot"].command("work")

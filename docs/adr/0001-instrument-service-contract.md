@@ -24,7 +24,6 @@
 | `POST api/renew` | 仅续期调用方持有且未过期的租约。否则返回 `409`。 |
 | `POST api/release` | 仅当调用方持有租约时释放它。 |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`。同一批事件也写入服务日志。 |
-| `GET api/ws` | 可选的状态推送，使用机械臂协议 1。 |
 
 - `fault` 为 `null` 或 `{code, message}`。`last_command` 为 `null` 或 `{id, action, client, result, message, finished_at}`。结果为 `ok`、`failed`、`rejected` 或 `stopped`。
 - 设备字段名包含单位：`pv_c`、`ramp_c_per_min`、`flow_pct`、`x_mm`、`r_deg`。

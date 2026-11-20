@@ -638,7 +638,6 @@ class Rehearsal:
         self._stack.callback(state.close)
         server = panel_server(("127.0.0.1", 0), state)
         self._serve(server)
-        self._stack.callback(server.stop_sockets)
         url = f"http://127.0.0.1:{server.server_port}"
         # The demo robot carries the same tool length as the lab robot.
         tool = self.directory / "tool.toml"

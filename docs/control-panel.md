@@ -5,15 +5,15 @@
 [返回项目首页](../README.md)
 
 机器人服务（`apps/control_panel/server.py`）控制 MG400 和真空吸盘。
-它使用 Python 3.12+ 标准库，提供 HTTP 接口和 WebSocket 连接。
+它使用 Python 3.12+ 标准库，提供 HTTP 接口。
 操作员在 [Lab Console](dashboard.md) 的 Motion 工作区操作机械臂。
-配方运行器、命令行工具和 Python 客户端调用同一接口。
+配方运行器、命令行工具和 `labkit` 客户端调用同一接口。
 
 ## 使用前
 
 服务默认使用真机控制模式。
 启动服务不会连接机械臂或发送动作。
-客户端取得控制权（`start_sync`）后，服务才连接机械臂。
+客户端取得控制租约（`api/heartbeat`）后，服务才连接机械臂。
 使用前，关闭交互终端和其他控制程序。
 多个程序查询控制器时，连接可能互相中断。
 
@@ -59,10 +59,10 @@
 
 ## 控制吸盘
 
-[实验室控制台](dashboard.md)的 Motion 工作区有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 [Python 客户端](development.md#python-客户端)：
+[实验室控制台](dashboard.md)的 Motion 工作区有 **Suck** 和 **Drop**（`release`）。键盘点动时，Z 吸取，X 放下。客户端用 `vacuum` 命令控制吸盘，例如用 `labkit.client.ServiceClient`：
 
 ```python
-client.run("vacuum", operation="suck")
+client.command("vacuum", operation="suck")
 ```
 
 `operation` 取 `suck`、`release` 或 `off`。机械臂必须空闲。
@@ -75,7 +75,7 @@ client.run("vacuum", operation="suck")
 它请求受控停止，不是物理急停。
 若停止或命令结果无法确认，使用现场物理急停。
 
-控制台的 `Release` 先发送 `disable`，最多等待 12 秒，再发送 `stop_sync`。
+控制台的 `Release` 先发送 `disable`，最多等待 12 秒，再释放租约（`api/release`）。
 控制台页面 3 秒内未发出心跳时，控制台用同样的顺序释放控制权。
 服务确认下使能模式 4 和停稳后，才断开反馈并解锁。
 若机械臂原已下使能且空闲，确认模式 4 即可。可以手动移动已下使能的机械臂，`Disable` 或 `Release` 不会锁定控制。
@@ -86,16 +86,15 @@ client.run("vacuum", operation="suck")
 服务每 1 秒重新连接。`Recover` 和 `Clear alarm` 都需要新鲜反馈。
 新鲜反馈恢复后，核实机械臂状态，再点击 `Recover`。
 
-直接连接服务的客户端（例如 `RobotClient` 和交互终端）发送 `stop_sync` 时，服务不自动下使能。
-机械臂仍使能时，`stop_sync` 停止机械臂并释放控制权，但保留反馈连接和控制锁。
-此时客户端再次发送 `start_sync`，会取消待完成的断开请求。然后发送 `disable`，再发送 `stop_sync`。
-机械臂已下使能时，`stop_sync` 确认下使能，然后断开。
-`RobotClient` 的 `with` 块结束时，若客户端持有控制权，会发送 `stop_sync`。客户端以 `keep_control=True` 创建时，不发送。
+直接连接服务的客户端（例如 `labkit` 客户端和交互终端）释放租约时，服务不自动下使能。
+机械臂仍使能时，`api/release` 停止机械臂并释放控制权，但保留反馈连接和控制锁。
+此时客户端再次取得租约，会取消待完成的断开请求。然后发送 `disable`，再释放租约。
+机械臂已下使能时，`api/release` 确认下使能，然后断开。
 停止获确认后，显式发送 `disable` 即可完成断开，无须重启服务。
 
 同一时刻只有一个客户端持有控制权。
 持有者 3 秒内未续租时，服务请求停止机械臂并锁定控制。
-控制台页面每 0.5 秒发送心跳，控制台据此续租。
+控制台页面每 0.5 秒发送心跳，控制台据此续租（`api/renew`）。
 页面关闭或 3 秒内未发出心跳时，控制台释放控制权。
 
 在服务终端按 Ctrl+C 或停止 systemd 服务时，服务先请求停止并等待确认。
@@ -185,7 +184,7 @@ client.run("vacuum", operation="suck")
 python3 apps/control_panel/server.py --mode read-only --robot-host 192.168.1.6
 ```
 
-`start_sync` 命令才连接 TCP `30004`，`stop_sync` 停止读取。
+`start_sync` 命令才连接 TCP `30004`，`stop_sync` 停止读取。两个命令在只读模式下经 `api/command` 发送，不需要租约。
 此模式只提供实测关节、控制器模式和报警标志。
 它不提供坐标反馈，也不接受运动命令。
 
@@ -219,10 +218,6 @@ Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方�
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 
 路径前缀用 `--base-path` 设置，例如 `--base-path /mg400-panel/`，所有接口都使用此前缀。
-服务前有反向代理时，代理必须满足以下要求：
-
-- 用 HTTP/1.1 转发 `api/ws`，并转发 `Upgrade` 和 `Connection` 请求头。
-- 读取超时大于 5 秒。服务每秒至少推送一次状态，每 5 秒发送一次 ping。
 
 接口说明见 [机器人服务接口](development.md#机器人服务接口)。
 
@@ -239,7 +234,7 @@ Lab Console 和配方服务固定连接 `http://127.0.0.1:8766/`，见 [配方�
 - 机械臂反馈中模式和报警标志的变化
 
 服务还记录每条命令的结果。
-心跳和状态推送不写入日志。
+租约请求和 `keys` 请求不写入日志。
 日志由单独线程写出，标准错误输出阻塞时不延迟停止。
 
 在 Olares 宿主机读取日志：

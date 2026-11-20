@@ -20,9 +20,8 @@ from pathlib import Path
 
 from labkit import ports
 from labkit.errors import ServiceError
-from mg400.client import RobotClientError, command_complete
 
-from .clients import SERVICE_URLS, SERVICES, RobotAdapter, ServiceAdapter
+from .clients import SERVICE_URLS, SERVICES, ServiceAdapter, robot_verdict
 
 DEFAULT_URL = ports.url("orch", "lab/")
 CAMERA_URL = ports.url("camera")
@@ -377,8 +376,7 @@ class Agent:
             code = code_for(status, message)
             return failure(code, message, status=status, device=device, **info)
         command_id = body.get("command_id")
-        if not wait or (device == "robot" and holder is None):
-            # Without this page's robot session, the command has a fresh identity.
+        if not wait:
             return {
                 "ok": True,
                 "device": device,
@@ -440,18 +438,9 @@ class Agent:
         """Return ok, failed, rejected, stopped, locked or unknown; None while pending."""
         last = state.get("last_command") or {}
         if device == "robot":
-            try:
-                done = command_complete(
-                    state, action=action, client_id=holder, baseline=baseline, instance=instance
-                )
-            except RobotClientError as error:
-                if last.get("action") == action and last.get("client") == holder:
-                    if last.get("result") in FINAL - {"ok"}:
-                        return last["result"]
-                    if "locked" in str(error):
-                        return "locked"
-                return "unknown"
-            return "ok" if done else None
+            return robot_verdict(
+                state, action=action, command_id=command_id, instance=instance, baseline=baseline
+            )
         if command_id is not None and last.get("id") == command_id:
             return last.get("result") if last.get("result") in FINAL else "unknown"
         if command_id is None and last.get("id") not in (None, baseline):
@@ -705,10 +694,9 @@ class Agent:
     def _direct_stop(self, device):
         """Send api/stop straight to the service once. Return a stop result string."""
         identity = f"{self.page}-stop-{uuid.uuid4().hex[:12]}"
-        kind = RobotAdapter if device == "robot" else ServiceAdapter
         adapter = None
         try:
-            adapter = kind(self.urls[device], identity, timeout=STOP_TIMEOUT_S)
+            adapter = ServiceAdapter(self.urls[device], identity, timeout=STOP_TIMEOUT_S)
             value = adapter.stop()
         except Exception:
             return "unreachable"

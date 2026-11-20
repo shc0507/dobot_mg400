@@ -287,7 +287,7 @@ def test_partial_fresh_factory_failure_closes_only_its_new_adapters(tmp_path, mo
         assert set(demo.new_clients("next")) == {"robot", "stage"}
 
 
-def test_context_closes_fresh_robot_workers_without_reusing_old_identity(tmp_path):
+def test_fresh_robot_adapter_takes_over_without_reusing_the_old_identity(tmp_path):
     with Rehearsal(tmp_path, ("robot",), identity="initial") as demo:
         old = demo.clients["robot"]
         old.acquire()
@@ -296,20 +296,13 @@ def test_context_closes_fresh_robot_workers_without_reusing_old_identity(tmp_pat
         old.release()
         old.close()
         fresh = demo.new_clients("recovery")["robot"]
-        previous_workers = set(threading.enumerate())
+        fresh.describe()
         fresh.acquire()
         assert fresh.state()["instance"] == instance
         assert fresh.owned(fresh.state())
         # Closing the original identity again cannot release the fresh owner.
         old.close()
         assert fresh.owned(fresh.state())
-        workers = [
-            worker
-            for worker in threading.enumerate()
-            if worker not in previous_workers and worker.name.startswith("RobotClient-")
-        ]
-        assert len(workers) == 2 and all(worker.is_alive() for worker in workers)
-    assert all(not worker.is_alive() for worker in workers)
     with pytest.raises(RuntimeError, match="no longer active"):
         fresh.acquire()
 

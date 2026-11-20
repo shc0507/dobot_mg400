@@ -51,15 +51,14 @@ Read only the files that the task needs. The tests are larger than the code, so 
 - Find the files for a task with a search first. Then read only the files that the task changes or calls.
 - Use the table below to find the tests and the doc for an area. After each implementation update, run `ruff check`, `ruff format --check` and the area tests. Reuse these results when committing. Do not run the full suite locally.
 - Read a large test file by search, not from the top. List its tests with `rg -n "^def test_" <file>`, then read only the tests that you need.
-- Read the shared test helpers (`tests/conftest.py`, `tests/helpers.py`, `tests/sim_mg400.py`, `tests/panel_ws.py`, `tests/stage_helpers.py`) only when a test that you read uses them.
+- Read the shared test helpers (`tests/conftest.py`, `tests/helpers.py`, `tests/sim_mg400.py`, `tests/panel_http.py`, `tests/stage_helpers.py`) only when a test that you read uses them.
 - Do not read `uv.lock`, `firmware/`, `apps/layout-studio/` or `examples/` unless the task names them. Load a skill from `.agents/skills/` only when the task needs it.
 
 | Area | Code | Tests | Doc |
 | --- | --- | --- | --- |
 | Arm motion, limits, protocol | `src/mg400/joint_control.py`, `joint_limits.py`, `controller_protocol.py`, `feedback.py`, `controller_alarms.py`, `config.py`, `config/robot.toml` | `test_joint_control.py`, `test_joint_limits.py`, `test_controller_protocol.py`, `test_feedback.py`, `test_controller_alarms.py` | [hardware.md](docs/hardware.md), [development.md](docs/development.md#真机控制参考) |
 | Keyboard jog | `src/mg400/keyboard_jog.py`, `web_keyboard.py` | `test_keyboard_jog.py`, `test_keyboard_movejog.py`, `test_web_keyboard*.py` | [dashboard.md](docs/dashboard.md), [development.md](docs/development.md#运动命令与坐标缓存) |
-| Web panel service | `apps/control_panel/`, `src/mg400/web_control.py`, `websocket.py`, `controller_ownership.py`, `robot_config.py` | `test_control_panel*.py`, `test_web_control.py`, `test_websocket.py`, `test_robot_service_e2e.py`, `test_controller_ownership.py`, `test_robot_config.py` | [control-panel.md](docs/control-panel.md), [development.md](docs/development.md#机器人服务接口) |
-| Robot service Python client | `src/mg400/client.py` | `test_robot_client.py` | [development.md](docs/development.md#python-客户端) |
+| Web panel service | `apps/control_panel/`, `src/mg400/web_control.py`, `websocket.py`, `controller_ownership.py`, `robot_config.py` | `test_control_panel.py`, `test_web_control.py`, `test_websocket.py`, `test_robot_service_e2e.py`, `test_controller_ownership.py`, `test_robot_config.py` | [control-panel.md](docs/control-panel.md), [development.md](docs/development.md#机器人服务接口) |
 | Vacuum suction | `src/mg400/suction.py`, `joint_control.py` (`vacuum`), `web_control.py` | `test_suction.py` | [development.md](docs/development.md#真空吸盘) |
 | Mode switch | `src/mg400/control_mode.py` | `test_control_mode.py` | [hardware.md](docs/hardware.md#从服务器切换-tcpip-模式) |
 | Shared service contract and access | `src/labkit/auth.py`, `lease.py`, `events.py`, `describe.py`, `client.py`, `flask.py`, `errors.py` | `test_labkit_*.py`, `contract_helpers.py`, `test_control_panel*.py`, `test_stage_app.py` | [contract ADR](docs/adr/0001-instrument-service-contract.en.md), [development.md](docs/development.md) |

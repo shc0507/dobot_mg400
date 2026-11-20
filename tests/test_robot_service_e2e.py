@@ -1,7 +1,7 @@
-"""Drive the real panel state through the robot service WebSocket.
+"""Drive the real panel state through the robot service HTTP contract.
 
 The real PanelServer, RobotPanelState and keyboard stack control the simulated MG400 of
-sim_mg400. A raw WebSocket client plays the page.
+sim_mg400. A labkit client plays the page.
 """
 
 import itertools
@@ -10,14 +10,13 @@ import threading
 import time
 
 import pytest
-from panel_ws import PanelServer, RealSocket, WsClient, running
+from panel_http import PanelServer, RealSocket, real_opener, running
 from sim_mg400 import CLIENT, JOGS, RADIAL_FRAME, READY, wait_for
 
+from labkit.client import ServiceClient
 from mg400.web_control import RobotPanelState
 
-CLOSED = "browser connection closed."
-
-pytestmark = pytest.mark.usefixtures("closed_clients", "isolated_controller_locks")
+pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
 class SimulatedNetworkServer(PanelServer):
@@ -48,26 +47,22 @@ def rig(service, request):
 
 
 class Page:
-    """Play the panel page: one WebSocket, one client ID and the shared key sequence."""
+    """Play the page: one HTTP client, one client ID and the shared key sequence."""
 
     def __init__(self, server):
         self.server = server
         self.seq = itertools.count(1)
-        self.client = None
+        self.http = ServiceClient(f"http://127.0.0.1:{server.server_port}/", CLIENT, timeout=3)
+        self.http._opener = real_opener()
 
-    def connect(self):
-        self.client = WsClient(self.server)
-        return self.client.hello(CLIENT)
+    def take(self):
+        return self.http.heartbeat()
 
-    def command(self, body):
-        reply = self.client.request("command", body)
-        assert reply["status"] == 200, reply
-        return reply["state"]
+    def command(self, action, **fields):
+        return self.http.command(action, **fields)["state"]
 
     def arm(self, speed=1):
-        return self.command(
-            {"action": "keyboard", "enabled": True, "speed": speed, "seq": next(self.seq)}
-        )
+        return self.command("keyboard", enabled=True, speed=speed, seq=next(self.seq))
 
 
 @pytest.fixture
@@ -76,13 +71,14 @@ def page(service):
 
 
 class Renewals:
-    """Send the held keys every 100 ms over the socket, as the focused page does."""
+    """Send the held keys every 100 ms, as the focused page does."""
 
     def __init__(self, page, *held):
         self._page = page
         self._held = list(held)
         self._stop = threading.Event()
-        self.ids = []
+        self.accepted = 0
+        self.errors = []
         self.last_sent = None
         self._thread = threading.Thread(target=self._run, name="test-renewals", daemon=True)
 
@@ -92,8 +88,11 @@ class Renewals:
         return self
 
     def _send(self):
-        body = {"seq": next(self._page.seq), "held": self._held}
-        self.ids.append(self._page.client.send_request("keys", body))
+        try:
+            self._page.http.command("keys", seq=next(self._page.seq), held=self._held)
+            self.accepted += 1
+        except Exception as error:
+            self.errors.append(error)
         self.last_sent = time.monotonic()
 
     def _run(self):
@@ -101,9 +100,8 @@ class Renewals:
             self._send()
 
     def acknowledged(self):
-        replies = [self._page.client.replies.get(request_id) for request_id in self.ids]
-        assert all(reply is None or reply["status"] == 200 for reply in replies), replies
-        return sum(reply is not None for reply in replies)
+        assert not self.errors, self.errors
+        return self.accepted
 
     def stop(self):
         """Stop renewing. Return the time of the last renewal."""
@@ -113,10 +111,10 @@ class Renewals:
 
 
 def hold_w(rig, page):
-    """Connect, sync and arm over the socket, then hold W with renewals until it jogs."""
-    first = page.connect()
+    """Take control and arm over HTTP, then hold W with renewals until it jogs."""
+    first = page.http.state()
     assert first["controller_id"] is None and not first["keyboard_enabled"]
-    page.command({"action": "start_sync"})
+    page.take()
     rig.wait(lambda s: s["feedback_fresh"] and s["robot_mode"] == 5)
     assert rig.snapshot()["controller_id"] == CLIENT
     page.arm()
@@ -158,47 +156,3 @@ def test_stopped_key_renewals_stop_the_jog_within_the_dead_man(rig, page, monkey
     assert keys_off - last < 1.0
     assert jog_stop - last < 1.0
     assert_verified_jog_stop(rig, "key updates stopped.")
-
-
-@pytest.mark.parametrize("ending", ["close-frame", "tcp-reset"])
-def test_closed_page_connection_stops_the_jog_without_the_dead_man(rig, page, ending):
-    # A 30 s dead-man cannot stop the jog in this test. Only the lost connection can.
-    assert RobotPanelState.KEY_LEASE_SECONDS == 30.0
-    renewals = hold_w(rig, page)
-    wait_for(lambda: renewals.acknowledged() >= 3, describe=rig.describe)
-    renewals.stop()
-    closed = time.monotonic()
-    if ending == "close-frame":
-        assert page.client.close() == 1000
-    else:
-        page.client.reset()
-    wait_for(lambda: "MoveJog()" in rig.controller.sent(), timeout=2, describe=rig.describe)
-    assert time.monotonic() - closed < 1.0
-    snapshot = rig.snapshot()
-    assert not snapshot["keyboard_enabled"] and snapshot["keyboard_disarm_reason"] == CLOSED
-    assert_verified_jog_stop(rig, CLOSED)
-
-
-@pytest.mark.parametrize("ending", ["closed", "replaced"])
-def test_reconnect_within_the_lease_keeps_control_with_keys_off(rig, page, ending):
-    renewals = hold_w(rig, page)
-    wait_for(lambda: renewals.acknowledged() >= 3, describe=rig.describe)
-    renewals.stop()
-    older = page.client
-    if ending == "closed":
-        assert older.close() == 1000
-    # The page reloads or reconnects with the same client ID.
-    first = page.connect()
-    if ending == "replaced":
-        assert older.closed_by_service() == (4409, "Replaced by a newer connection")
-    assert first["controller_id"] == CLIENT and not first["locked"]
-    assert not first["keyboard_enabled"]
-    assert_verified_jog_stop(rig, CLOSED)
-    # The new connection holds the browser lease: it renews it and arms keys again.
-    reply = page.client.request("heartbeat", {})
-    assert reply["status"] == 200 and reply["state"]["controller_id"] == CLIENT
-    page.arm()
-    rig.wait(lambda s: s["keyboard_enabled"])
-    snapshot = rig.snapshot()
-    assert snapshot["message"] == READY and snapshot["controller_id"] == CLIENT
-    assert not snapshot["locked"]

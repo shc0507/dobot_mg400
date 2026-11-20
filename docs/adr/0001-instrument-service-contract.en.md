@@ -24,7 +24,6 @@ Use contract version 1. Paths are relative to the configured service base path.
 | `POST api/renew` | Renew only an unexpired lease that the caller holds. Otherwise, return `409`. |
 | `POST api/release` | Release the lease only when the caller holds it. |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`. These events also enter the service journal. |
-| `GET api/ws` | Optional state push with robot protocol 1. |
 
 - `fault` is `null` or `{code, message}`. `last_command` is `null` or `{id, action, client, result, message, finished_at}`. Results are `ok`, `failed`, `rejected`, or `stopped`.
 - Include units in device fields: `pv_c`, `ramp_c_per_min`, `flow_pct`, `x_mm`, `r_deg`.

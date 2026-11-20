@@ -241,7 +241,7 @@ def robot_state(last, **fields):
     return {"instance": "i1", "busy": False, "locked": False, "last_command": last, **fields}
 
 
-def test_robot_move_uses_the_shared_completion_predicate_and_relative_pose():
+def test_robot_move_waits_for_its_command_id_and_uses_the_relative_pose():
     before = robot_state({"id": "i1:1", "action": "enable", "client": "h", "result": "ok"})
     before["actual"] = [250.0, 10.0, 40.0, 30.0]
     after = robot_state({"id": "i1:2", "action": "execute", "client": "h", "result": "ok"})
@@ -249,7 +249,7 @@ def test_robot_move_uses_the_shared_completion_predicate_and_relative_pose():
         {
             "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
             "api/console/state/robot": states(before, before, after),
-            "api/console/command/robot": (202, {"outcome": "accepted", "command_id": None}),
+            "api/console/command/robot": (202, {"outcome": "accepted", "command_id": "i1:2"}),
         }
     )
     code, result = run_cli(["robot", "move", "0", "0", "-10", "0", "--relative"], agent)
@@ -276,12 +276,12 @@ def test_relative_move_waits_briefly_for_a_known_pose():
 
 def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():
     before = robot_state({"id": "i1:1", "action": "enable", "client": "h", "result": "ok"})
-    stopped = robot_state({"id": "i1:2", "action": "stop", "client": "x", "result": "ok"})
+    stopped = robot_state({"id": "i1:3", "action": "stop", "client": "x", "result": "ok"})
     agent, _ = make(
         {
             "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
             "api/console/state/robot": states(before, stopped),
-            "api/console/command/robot": (202, {"command_id": None}),
+            "api/console/command/robot": (202, {"command_id": "i1:2"}),
         }
     )
     code, result = run_cli(["robot", "home"], agent)
@@ -293,7 +293,7 @@ def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():
         {
             "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
             "api/console/state/robot": states(before, failed),
-            "api/console/command/robot": (202, {"command_id": None}),
+            "api/console/command/robot": (202, {"command_id": "i1:2"}),
         }
     )
     code, result = run_cli(["robot", "home"], agent)

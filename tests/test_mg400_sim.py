@@ -8,8 +8,9 @@ from contextlib import closing
 
 import pytest
 from helpers import wait_for
-from panel_ws import WsClient, running
+from panel_http import running
 
+from labkit.client import ServiceClient
 from mg400.feedback import Feedback, FeedbackConnection, decode_feedback
 from mg400.sim import Simulator
 from mg400.sim.runtime import PORTS, feedback_frame
@@ -91,29 +92,27 @@ def test_live_feedback_and_fragmented_coalesced_commands(loopback_host):
             available.bind((loopback_host, port))
 
 
-@pytest.mark.usefixtures("isolated_controller_locks", "closed_clients")
+@pytest.mark.usefixtures("isolated_controller_locks")
 def test_real_panel_sequence_over_loopback(loopback_host):
     with Simulator(loopback_host) as simulator:
         state = RobotPanelState(loopback_host)
         try:
             with running(state) as server:
-                page = WsClient(server)
-                page.hello()
+                page = ServiceClient(f"http://127.0.0.1:{server.server_port}/", "browser-a")
 
                 def command(action, **fields):
-                    reply = page.request("command", {"action": action, **fields})
-                    assert reply["status"] == 200, reply
+                    reply = page.command(action, **fields)
+                    assert reply["command_id"], reply
 
                 def settled(condition):
                     def current():
-                        reply = page.request("heartbeat", {})
-                        assert reply["status"] == 200, reply
-                        snapshot = reply["state"]
+                        page.renew()
+                        snapshot = page.state()
                         return not snapshot["busy"] and condition(snapshot)
 
                     wait_for(current, timeout=8, describe=lambda: repr(state.snapshot()))
 
-                command("start_sync")
+                assert page.heartbeat()["lease"]["holder"] == "browser-a"
                 settled(lambda s: s["feedback_fresh"] and s["robot_mode"] == 4)
                 command("enable")
                 settled(lambda s: s["robot_mode"] == 5)
@@ -122,7 +121,7 @@ def test_real_panel_sequence_over_loopback(loopback_host):
                 settled(lambda s: s["actual"] == list(target.values()))
                 command("disable")
                 settled(lambda s: s["robot_mode"] == 4 and not s["locked"])
-                command("stop_sync")
+                page.release()
                 wait_for(lambda: not state.snapshot()["syncing"], timeout=8)
                 assert not state.snapshot()["locked"]
                 assert state.snapshot()["message"] == "Robot disable is confirmed."

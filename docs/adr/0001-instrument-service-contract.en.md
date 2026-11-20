@@ -25,7 +25,7 @@ Use contract version 1. Paths are relative to the configured service base path.
 | `POST api/release` | Release the lease only when the caller holds it. |
 | `GET api/events?since=<seq>` | `{events: [{seq, ts_unix, level, message, fields}], next}`. These events also enter the service journal. |
 
-- `fault` is `null` or `{code, message}`. `last_command` is `null` or `{id, action, client, result, message, finished_at}`. Results are `ok`, `failed`, `rejected`, or `stopped`.
+- `fault` is `null` or `{code, message}`. `last_command` is `null` or `{id, action, client, result, message, finished_at}`. Final results are `ok`, `failed`, `rejected`, or `stopped`. A service can report `running` while a command is in progress, as the stage does for a move or calibration. Clients poll until a final result.
 - Include units in device fields: `pv_c`, `ramp_c_per_min`, `flow_pct`, `x_mm`, `r_deg`.
 - POST requests require `Content-Type: application/json` and `X-MG400-Client`. A client ID contains 1 to 128 printable ASCII characters.
 - Errors use `{"error": "..."}`: `400` invalid request, `409` state or lease conflict, `415` non-JSON, `503` lost device link.

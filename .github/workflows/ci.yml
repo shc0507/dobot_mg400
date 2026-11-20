@@ -41,6 +41,7 @@ jobs:
         run: uv run ruff format --check .
       - name: Python tests
         # Pull requests run the changed areas' tests; pushes to main run the full suite.
+        # 3 workers on the 4-vCPU runner; loadfile keeps each file's tests in one worker.
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
             mapfile -t targets < <(git diff --name-only HEAD^1 HEAD | uv run python scripts/select_tests.py)
@@ -48,6 +49,6 @@ jobs:
             targets=(tests)
           fi
           printf 'pytest target: %s\n' "${targets[@]}"
-          uv run pytest -ra "${targets[@]}"
+          uv run pytest -ra -n 3 --dist loadfile "${targets[@]}"
       - name: JavaScript tests
         run: node --test tests/*.mjs

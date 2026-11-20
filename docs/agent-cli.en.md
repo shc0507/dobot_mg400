@@ -62,6 +62,8 @@ Shortcuts:
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
 
+Run `microscope zero` only after an operator puts the 50x objective in focus at the clearance position. Do not use it to recover from a failed command: zero at another height moves the focus limits.
+
 Stage coordinates use measured shaft rotations. Absolute `goto` requires completed calibration, valid bounds and fresh encoder feedback. Use Sample Transfer for saved positions. The old stage `home`, `zero` and `pose` shortcuts, and named `goto`, are unsupported.
 
 Each command waits for its result. The default `--timeout` is 300 seconds. `--no-wait` returns after the console accepts the command.

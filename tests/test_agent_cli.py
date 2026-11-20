@@ -339,6 +339,24 @@ def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():
     assert result["hint"] == "labctl robot clear-alarm"
 
 
+def test_failed_microscope_command_with_lost_zero_never_hints_zero():
+    before = {"last_command": {"id": "6", "action": "focus_move", "client": "h", "result": "ok"}}
+    failed = {
+        "focus_zero_known": False,
+        "last_command": {"id": "7", "action": "focus_move", "client": "h", "result": "failed"},
+    }
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "microscope", "holder": "h"}),
+            "api/console/state/microscope": states(before, failed),
+            "api/console/command/microscope": (202, {"command_id": "7"}),
+        }
+    )
+    code, result = run_cli(["microscope", "focus", "100"], agent)
+    assert code == 1 and result["outcome"] == "failed"
+    assert result["hint"] == "labctl microscope state"
+
+
 def test_refusal_reports_the_code_and_the_next_command():
     agent, _ = make(
         {

@@ -62,6 +62,8 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
 
+只在操作员把 50x 物镜在避让位置对焦后，才运行 `microscope zero`。不要用它从失败的命令中恢复：在其他高度置零会移动对焦限位。
+
 位移台坐标使用实测轴圈数。绝对 `goto` 要求完成标定、有效限位和未过期的编码器反馈。已存位置使用 Sample Transfer。旧位移台快捷命令 `home`、`zero`、`pose` 和按名称的 `goto` 均不支持。
 
 每条命令等待其结果。默认 `--timeout` 为 300 秒。`--no-wait` 在控制台接受命令后返回。

@@ -160,14 +160,19 @@ def restart_go2rtc():
     except (OSError, HTTPException):
         pass  # go2rtc can exec before it sends the response.
     time.sleep(0.5)
-    deadline = time.monotonic() + 5
+    wait_go2rtc()
+
+
+def wait_go2rtc(seconds=5):
+    """Wait until the go2rtc API answers."""
+    deadline = time.monotonic() + seconds
     while True:
         try:
             urllib.request.urlopen(GO2RTC + "/api", timeout=1).close()
             return
         except (OSError, HTTPException):
             if time.monotonic() > deadline:
-                raise OSError("go2rtc did not restart") from None
+                raise OSError("go2rtc did not answer") from None
             time.sleep(0.1)
 
 
@@ -487,6 +492,9 @@ if __name__ == "__main__":
         # This process stopped during a still. Return go2rtc to the previews.
         STILL_CONFIG.unlink()
         restart_go2rtc()
+    else:
+        # The capture unit can report started before go2rtc listens.
+        wait_go2rtc()
     server = ThreadingHTTPServer((host, ports.PORTS["camera"]), Preview)
     print(f"Camera preview is ready at {host}:{ports.PORTS['camera']}.", flush=True)
     server.serve_forever()

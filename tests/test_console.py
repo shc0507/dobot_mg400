@@ -715,6 +715,55 @@ def test_lent_devices_refuse_page_commands_but_accept_stops(rig, monkeypatch):
     assert post(rig, "command/stage", {"action": "move"}, page=AGENT).status_code == 202
 
 
+def test_history_skips_read_noise_and_writes_a_heartbeat(monkeypatch):
+    from types import SimpleNamespace
+
+    from orchestrator import devices as devices_module
+
+    class Store:
+        def __init__(self):
+            self.rows = []
+
+        def add_device_state(self, device, ts, phase, row, state):
+            self.rows.append((ts, state))
+
+        def prune_devices(self, before):
+            pass
+
+    store, clock = Store(), SimpleNamespace(value=1000.0)
+    monkeypatch.setattr(devices_module, "time", SimpleNamespace(time=lambda: clock.value))
+    devices = devices_module.Devices(SimpleNamespace(store=store))
+    motor = {"id": "top", "position": 1.0, "measured_speed": 0.0, "switch_raw": 1014}
+    lease = {"holder": None, "remaining_s": 3.0}
+    state = {"connected": True, "busy": False, "fault": None, "lease": lease, "motors": [motor]}
+
+    def read(seconds, **motor_values):
+        clock.value += seconds
+        entry = devices._entry(
+            "ready",
+            state={**state, "seq": clock.value, "motors": [{**motor, **motor_values}]},
+            describe={},
+        )
+        devices._record("stage", entry)
+        return len(store.rows)
+
+    assert read(0) == 1
+    # Ages, raw counts, lease countdowns and encoder jitter write no row.
+    noise = {"position": 1.000244, "measured_speed": -0.0005, "switch_raw": 1016}
+    assert read(20, **noise, telemetry_age_ms=59) == 1
+    state["lease"] = {**lease, "remaining_s": 1.0}
+    assert read(20, **noise) == 1
+    # A real move writes a row, at most one each 10 s.
+    assert read(1, position=1.5) == 2
+    assert read(1, position=2.0) == 2
+    assert read(10, position=2.0) == 3
+    assert store.rows[-1][1]["motors"][0]["position"] == 2.0
+    # Without a change, one heartbeat row each 5 min shows the reader still runs.
+    assert read(devices_module.HEARTBEAT_S - 1, position=2.0) == 3
+    assert read(1, position=2.0) == 4
+    assert store.rows[-1][0] - store.rows[-2][0] == devices_module.HEARTBEAT_S
+
+
 def test_history_route_keeps_state_changes_and_samples_values(rig, monkeypatch):
     from orchestrator import devices as devices_module
 

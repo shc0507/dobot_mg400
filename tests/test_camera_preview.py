@@ -747,6 +747,22 @@ def test_mp4_route_returns_502_when_go2rtc_cannot_encode(preview):
     assert request(module, "camera1.mp4")[0] == 502
 
 
+def test_mp4_route_returns_404_when_go2rtc_has_no_preview(preview):
+    module, upstream = preview
+    upstream.side_effect = urllib.error.HTTPError(
+        "http://127.0.0.1:1984/api/stream.mp4", 404, "stream not found", {}, None
+    )
+    assert request(module, "camera1.mp4?codec=h265")[0] == 404
+    assert upstream.call_count == 2
+
+
+def test_mp4_route_returns_502_while_go2rtc_does_not_answer(preview):
+    module, upstream = preview
+    missing = urllib.error.HTTPError("http://127.0.0.1:1984/api/stream.mp4", 404, "", {}, None)
+    upstream.side_effect = [urllib.error.URLError(ConnectionRefusedError()), missing]
+    assert request(module, "camera1.mp4?codec=h265")[0] == 502
+
+
 def test_video_previews_exist_for_all_streams_but_a_large_side_stream(preview, monkeypatch):
     _, upstream = preview
     monkeypatch.setenv(

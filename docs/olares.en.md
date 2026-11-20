@@ -312,7 +312,7 @@ go2rtc reads the microscope preview only while an H.264 viewer is open. If the m
 go2rtc starts an ffmpeg encoder when the first viewer opens an H.264 preview, and stops it after the last viewer leaves.
 ffmpeg estimates the input frame rate from 2 frames (`-fpsprobesize 2`). It sends each source frame once and 1 keyframe each 1 s. Thus a new view shows its first frame in about 1 s, also for the microscope at a low frame rate. `-fps_mode` needs ffmpeg 5.1 or later.
 The installer runs ffmpeg to test `h264_nvenc`. If the test passes, the H.264 previews use the NVIDIA GPU encoder. If not, they use `libx264`. After you change the GPU or its driver, run the installer again.
-With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264.
+With NVENC, each preview also has an H.265 version from `hevc_nvenc`. A stream wider than 640 and the microscope get at most 2.5 Mbit/s. Other streams get 2 Mbit/s. A request for `/camera/<view>.mp4?codec=h265` gets H.265. If the host has no H.265 preview, it gets H.264. If go2rtc has none of the requested previews, the route returns 404. If go2rtc does not answer, it returns 502.
 With NVENC, a stream above `1280x720` has only an H.265 preview, except the side stream. The preview has the resolution of the capture mode, at most 6 Mbit/s.
 RTP cannot carry a JPEG wider than 2040, so ffmpeg reads the MJPEG of this stream through HTTP.
 A camera can send fewer frames than its mode. Each frame gets its arrival time as timestamp, so the preview frame rate is the real frame rate.

@@ -53,7 +53,8 @@ uv run python -m microscope --demo --bind 127.0.0.1 --port 8770
 
 Demo mode uses simulated motors and generated microscope and ArUco frames.
 It uses synthetic focus limits and clearance. These values do not establish safe settings for hardware.
-The service opens its devices only when it starts. Invalid configuration exits with status `2`.
+The service opens its devices only when it starts. Invalid configuration exits with status `2`, and systemd does not restart the service.
+A device or serving failure exits with status `1`, and systemd restarts the service after 10 s. Each start resets the controller board.
 On `SIGINT`, `SIGTERM`, or `SIGHUP`, it cancels work, stops and disables the motors, closes devices, and exits.
 Cleanup failures produce a nonzero exit status.
 

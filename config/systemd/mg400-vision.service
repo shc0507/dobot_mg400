@@ -13,6 +13,8 @@ WorkingDirectory=/opt/mg400
 ExecStart=/opt/mg400/.venv-vision/bin/python -m vision
 Restart=on-failure
 RestartSec=3
+# A startup refusal (exit status 2) is a configuration error: do not restart.
+# A device, model or serving failure exits 1 and restarts.
 RestartPreventExitStatus=2
 UMask=0077
 TimeoutStopSec=30

@@ -103,7 +103,7 @@ class MicroscopeConfig:
             switch_focus=calibrate.SWITCH_FOCUS,
             home_switch=calibrate.HOME_SWITCH,
             nudge_steps=calibrate.nudge_steps(),
-        )
+        ).validate()
 
     def validate(self):
         if (

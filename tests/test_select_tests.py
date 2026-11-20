@@ -56,8 +56,31 @@ def test_package_change_runs_tests_that_import_it(tmp_path):
     ]
 
 
+def test_package_change_follows_helpers_fixtures_and_loaded_files(tmp_path):
+    tests = tmp_path / "tests"
+    (tmp_path / "scripts").mkdir()
+    tests.mkdir()
+    (tmp_path / "scripts/tool.py").write_text("import thermal_cam\n")
+    (tests / "helper_base.py").write_text("import thermal_cam\n")
+    (tests / "helper_sim.py").write_text("import helper_base\n")
+    (tests / "conftest.py").write_text(
+        "import pytest\n\n@pytest.fixture\ndef camera_rig():\n    from helper_base import x\n"
+    )
+    (tests / "test_chain.py").write_text("from helper_sim import run\n")
+    (tests / "test_fixture.py").write_text("def test_a(camera_rig):\n    pass\n")
+    (tests / "test_loaded.py").write_text('SCRIPT = ROOT / "scripts/tool.py"\n')
+    (tests / "test_other.py").write_text("def test_b(tmp_path):\n    pass\n")
+    assert select(["src/thermal_cam/camera.py"], root=tmp_path) == [
+        "tests/test_chain.py",
+        "tests/test_fixture.py",
+        "tests/test_loaded.py",
+    ]
+
+
 def test_docs_only_change_runs_doc_checks():
-    assert select(["docs/vision.md", "README.en.md", ".claude/skills/x/SKILL.md"]) == [
+    # .claude/skills is a symlink, so git reports a change to it as the bare path.
+    changed = ["docs/vision.md", "README.en.md", ".claude/skills/x/SKILL.md", ".claude/skills"]
+    assert select(changed) == [
         "tests/test_doc_pairs.py",
         "tests/test_repo_files.py",
     ]

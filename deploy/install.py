@@ -451,7 +451,7 @@ PROXY_UPSTREAMS = {"ORCH": ports.PORTS["orch"], "CAMERA": ports.PORTS["camera"]}
 ORCH_SOCKET_PORT = ports.PORTS["orch-socket"]
 
 
-def render_proxy(host, settings, selected):
+def render_proxy(host, settings):
     """Render fixed loopback routes after validating the proxy and its installed peers."""
 
     def port(key, default, minimum=1):
@@ -489,9 +489,9 @@ def render_proxy(host, settings, selected):
     return template
 
 
-def prepare_proxy(args, host, settings, selected):
+def prepare_proxy(args, host, settings):
     """Check the proxy without starting its binary or changing files."""
-    config = render_proxy(host, settings, selected)
+    config = render_proxy(host, settings)
     for destination in (host.caddy, host.proxy_config):
         try:
             with assets._directory(destination.parent) as directory:
@@ -514,7 +514,7 @@ def prepare_proxy(args, host, settings, selected):
                 )
             binary = stream.read()
     except FileNotFoundError as error:
-        raise RuntimeError("Proxy is selected. Pass a Caddy 2 binary with --caddy PATH.") from error
+        raise RuntimeError("Pass a Caddy 2 binary for the proxy with --caddy PATH.") from error
     if not binary:
         raise ValueError("The Caddy binary is empty.")
     return config, binary if args.caddy is not None else None
@@ -695,7 +695,7 @@ def install(args, host, run, chown, out):
         raise RuntimeError(f"The go2rtc binary does not exist: {args.go2rtc}")
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
-    proxy_config, caddy_binary = prepare_proxy(args, host, settings, selected)
+    proxy_config, caddy_binary = prepare_proxy(args, host, settings)
     # Without a library, the microscope service installs and runs without its camera.
     toupcam_missing = args.toupcam is None and not os.path.lexists(host.toupcam)
     toupcam_binary = prepare_toupcam(
@@ -885,15 +885,14 @@ def install(args, host, run, chown, out):
         step(f"remove {host.go2rtc_config}: cameras are off")
         if not args.dry_run:
             host.go2rtc_config.unlink()
-    if proxy_config is not None:
-        if caddy_binary is not None:
-            directory(host.caddy.parent, 0o755, (0, 0))
-            step(f"install {args.caddy} as {host.caddy}")
-            if not args.dry_run:
-                write_file(host.caddy, caddy_binary, 0o755, (0, 0), chown)
-        step(f"write {host.proxy_config}")
+    if caddy_binary is not None:
+        directory(host.caddy.parent, 0o755, (0, 0))
+        step(f"install {args.caddy} as {host.caddy}")
         if not args.dry_run:
-            write_file(host.proxy_config, proxy_config, 0o640, (0, SERVICE_GID), chown)
+            write_file(host.caddy, caddy_binary, 0o755, (0, 0), chown)
+    step(f"write {host.proxy_config}")
+    if not args.dry_run:
+        write_file(host.proxy_config, proxy_config, 0o640, (0, SERVICE_GID), chown)
     if toupcam_binary is not None:
         directory(host.toupcam.parent, 0o755, (0, 0))
         step(f"install Toupcam {TOUPCAM_VERSION} from {args.toupcam} as {host.toupcam}")

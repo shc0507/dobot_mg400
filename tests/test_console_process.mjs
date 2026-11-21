@@ -325,6 +325,61 @@ test("snapshot path and recording fields are checked in the page and sent with t
   ]);
 });
 
+test("a saved snapshot path is cleared, so the next press uses the service default", async () => {
+  const { root, calls } = await load();
+  role(root, "snapshot-path").type("runs/chip-7/before.png");
+  role(root, "snapshot").click();
+  await flush();
+  assert.equal(role(root, "snapshot-path").value, "");
+  role(root, "snapshot").click();
+  await flush();
+  const sent = calls.filter(call => call[2] === "snapshot").map(call => call[3]);
+  assert.deepEqual(sent, [{ path: "runs/chip-7/before.png" }, {}]);
+});
+
+test("Confirm sends the setpoint that the confirmation shows", async () => {
+  const { root, calls } = await load();
+  role(root, "target").type("250");
+  role(root, "apply").click();
+  role(root, "target").type("900");
+  role(root, "confirm-apply").click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[0] === "relay").map(call => call[3]), [{ temperature_c: 250, ramp_rate_c_per_min: 10 }]);
+});
+
+test("every microscope Stop press is sent, also while an earlier Stop is pending", async () => {
+  const { root, calls } = await load();
+  role(root, "stop-microscope").click();
+  role(root, "stop-microscope").click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[0] === "stop"), [["stop", "microscope"], ["stop", "microscope"]]);
+});
+
+test("an unedited sequence editor follows a sequence that another client set", async () => {
+  const status = statusBody();
+  const { root, logic } = await load({ status });
+  const steps = () => walk(root).filter(node => node.getAttribute("data-role") === "step");
+  assert.equal(steps().length, 1);
+  status.furnace.sequence = { running: true, phase: "holding", current_index: 1, steps: [
+    { temperature_c: 200, ramp_rate_c_per_min: 5, hold_minutes: 1 }, { temperature_c: 400, ramp_rate_c_per_min: 5, hold_minutes: 1 }] };
+  await logic._internal.poll();
+  assert.equal(steps().length, 2);
+  assert.deepEqual(steps().map(row => row.className), ["", "pr-current"]);
+  // An edited editor keeps its rows and marks no running step.
+  role(root, "add-step").click();
+  status.furnace.sequence = { ...status.furnace.sequence, steps: [{ temperature_c: 500, ramp_rate_c_per_min: 5, hold_minutes: 1 }] };
+  await logic._internal.poll();
+  assert.equal(steps().length, 3);
+  assert.ok(steps().every(row => row.className === ""));
+});
+
+test("status polls do not overlap", async () => {
+  const { logic, calls } = await load();
+  const before = calls.filter(call => call[1] === "status").length;
+  await Promise.all([logic._internal.poll(), logic._internal.poll()]);
+  assert.equal(calls.filter(call => call[1] === "status").length, before + 1);
+});
+
 test("recording errors show, and the snapshot and recording helpers follow the service rules", async () => {
   const { logic } = await load();
   assert.deepEqual(logic.logic.snapshotParams(""), {});

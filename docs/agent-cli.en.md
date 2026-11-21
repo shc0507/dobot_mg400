@@ -15,7 +15,7 @@ The CLI adds no limits and no checks. The services keep the test-stage protectio
 - `--session NAME` selects the agent session. The default is `main`. The console page is `agent-NAME`, and the holder on the Overview **Control** card is `agent-NAME-<12 hex>`.
 - Use 1 session for each agent. Calls with the same session share control.
 - `labctl <device> take` takes control through the Lab Console. The console holds the lease between calls and renews it every 1 second.
-- The console releases the session's devices after 10 minutes without a call from the session. A release of the robot disables the arm first.
+- The console releases the session's devices after 10 minutes without a call from the session. A release of the robot disables the arm first. A release of the stage stops the stage first.
 - `labctl <device> release` releases 1 device. `labctl all release` releases every device of the session.
 - The owner takes control back with **Release all** on the Overview, or with `sudo labctl all release --session NAME`. Both skip devices lent to a run. Stop or abort the run first.
 

@@ -15,7 +15,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `--session NAME` 选择智能体会话。默认值为 `main`。控制台页面为 `agent-NAME`，Overview **Control** 卡片上的持有者为 `agent-NAME-<12 hex>`。
 - 每个智能体使用 1 个会话。同一会话的调用共享控制权。
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
-- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
+- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。释放位移台前，先停止位移台。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
 - 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 

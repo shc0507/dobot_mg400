@@ -143,11 +143,11 @@ void printHelp() {
 
 bool parseMotor(const char *text, MotorControl::Motor &motor) {
   if (!text) return false;
-  if (strcmp(text, "bottom") == 0 || strcmp(text, "1") == 0) {
+  if (strcmp_P(text, PSTR("bottom")) == 0 || strcmp_P(text, PSTR("1")) == 0) {
     motor = MotorControl::Motor::Bottom_Motor;
-  } else if (strcmp(text, "top") == 0 || strcmp(text, "2") == 0) {
+  } else if (strcmp_P(text, PSTR("top")) == 0 || strcmp_P(text, PSTR("2")) == 0) {
     motor = MotorControl::Motor::Top_Motor;
-  } else if (strcmp(text, "insert") == 0 || strcmp(text, "3") == 0) {
+  } else if (strcmp_P(text, PSTR("insert")) == 0 || strcmp_P(text, PSTR("3")) == 0) {
     motor = MotorControl::Motor::Insert_Motor;
   } else {
     return false;
@@ -266,16 +266,16 @@ void handleCommand(char *line) {
   float floatValue;
   MotorControl::Motor motor;
 
-  if (strcmp(command, "help") == 0 && !argument) {
+  if (strcmp_P(command, PSTR("help")) == 0 && !argument) {
     printHelp();
     return;
-  } else if (strcmp(command, "status") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("status")) == 0 && !argument) {
     printStatus();
     return;
-  } else if (strcmp(command, "enc") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("enc")) == 0 && !argument) {
     printEncoders();
     return;
-  } else if (strcmp(command, "microstep") == 0) {
+  } else if (strcmp_P(command, PSTR("microstep")) == 0) {
     if (!argument) {
       console.print(F("microstep="));
       console.println(MotorControl::microstep());
@@ -289,54 +289,54 @@ void handleCommand(char *line) {
       console.println(F("ERROR: All stages use fixed eighth stepping; idle only."));
     }
     return;
-  } else if (strcmp(command, "motor") == 0) {
+  } else if (strcmp_P(command, PSTR("motor")) == 0) {
     ok = parseMotor(argument, motor) && MotorControl::selectMotor(motor);
-  } else if (strcmp(command, "dir") == 0 && argument) {
-    if (strcmp(argument, "cw") == 0) {
+  } else if (strcmp_P(command, PSTR("dir")) == 0 && argument) {
+    if (strcmp_P(argument, PSTR("cw")) == 0) {
       ok = MotorControl::setDirection(MotorControl::Direction::Clockwise);
-    } else if (strcmp(argument, "ccw") == 0) {
+    } else if (strcmp_P(argument, PSTR("ccw")) == 0) {
       ok = MotorControl::setDirection(MotorControl::Direction::Counterclockwise);
     }
-  } else if (strcmp(command, "steps") == 0) {
+  } else if (strcmp_P(command, PSTR("steps")) == 0) {
     ok = parsePositiveLong(argument, integerValue) && MotorControl::rotateSteps(integerValue);
-  } else if (strcmp(command, "rev") == 0) {
+  } else if (strcmp_P(command, PSTR("rev")) == 0) {
     ok = !argument ? MotorControl::rotateOneRevolution() :
          (parsePositiveFloat(argument, floatValue) && MotorControl::rotateRevolutions(floatValue));
-  } else if (strcmp(command, "goto") == 0) {
+  } else if (strcmp_P(command, PSTR("goto")) == 0) {
     ok = parseFiniteFloat(argument, floatValue) && !strstr(argument, "0x") &&
          MotorControl::goToPosition(floatValue);
-  } else if (strcmp(command, "start") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("start")) == 0 && !argument) {
     ok = MotorControl::startRotation();
-  } else if (strcmp(command, "calibrate") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("calibrate")) == 0 && !argument) {
     ok = MotorControl::calibrate();
-  } else if (strcmp(command, "hold") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("hold")) == 0 && !argument) {
     ok = MotorControl::startHold();
-  } else if (strcmp(command, "keepalive") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("keepalive")) == 0 && !argument) {
     ok = MotorControl::keepHoldAlive();
-  } else if (strcmp(command, "clear") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("clear")) == 0 && !argument) {
     ok = MotorControl::clearFault();
-  } else if (strcmp(command, "reset") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("reset")) == 0 && !argument) {
     ok = MotorControl::resetPosition();
-  } else if (strcmp(command, "setlimit") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("setlimit")) == 0 && !argument) {
     ok = MotorControl::setLimit();
-  } else if (strcmp(command, "clearupper") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("clearupper")) == 0 && !argument) {
     ok = MotorControl::clearUpperLimit();
-  } else if (strcmp(command, "clearlower") == 0 && !argument) {
+  } else if (strcmp_P(command, PSTR("clearlower")) == 0 && !argument) {
     ok = MotorControl::clearLowerLimit();
-  } else if (strcmp(command, "stop") == 0) {
+  } else if (strcmp_P(command, PSTR("stop")) == 0) {
     if (!argument) {
       MotorControl::stopRotation();
       ok = true;
-    } else if (strcmp(argument, "all") == 0) {
+    } else if (strcmp_P(argument, PSTR("all")) == 0) {
       MotorControl::stopAll();
       console.println(F("OK: All motors stopped."));
       return;
     }
-  } else if (strcmp(command, "speed") == 0) {
+  } else if (strcmp_P(command, PSTR("speed")) == 0) {
     ok = parsePositiveFloat(argument, floatValue) && MotorControl::setSpeed(floatValue);
-  } else if (strcmp(command, "accel") == 0) {
+  } else if (strcmp_P(command, PSTR("accel")) == 0) {
     ok = parsePositiveFloat(argument, floatValue) && MotorControl::setAcceleration(floatValue);
-  } else if (strcmp(command, "spr") == 0) {
+  } else if (strcmp_P(command, PSTR("spr")) == 0) {
     ok = parsePositiveLong(argument, integerValue) && integerValue <= 65535L &&
          MotorControl::setStepsPerRevolution(static_cast<uint16_t>(integerValue));
   }
@@ -384,8 +384,6 @@ void setup() {
   Serial.begin(115200);
   MotorControl::begin();
   console.println(F("Stage closed-loop firmware ready. Serial: 115200 baud, Newline or Both NL & CR."));
-  console.println(F("Default: bottom, CW, 200 full steps/rev, 0.25 rotations/s, 0.25 rotations/s^2."));
-  console.println(F("Fixed eighth step: MS1=D10 HIGH, MS2=D9 HIGH, MS3=D8 LOW."));
   printHelp();
   resetTelemetry();
 }

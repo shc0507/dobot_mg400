@@ -24,6 +24,8 @@ uint8_t outputs[20] = {};
 uint8_t pinModes[20] = {};
 uint16_t analogInputs[3] = {1023,1023,1023};
 bool switchPlant[3] = {};
+// Microseconds for which an opening upper contact reads in the lower band (RC rise, bounce).
+uint64_t releaseUs[3] = {}, upperSeenUs[3] = {};
 double physicalUpper[3] = {}, physicalLower[3] = {};
 double physical[3] = {};
 uint16_t physicalSpr[3] = {200,200,200};
@@ -98,7 +100,8 @@ int analogRead(uint8_t pin) {
   const uint8_t axis=pin-A0;
   if(switchPlant[axis]) {
     if(physical[axis]>=physicalLower[axis]) return 250;
-    if(physical[axis]<=physicalUpper[axis]) return 0;
+    if(physical[axis]<=physicalUpper[axis]) { upperSeenUs[axis]=clockUs; return 0; }
+    if(upperSeenUs[axis] && clockUs-upperSeenUs[axis]<releaseUs[axis]) return 400;
     return 1023;
   }
   return analogInputs[pin-A0];
@@ -210,7 +213,7 @@ void reset() {
     physical[i]=4080; physicalSpr[i]=200; pulseCount[i]=reversePulses[i]=0;
     accelerationSensitive[i]=false; rotorPulseRate[i]=0; lastPlantUs[i]=0; accelerationDrops[i]=0;
     analogInputs[i]=1023;
-    switchPlant[i]=false;
+    switchPlant[i]=false; releaseUs[i]=upperSeenUs[i]=0;
     online[i]=magnet[i]=true; inverted[i]=(i!=0); jammed[i]=false; dropEvery[i]=0;
     wallSide[i]=0; translator[i]=0; homeOnWake[i]=false; snapAtUs[i]=snapAtPulse[i]=0; pendingSnap[i]=0;
     noisy[i]=false; checkPhysicalBounds[i]=false;
@@ -305,7 +308,16 @@ void testFaultsAndRecovery() {
   assert(!state().rotating && state().fault==Fault::Direction);
   reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(20);
   assert(!state().rotating && state().fault==Fault::Encoder);
+  // A short dropout (< MaxGapMs between good samples) keeps trust and the position.
+  float kept=state().position; assert(kept<0);
   assert(!MotorControl::clearFault()); online[0]=true; advance(20);
+  assert(state().encoder==Encoders::Health::Ok);
+  assert(MotorControl::clearFault()); assert(state().position==kept); assert(!state().rotating);
+  finite(.1f);
+  // A longer dropout cannot prove continuity: untrusted, and clear rebases to 0.
+  reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(80);
+  assert(!state().rotating && state().fault==Fault::Encoder);
+  online[0]=true; advance(20);
   assert(state().encoder==Encoders::Health::Untrusted);
   assert(MotorControl::clearFault()); assert(state().position==0); assert(!state().rotating);
   finite(.1f);
@@ -414,7 +426,8 @@ void testRegisterReadsAndLiveDiagnostics() {
     assert(Encoders::get(0).magnetStatus==(rawFailure ? 0x20 : 255));
     assert(!MotorControl::clearFault());
     shortRaw[0]=shortStatus[0]=false; advance(20);
-    assert(Encoders::get(0).health==Encoders::Health::Untrusted);
+    // Good samples within MaxGapMs of each other: continuity holds, trust is kept.
+    assert(Encoders::get(0).health==Encoders::Health::Ok);
     assert(MotorControl::clearFault());
   }
   reset(); magnet[0]=false; advance(20);
@@ -787,9 +800,18 @@ void testLimitEnforcementAndRecoveryDirection() {
   assert(pulseCount[0]==0); // Outward correction remains forbidden.
 }
 void testLimitTrackingLossAndSerialContract() {
+  // One failed transaction on a bounded axis: trust, bounds and position remain.
   reset(); captureTestBounds(-500,500);
   assert(MotorControl::rotateRevolutions(.1f)); advance(100);
-  online[0]=false; advance(20); assert(state().fault==Fault::Encoder);
+  online[0]=false; advance(13); assert(state().fault==Fault::Encoder);
+  online[0]=true; advance(20);
+  assert(state().encoder==Encoders::Health::Ok && state().bounds==3);
+  assert(MotorControl::clearFault() && state().bounds==3 && state().fault==Fault::None);
+  assert(MotorControl::rotateRevolutions(.01f));
+  // A gap longer than MaxGapMs loses tracking.
+  reset(); captureTestBounds(-500,500);
+  assert(MotorControl::rotateRevolutions(.1f)); advance(100);
+  online[0]=false; advance(80); assert(state().fault==Fault::Encoder);
   online[0]=true; advance(20);
   const long counts=state().positionCounts;
   assert(!MotorControl::clearFault() && !MotorControl::resetPosition() && !MotorControl::setLimit());
@@ -879,12 +901,18 @@ void testSwitchBounceResetEscapeAndCorrection() {
     analogInputs[0]=1023; advance(25); analogInputs[0]=250; advance(25);
     assert(state().bounds==0 && state().positionCounts==(resetting ? 0 : -100));
   }
-  // A changing analog classification temporarily blocks both directions.
+  // Leaving a debounced upper contact passes the lower band: it still reads upper,
+  // so CCW stays blocked and CW (away from the switch) is allowed until it settles.
   reset(); analogInputs[0]=0; advance(25);
-  analogInputs[0]=250; advance(2); assert(state().switchMask==3);
-  assert(!MotorControl::startHold());
+  analogInputs[0]=250; advance(2); assert(state().switchMask==2);
+  assert(MotorControl::startHold()); MotorControl::stopRotation();
   assert(MotorControl::setDirection(Direction::Counterclockwise) && !MotorControl::startHold());
   advance(25); assert(state().switchMask==1 && state().bounds==0);
+  // Any other change of classification blocks both directions until it settles.
+  reset(); analogInputs[0]=250; advance(25);
+  analogInputs[0]=0; advance(2); assert(state().switchMask==3);
+  assert(!MotorControl::startHold());
+  assert(MotorControl::setDirection(Direction::Counterclockwise) && !MotorControl::startHold());
   for(bool alreadyEscaping: {false,true}) {
     reset(); assert(MotorControl::setDirection(Direction::Counterclockwise));
     if(alreadyEscaping) { assert(MotorControl::startHold()); advance(30); }
@@ -1193,6 +1221,17 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
     previous=control.outputSpeed; previousFeedback=control.lastControlMs;
   }
   assert(peak>.55 && std::fabs(control.outputSpeed)<peak-.01); // Catch-up keeps headroom and slews back down.
+  // A slow hold that is held back catches up at most 1.25 times the requested speed.
+  reset(); dropEvery[0]=2; assert(MotorControl::setSpeed(.05f) && MotorControl::startHold());
+  peak=0;
+  for(int ms=0;ms<6000;++ms) {
+    if(ms==3000) dropEvery[0]=0;
+    advance(1);
+    if(ms%100==0) assert(MotorControl::keepHoldAlive());
+    assert(state().rotating && state().fault==Fault::None);
+    peak=std::max(peak,std::fabs(control.outputSpeed));
+  }
+  assert(peak>.055 && peak<=.0625001);
   for(int stopKind=0;stopKind<4;++stopKind) {
     reset(); assert(MotorControl::setSpeed(.5f) && MotorControl::setAcceleration(.1f));
     assert(MotorControl::startHold()); advance(250);
@@ -1323,10 +1362,24 @@ void testCalibrationPressedSwitchesOddSpanAndBusyDebounce() {
   finishCalibration(Bottom); assert(std::labs(state().positionCounts-513)<=4);
   assert(MotorControl::resetPosition() && state().calibration==Calibration::None && state().bounds==0);
   // Two interlocks during an analog transition cannot start calibration or erase old bounds.
-  reset(); captureTestBounds(-100,100); analogInputs[0]=0; advance(25);
-  const auto before=state(); analogInputs[0]=250; advance(1);
+  reset(); captureTestBounds(-100,100); analogInputs[0]=250; advance(25);
+  const auto before=state(); analogInputs[0]=0; advance(1);
   assert(state().switchMask==3 && !MotorControl::calibrate());
   assert(state().bounds==before.bounds && state().lowerCounts==before.lowerCounts && state().upperCounts==before.upperCounts);
+}
+void testUpperReleaseThroughLowerBand() {
+  // Opening the upper contact raises the input through the lower band (rv-stage-fw-S-10).
+  // The midpoint move and a lower seek that start on the upper switch continue through it.
+  for(bool startOnUpper: {false,true}) {
+    reset(); releaseUs[0]=3000;
+    if(startOnUpper) { plantForCalibration(0,4100,5100); advance(25); assert(state().switchMask==2); }
+    else plantForCalibration(0);
+    assert(MotorControl::calibrate()); finishCalibration(Bottom);
+    assert(state().bounds==3 && state().upperCounts>900);
+  }
+  // A real lower contact still stops CW motion once it is the debounced state.
+  reset(); analogInputs[0]=0; advance(25); assert(MotorControl::startHold());
+  analogInputs[0]=250; advance(30); assert(state().switchMask==1 && !state().rotating);
 }
 void testCalibrationCancellationTimeoutAndFaults() {
   for(Calibration phase: {Calibration::Lower,Calibration::Upper,Calibration::Center}) for(bool all: {false,true}) {
@@ -1341,12 +1394,14 @@ void testCalibrationCancellationTimeoutAndFaults() {
     assert(state().fault==Fault::None && state().direction==Direction::Counterclockwise && state().bounds==bounds);
     assert(!MotorControl::keepHoldAlive());
   }
-  // False candidate contact never resumes movement while calibration waits for confirmation.
+  // A false candidate contact halts the seek at once; when it does not confirm, the seek
+  // continues. The phase timeout still counts from the start of the phase.
   reset(); assert(MotorControl::calibrate()); advance(100);
   analogInputs[0]=250; advance(2); const long stopped=pulseCount[0];
-  analogInputs[0]=1023; advance(50);
-  assert(state().rotating && state().calibration==Calibration::Lower && pulseCount[0]==stopped);
   assert(MotorControl::motors[0].mode==MotorControl::Mode::Idle);
+  analogInputs[0]=1023; advance(500);
+  assert(state().rotating && state().calibration==Calibration::Lower && pulseCount[0]>stopped);
+  assert(MotorControl::motors[0].mode==MotorControl::Mode::Continuous);
   MotorControl::motors[0].phaseStartedMs=millis()-EncoderConfig::CalibrationSearchTimeoutMs;
   advance(1); assert(state().fault==Fault::Timeout && state().calibration==Calibration::Failed);
   // A missing physical switch is bounded even when ordinary motion is healthy and progressing.
@@ -1435,6 +1490,12 @@ void testAbsoluteEligibilityAndSignedSerialParsing() {
   assert(state().calibration==Calibration::Done);
   // Zero-distance targets still require fresh trusted feedback, including an idle disconnect.
   online[0]=false; assert(!MotorControl::goToPosition(state().position)); online[0]=true;
+  // One failed transaction keeps trust: the calibrated axis stays usable without a rebase.
+  assert(MotorControl::goToPosition(state().position));
+  assert(state().calibration==Calibration::Done && state().bounds==3 && !state().rotating);
+  // A gap longer than MaxGapMs loses tracking; bounds then block the clear.
+  online[0]=false; advance(80); online[0]=true; advance(20);
+  assert(state().encoder==Encoders::Health::Untrusted);
   assert(!MotorControl::clearFault() && !MotorControl::goToPosition(state().position));
 }
 void testAbsoluteCancellationFaultsAndSelectionIsolation() {
@@ -1882,6 +1943,8 @@ int main(int argc, char **argv) {
   std::cout<<"post-calibration hand motion and contacts preserve origin/range, inward escape and release commands passed\n";
   testCalibrationPressedSwitchesOddSpanAndBusyDebounce();
   std::cout<<"already-pressed switch calibration, explicit reset compatibility, odd midpoint and transient busy guards passed\n";
+  testUpperReleaseThroughLowerBand();
+  std::cout<<"upper switch release through the lower band during calibration and held motion passed\n";
   testCalibrationCancellationTimeoutAndFaults();
   std::cout<<"calibration phase cancellation, bounce wait, missing-switch timeout, feedback faults and invalid span passed\n";
   testAbsolutePositionsAllAxesAndDirections();

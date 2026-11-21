@@ -19,6 +19,7 @@ This firmware controls 3 A4988 drivers with AS5600 encoder feedback through a TC
 - I2C uses A4/SDA and A5/SCL at 400 kHz. Multiplexer address: `0x70`. Encoder address: `0x36`.
 - Each analog input connects 2 normally open switches. The upper switch connects directly to ground. The lower switch connects through 10 kΩ. ADC below 100 means upper; 100–699 means lower; 700 or greater means released.
 - The direct connection dominates if both switches close. An open wire can appear released. This circuit cannot independently identify both closed contacts.
+- When the upper contact opens, the input rises through the lower band. While the debounced state is upper, a lower-band reading does not stop `cw` motion. A lower contact stops `cw` motion when it is the debounced state (20 ms).
 - Public coordinates increase for `ccw`: Bottom Up, Top Right, Insert In. They decrease for `cw`: Bottom Down, Top Left, Insert Out. Do not change encoder inversion to change labels.
 
 ## Calibration and motion
@@ -27,17 +28,19 @@ This firmware controls 3 A4988 drivers with AS5600 encoder feedback through a TC
 2. Lower contact establishes zero. The motor moves toward the upper switch in `ccw` and records the positive travel span.
 3. The motor moves to the midpoint. Absolute positioning becomes available after calibration completes and feedback settles.
 
+Calibration clears both bounds before it moves. The seeks ignore limits from `setlimit` and travel to the switches. After a stop or a failure, the bounds stay cleared or partial. A switch reading that does not confirm within 20 ms stops a seek for that time only; then the seek continues. Each seek phase fails with `timeout` after 120 s.
+
 Normal switch contact stops outward travel. It does not reset the position or change recorded limits. Movement away from the switch remains possible. Calibration is never automatic after connection or a warning.
 
 Relative moves and holds use measured rotations. Absolute moves require completed calibration, valid bounds and fresh healthy encoder feedback. Resetting the position or changing a bound invalidates completed calibration. Stop cancels calibration and movement without restarting them.
 
-The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². At 200 full steps per revolution, the maximum speed is 0.5 rotations/s. Drivers sleep after 10 s idle. A wake can move a shaft up to 2 full steps. The reverse-direction check allows this movement in the first move after a wake. A move stops with a `stall` fault after at least 1.5 s and 0.05 rotations of pulses without encoder movement in the pulse direction. Back-and-forth movement at an obstruction does not count. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
+The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². At 200 full steps per revolution, the maximum speed is 0.5 rotations/s. Drivers sleep after 10 s idle. A wake can move a shaft up to 2 full steps. The reverse-direction check allows this movement in the first move after a wake. A move stops with a `stall` fault after at least 1.5 s and 0.05 rotations of pulses without encoder movement in the pulse direction. Back-and-forth movement at an obstruction does not count. Held motion and seeks catch up after an obstruction at no more than 1.25 times the requested speed. One failed encoder read does not lose tracking: tracking is lost only when the gap between good samples exceeds 60 ms. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
 
 Positions and bounds are in RAM. Arduino reset or power loss invalidates them. Recalibrate before using absolute targets. A single-turn AS5600 cannot recover rotations made while power was off.
 
 ## Serial interface
 
-Use 115200 baud and newline-terminated commands. Opening the port can reset the Uno. Wait 2 s, then request `status`. The maximum command length is 63 characters. Only 1 process may own the serial port.
+Use 115200 baud and newline-terminated commands. Opening the port can reset the Uno. Wait 2 s, then request `status`. The maximum command length is 63 characters. Wait for the `OK` or `ERROR` reply to each line before you send the next line: the receive buffer holds 63 bytes, and a long reply such as `status` does not read input. Only 1 process may own the serial port.
 
 ```text
 motor insert

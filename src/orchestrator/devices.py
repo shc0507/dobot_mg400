@@ -103,6 +103,14 @@ def normalize(name, state, description):
     return row
 
 
+def _without_output(state):
+    """Return the state for a history row, without the large last_command.output."""
+    last = state.get("last_command") if isinstance(state, dict) else None
+    if not isinstance(last, dict) or "output" not in last:
+        return state
+    return {**state, "last_command": {key: value for key, value in last.items() if key != "output"}}
+
+
 class Devices:
     """The device cache. Readers start at the first read and stop at close."""
 
@@ -175,7 +183,7 @@ class Devices:
             if now - last[2] < SAMPLE_S or not changed(last[1], state):
                 return
         try:
-            store.add_device_state(name, now, entry["phase"], row, state)
+            store.add_device_state(name, now, entry["phase"], row, _without_output(state))
             with self.lock:
                 prune = self.pruned_at is None or now - self.pruned_at >= PRUNE_S
                 if prune:

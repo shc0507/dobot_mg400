@@ -667,16 +667,43 @@ class VisionService:
         return job["id"]
 
     def read(self, action, camera, *, annotated=False):
+        """Answer a preview read. It takes no job slot, so it never makes a command busy.
+
+        A leased command that arrives meanwhile waits for the inference lock. A
+        failed read leaves fault and connected unchanged; a successful read sets
+        connected and clears fault, as a successful command does.
+        """
         self.lease.poll()
-        job = self._reserve(action, {"camera": camera}, None)
-        self._execute(job)
-        if job["error"] is not None:
-            raise job["error"]
+        camera, region = self._arguments(action, {"camera": camera})
+        with self._lock:
+            if not self._started or self._starting or self._closed:
+                raise ServiceError(503, "Vision is not started.")
+        job = {
+            "id": None,
+            "action": action,
+            "camera": camera,
+            "region": region,
+            "args": {"camera": camera},
+            "client": None,
+            "cancel": threading.Event(),
+        }
+        result, image, outcome, error = self._infer(job)
+        if outcome == "failed":
+            # A detection preview polls every second, so only a failure is an event.
+            self.events.add(
+                "error", "vision inference failed", action=action, camera=camera, result=outcome
+            )
+        if error is not None:
+            raise error
+        with self._lock:
+            if self._connected is not True or self._fault is not None:
+                self._connected, self._fault = True, None
+                self._seq += 1
         if annotated:
             encoded = io.BytesIO()
-            job["image"].save(encoded, format="JPEG")
+            image.save(encoded, format="JPEG")
             return encoded.getvalue()
-        return job["result"]
+        return result
 
     def _process(self, job):
         if job["cancel"].is_set():
@@ -873,6 +900,10 @@ class VisionService:
             raise ServiceError(503, "Vision result is not finite JSON data.") from exc
 
     def _execute(self, job):
+        self._finish(job, *self._infer(job))
+
+    def _infer(self, job):
+        """Return (result, image, outcome, error) of 1 inference under the inference lock."""
         result = image = error = None
         outcome = "ok"
         try:
@@ -891,7 +922,7 @@ class VisionService:
             outcome, error = "failed", ServiceError(400, str(exc))
         except Exception as exc:
             outcome, error = "failed", ServiceError(503, f"Vision processing failed: {exc}")
-        self._finish(job, result, image, outcome, error)
+        return result, image, outcome, error
 
     def _finish(self, job, result, image, outcome, error):
         if job["action"] in {"check_calibration", "observe_slots"} and outcome == "ok":

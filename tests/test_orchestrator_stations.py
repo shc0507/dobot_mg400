@@ -513,3 +513,17 @@ def test_cli_retool_reads_tool_setting_and_prints_backups(store, workspace, tmp_
     assert result["offset_mm"] == [0, -1, 80] and len(result["backups"]) == 2
     assert load_tool(tool) == ToolOffset(0, -1, 80)
     assert store.load()["a"]["z_mm"] == pytest.approx(116)
+
+
+def test_a_held_station_lock_fails_the_load_after_a_bound(store, tmp_path, monkeypatch):
+    import fcntl
+
+    monkeypatch.setattr(stations, "LOAD_LOCK_S", 0.1)
+    holder = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with pytest.raises(RuntimeError, match="holds the station file lock"):
+            store.load()
+    finally:
+        os.close(holder)
+    assert store.load() == {}

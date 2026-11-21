@@ -105,7 +105,8 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 
 路由相对于 `--base-path`，遵循 [服务契约](adr/0001-instrument-service-contract.md)。
 同一时刻只运行 1 个操作，包括检测、QR 读取、标记读取、校准、漂移检查和槽位观测。
-重叠请求返回 409，服务不排队执行额外操作。
+与另一命令重叠的命令返回 409，服务不排队执行额外命令。
+读取路由等待正在运行的操作结束，且不使服务进入忙状态。读取期间到达的命令等待读取结束。
 
 | 读取路由 | 结果 |
 | --- | --- |
@@ -166,7 +167,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 失败或停止的命令为 `output=null`。
 `last_result` 保存最近一次成功操作的 `camera`、`action`、`count` 和 `finished_at`。
 真实模式在首次成功处理图像前报告 `connected=false`。
-任何失败的操作都设置 `fault`，下次成功的操作清除它。只有返回 503 的失败才把 `connected` 设为 `false`。
+任何失败的命令都设置 `fault`，下次成功的命令或读取清除它。只有返回 503 的命令失败才把 `connected` 设为 `false`。失败的读取只返回错误，不改变状态。
 `fault` 不为空时，校准技能和漂移检查拒绝执行。此时先完成 1 次成功读取，例如 `GET api/detect`。
 
 ## 相机到机器人校准

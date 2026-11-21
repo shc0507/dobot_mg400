@@ -193,3 +193,17 @@ def test_invalid_hold_timestamp_never_writes_to_serial(stage_rig, sampled_at):
     with pytest.raises(ControllerError, match="expired"):
         controller.hold("bottom", "cw", 0.25, FIRST, sampled_at)
     assert transport.commands == []
+
+
+def test_stop_cancels_a_hold_start_sampled_before_it(stage_rig):
+    controller, transport, clock = stage_rig
+    sampled_at = clock()
+    clock.advance(0.05)
+    controller.stop_all()
+    transport.commands.clear()
+    with pytest.raises(ControllerError, match="expired"):
+        controller.hold("bottom", "cw", 0.25, FIRST, sampled_at)
+    assert transport.commands == []
+    clock.advance(0.05)
+    start(controller, clock)
+    assert transport.commands[-1] == "hold"

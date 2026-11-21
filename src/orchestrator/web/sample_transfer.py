@@ -17,6 +17,7 @@ from orchestrator.transfer_motion import (
     fresh,
     idle,
     motors,
+    reached,
     sequence,
     target_ready,
 )
@@ -315,7 +316,7 @@ class SampleTransfer:
         self._all_idle(stage)
         return stage
 
-    def _wait(self, operation, motor, target, command_id):
+    def _wait(self, operation, motor, target, command_id, slack_counts=0):
         while True:
             stage = self._stage(operation)
             axes = motors(stage)
@@ -335,10 +336,7 @@ class SampleTransfer:
                 if command_id is None or (
                     last.get("id") == command_id and last.get("result") == "ok"
                 ):
-                    if (
-                        not finite(axis.get("tolerance"))
-                        or abs(axis["position_rotations"] - target) > axis["tolerance"]
-                    ):
+                    if not reached(axis, target, slack_counts):
                         raise ValueError("The motor stopped before reaching its encoder target.")
                     return
             operation["cancelled"].wait(SAMPLE_INTERVAL)
@@ -359,7 +357,7 @@ class SampleTransfer:
                     operation.update(
                         motor=motor, target_rotations=target, message=f"Moving {motor}."
                     )
-                if abs(axis["position_rotations"] - target) > axis["tolerance"]:
+                if not reached(axis, target):
                     self._check(operation)
                     params = {
                         "motor": motor,
@@ -374,7 +372,9 @@ class SampleTransfer:
                         )
                     if result.get("outcome") != "accepted":
                         raise ValueError(result.get("error") or "The stage command was refused.")
-                    self._wait(operation, motor, target, result.get("command_id"))
+                    # A jog is relative: it starts from the firmware's own encoder sample.
+                    slack = 0 if jog is None else 2
+                    self._wait(operation, motor, target, result.get("command_id"), slack)
                 self._check(operation)
                 with self.lock:
                     operation["completed_axes"] += 1

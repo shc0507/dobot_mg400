@@ -273,3 +273,10 @@ def test_closed_loop_header_cannot_relabel_legacy_pulse_counts_as_rotations(make
     transport, _ = make_transport(closed_reply(STATUS))
     with pytest.raises(LinkError):
         transport.status()
+
+
+def test_full_tty_buffer_is_a_link_error(make_transport):
+    transport, port = make_transport()
+    port.lines.append(b"x" * 4000)
+    with pytest.raises(LinkError, match="backlog"):
+        transport._drain_available()

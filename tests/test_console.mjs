@@ -296,6 +296,20 @@ test("the page's own Release does not report control as lost, also when a heartb
   assert.match(view.nodes.get("lc-notice").textContent, /lease ended/);
 });
 
+test("a lost control shows the server's end message", () => {
+  const { LabConsole } = load();
+  const view = page();
+  Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+  LabConsole.shell.snapshot = { control: [] };
+  LabConsole._internal.applyControl([{ device: "microscope", mine: true, state: "held" }]);
+  // The console still finalizes the recording: the control is not lost yet.
+  LabConsole._internal.applyControl([{ device: "microscope", mine: true, state: "finalizing" }]);
+  assert.doesNotMatch(view.nodes.get("lc-notice")?.textContent || "", /ended/);
+  const message = "No browser heartbeat for 120 s. The recording was stopped and finalized.";
+  LabConsole._internal.applyControl([], { microscope: message });
+  assert.match(view.nodes.get("lc-notice").textContent, /stopped and finalized/);
+});
+
 test("a heartbeat is sent only while this page holds control", async () => {
   const { LabConsole, calls } = load({ responses: [{ status: 200, body: { control: [{ device: "stage", mine: true, state: "held" }] } }] });
   const view = page();

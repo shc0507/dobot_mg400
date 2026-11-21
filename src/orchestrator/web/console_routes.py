@@ -75,6 +75,7 @@ def console_blueprints(service, prefix):
         report.update(
             console={"commit": console().commit, "demo": service.demo},
             control=console().control(page),
+            control_ended=console().control_ended(page) if page else {},
             workspaces=[{"id": item.id, "title": item.title} for item in workspaces],
         )
         return jsonify(report)
@@ -120,7 +121,10 @@ def console_blueprints(service, prefix):
     @blueprint.post("/api/console/heartbeat")
     def heartbeat():
         _empty()
-        return jsonify(control=console().heartbeat(_page()))
+        page = _page()
+        return jsonify(
+            control=console().heartbeat(page), control_ended=console().control_ended(page)
+        )
 
     @blueprint.post("/api/console/control/<name>/take")
     def take(name):

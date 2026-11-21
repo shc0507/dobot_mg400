@@ -213,7 +213,9 @@ Preview reads do not acquire or renew control, and shutdown waits for accepted r
 
 Use the Furnace workspace to record from the camera that this service already owns.
 Recording commands require live ordinary control and an idle service. They do not acquire furnace control or start a furnace sequence.
-Keep the console open and hold control during capture and finalization.
+While a console page holds the microscope lease for an active recording, the console renews the lease itself and waits 120 seconds for a page heartbeat. A hidden tab, a laptop sleep, or a network loss shorter than 120 seconds does not end the recording.
+After 120 seconds without a heartbeat, the console stops the recording, keeps the lease until finalization ends, and then releases it. The page notice shows why the control ended. An armed sequence recording that has not started ends without a summary.
+The other devices that the page holds keep the 3-second heartbeat timeout. **Release**, **Release all**, and a page close end the recording without finalization.
 
 | Action | Parameters and result |
 | --- | --- |

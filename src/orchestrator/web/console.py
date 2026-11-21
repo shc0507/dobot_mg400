@@ -13,6 +13,14 @@ every ``HOLD_KEEPALIVE_S`` while the page refreshes the hold within
 An agent page (a page identity ``agent-<session>``, used by ``labctl``) is idle
 only after ``AGENT_IDLE_S`` without a request. The console renews its leases
 every ``AGENT_RENEW_S`` and names each agent identity after the session.
+
+While the microscope service reports an active recording of a page's microscope
+lease, the console renews that lease every ``AGENT_RENEW_S`` and waits
+``RECORDING_GAP_S`` for a heartbeat: a hidden tab, a laptop sleep or a short
+network loss does not end the recording. After that gap the console sends
+``stop_recording`` once, keeps the lease while the service finalizes the
+recording, and then releases it. The page reads the end message of each ended
+session from ``control_ended``.
 """
 
 import copy
@@ -46,6 +54,13 @@ HOLD_KEEPALIVE_S = 0.2
 HOLD_JOIN_S = 2.0
 HOLD_ENDED = "Hold has ended. Release and press again."
 LENT = "A run is using this device."
+# A console-held microscope recording waits this long for a browser heartbeat.
+RECORDING_GAP_S = 120.0
+ACTIVE_RECORDING = frozenset({"starting", "recording", "finalizing"})
+GAP_FINALIZED = "No browser heartbeat for 120 s. The recording was stopped and finalized."
+GAP_STOPPED = "No browser heartbeat for 120 s. The recording ended without a summary."
+# The page can read why its control ended for this long.
+ENDED_KEEP_S = 600.0
 
 
 def _status(error):
@@ -106,6 +121,8 @@ class Session:
         # A run borrows held devices: the console keeps the lease, the page cannot command.
         self.lent = False
         self.message = None
+        # Microscope only: this lease's recording row from the device cache, or None.
+        self.recording = None
         # Stage only: the latest hold and the identities of ended holds.
         self.hold = None
         self.closed = deque(maxlen=32)
@@ -134,6 +151,8 @@ class Console:
         self.threads = set()
         self.cursors = {}
         self.event_errors = {}
+        # page -> device -> (end message, clock time)
+        self.ended = {}
         self.commit = deployed_commit(service.settings)
 
     # Threads ---------------------------------------------------------------
@@ -170,29 +189,49 @@ class Console:
             time.sleep(WATCH_INTERVAL_S)
 
     def _watch_once(self):
-        """End late sessions and renew due agent leases, each in its own thread."""
+        """End late sessions and renew due leases, each in its own thread."""
+        # Read the device cache before the console lock.
+        row = self._recording_row() if "microscope" in self.sessions else None
         with self.lock:
             if self.closing:
                 return
             now = self.clock()
+            for item in self.sessions.values():
+                if item.device == "microscope" and not item.agent and row is not None:
+                    item.recording = row if row.get("client") == item.identity else None
             late = [
                 item
                 for item in self.sessions.values()
                 if item.state == "held" and not item.lent and now - item.beat > self._idle(item)
             ]
+            finish = [item for item in late if not item.agent and self._recording(item)]
             for item in late:
+                if item in finish:
+                    item.state = "finalizing"
+                    continue
                 item.state = "releasing"
                 item.message = (
                     "No agent request for 10 min."
                     if item.agent
                     else "No browser heartbeat for 3 s."
                 )
-            # The console renews agent leases itself; agents call only now and then.
+            # A finalizing session ends when the service reports the recording ended.
+            done = [
+                item
+                for item in self.sessions.values()
+                if item.state == "finalizing" and item.message is None and not self._recording(item)
+            ]
+            for item in done:
+                status = item.recording.get("status") if item.recording else None
+                item.state = "releasing"
+                item.message = GAP_FINALIZED if status == "completed" else GAP_STOPPED
+            # The console renews agent and recording leases itself; their pages call only now
+            # and then.
             due = [
                 item
                 for item in self.sessions.values()
-                if item.agent
-                and item.state == "held"
+                if (item.agent or self._recording(item) or item.state == "finalizing")
+                and item.state in {"held", "finalizing"}
                 and not item.renewing
                 and now - item.renewed >= AGENT_RENEW_S
             ]
@@ -200,13 +239,66 @@ class Console:
                 item.renewing, item.renewed = True, now
         # A robot end can wait ROBOT_DISABLE_S for its disable; renewals must not wait.
         for item in late:
+            if item in finish:
+                self._spawn(lambda item=item: self._finish(item), "finish-" + item.device)
+            else:
+                self._spawn(lambda item=item: self._end(item, release=True), "end-" + item.device)
+        for item in done:
             self._spawn(lambda item=item: self._end(item, release=True), "end-" + item.device)
         for item in due:
             self._spawn(lambda item=item: self._renew(item), "renew-" + item.device)
 
+    def _recording_row(self):
+        """The microscope recording row in the device cache; None when the cache has no
+        fresh state."""
+        devices = getattr(self.service, "devices", None)
+        try:
+            entry = devices.get("microscope")
+        except Exception:
+            return None
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if entry.get("phase") != "ready" or not isinstance(state, dict):
+            return None
+        row = state.get("recording")
+        return dict(row) if isinstance(row, dict) else {}
+
+    @staticmethod
+    def _recording(item):
+        """True while the service reports an active recording of this session's lease."""
+        return item.recording is not None and item.recording.get("status") in ACTIVE_RECORDING
+
+    def _finish(self, item):
+        """Stop the recording once after the heartbeat gap. The watcher keeps the lease
+        while the service finalizes and releases it after the end."""
+        row = item.recording or {}
+        sent = False
+        if row.get("status") == "finalizing":
+            sent = True
+        elif row.get("status") == "recording" and isinstance(row.get("id"), str):
+            try:
+                item.adapter.command("stop_recording", recording_id=row["id"])
+                sent = True
+                self.service.events.add(
+                    "warning",
+                    "No browser heartbeat for 120 s. The console stopped the recording.",
+                    device=item.device,
+                )
+            except Exception:
+                LOG.warning("The console could not stop the recording.", exc_info=True)
+        if sent:
+            return
+        # An armed or starting recording has no video to finalize.
+        with self.lock:
+            if item.state != "finalizing":
+                return
+            item.state, item.message = "releasing", GAP_STOPPED
+        self._end(item, release=True)
+
     @staticmethod
     def _idle(item):
-        return AGENT_IDLE_S if item.agent else BEAT_TIMEOUT_S
+        if item.agent:
+            return AGENT_IDLE_S
+        return RECORDING_GAP_S if Console._recording(item) else BEAT_TIMEOUT_S
 
     def _ensure_watcher(self):
         with self.lock:
@@ -275,6 +367,8 @@ class Console:
         with self.lock:
             if self.sessions.get(item.device) is item:
                 del self.sessions[item.device]
+            if item.message is not None:
+                self.ended.setdefault(item.page, {})[item.device] = (item.message, self.clock())
         return error
 
     # Control ---------------------------------------------------------------
@@ -307,6 +401,18 @@ class Console:
     def control(self, page=None):
         with self.lock:
             return [self.entry(item, page) for item in self.sessions.values()]
+
+    def control_ended(self, page):
+        """Device -> end message of this page's sessions that ended in the last 10 min."""
+        with self.lock:
+            now = self.clock()
+            for name in list(self.ended):
+                notes = self.ended[name]
+                for device in [key for key, (_, at) in notes.items() if now - at > ENDED_KEEP_S]:
+                    del notes[device]
+                if not notes:
+                    del self.ended[name]
+            return {device: message for device, (message, _) in self.ended.get(page, {}).items()}
 
     def take(self, device, page):
         if is_agent(page) and not AGENT_PAGE.fullmatch(page):
@@ -362,6 +468,7 @@ class Console:
             item = Session(device, page, identity, adapter, copy.deepcopy(commands), self.clock())
             self.reserved.discard(device)
             self.sessions[device] = item
+            self.ended.get(page, {}).pop(device, None)
             closing = self.closing
         if closing:
             item.state = "releasing"
@@ -435,7 +542,7 @@ class Console:
             item.adapter.heartbeat()
         except Exception:
             with self.lock:
-                if item.state != "held":
+                if item.state not in {"held", "finalizing"}:
                     return
                 item.state = "lost"
                 item.message = "The service lease was lost."

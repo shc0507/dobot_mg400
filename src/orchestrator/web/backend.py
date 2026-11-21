@@ -305,6 +305,14 @@ class Dashboard:
             operation["dispatched"] = True
         self.poll()
 
+    def repeat(self, operation):
+        """Send one more round of device stops for a draining operation.
+
+        Stops are idempotent. A device that moved after the first round stops now,
+        not at the final round. The one coordinator keeps the hold."""
+        if operation["targets"] and not operation["done"].is_set():
+            self._round(operation)
+
     def _coordinate(self, operation):
         context = {}
         if operation["action"] != "gas":

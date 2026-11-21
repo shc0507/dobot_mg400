@@ -506,3 +506,22 @@ test("legacy millimetre profiles remain visible but cannot command rotation move
   assert.equal(page.role("move-fully_in").disabled, false);
   assert.equal(page.role("record-microscope").disabled, true);
 });
+
+test("a poll during a named move keeps the named STOP buttons and updates Move in place", () => {
+  const page = setup();
+  const stop = page.role("named-stop-0"), move = page.role("named-move-0");
+  page.ui._test.apply(state({ named_motion_ready: false, operation: { status: "moving", mine: true, id: "op-1" } }));
+  assert.equal(page.role("named-stop-0"), stop);
+  assert.equal(page.role("named-move-0"), move);
+  assert.equal(move.disabled, true);
+  page.ui._test.apply(state());
+  assert.equal(move.disabled, false);
+});
+
+test("an unconfirmed or unknown STOP outcome is shown", async () => {
+  for (const [outcome, shown] of [["unknown", true], ["unconfirmed", true], ["confirmed", false]]) {
+    const page = setup(state(), async path => path === "stop" ? { ...state({ operation: { status: "stopped" } }), stop: { outcome } } : state());
+    await page.role("stop-fully_out").click();
+    assert.equal(page.root.textContent.includes(`Stage stop is ${outcome}.`), shown, outcome);
+  }
+});

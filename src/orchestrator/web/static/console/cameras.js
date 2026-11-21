@@ -18,6 +18,9 @@
   const THERMAL_MS = 40;
   const DETECT_MS = 1000;
   const STALE_S = 2;
+  // An MJPEG stream that ends keeps its last frame and fires no error. A sender rate of 0
+  // for this long shows the end, and the tile reconnects.
+  const MJPEG_QUIET_MS = 3000;
   const W = 160, H = 120;
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   const PREFIX = "/api/console/ws/cameras/";
@@ -319,12 +322,11 @@
   }
 
   /** What a view that failed plays next: "h264" or "mjpeg" at once, or null for the same format after
-   * the backoff. H.265 turns into H.264 only when the browser or the host cannot play it (unplayable),
-   * not when the host does not answer, for example while go2rtc restarts. */
+   * the backoff. H.265 turns into H.264, and H.264 into MJPEG, only when the browser or the host cannot
+   * play it (unplayable), not when the host does not answer, for example while go2rtc restarts. */
   function fallbackFor(video, played, hevc, unplayable) {
-    if (!video || played) return null;
-    if (hevc) return unplayable ? "h264" : null;
-    return "mjpeg";
+    if (!video || played || !unplayable) return null;
+    return hevc ? "h264" : "mjpeg";
   }
 
   /** Play 1 fragmented MP4 stream in a video element. onFail(unplayable) runs at most once, but not
@@ -487,6 +489,8 @@
   }
 
   async function pollThermal() {
+    // A call during a read must not start a second timer chain; the running one goes on.
+    if (engine.thermalBusy) return;
     engine.thermalTimer = null;
     if (!running("thermal")) return;
     if (!engine.settings.frozen && !engine.thermalBusy) {
@@ -511,6 +515,7 @@
   }
 
   async function pollDetections() {
+    if (engine.detectBusy) return;
     engine.detectTimer = null;
     if (!running("camera4") || !engine.settings.detections) { engine.detections = null; return; }
     if (!engine.detectBusy) {
@@ -562,6 +567,7 @@
       if (show && !tile.running) tile.start();
       else if (!show && tile.running) tile.stop();
       tile.refresh();
+      tile.checkQuiet(nowMs());
     }
     pollStatus();
     if (running("thermal") && engine.thermalTimer === null) pollThermal();
@@ -718,6 +724,18 @@
         this.retry = null;
         if (this.running && generation === this.generation) { this.running = false; this.start(); }
       }, fallback ? 0 : backoff(this.failures));
+    }
+
+    /** Reconnect a live MJPEG stream whose sender rate stays 0 for MJPEG_QUIET_MS. */
+    checkQuiet(now) {
+      const mjpeg = this.running && this.live && !this.stopVideo && this.img && this.img.src !== BLANK;
+      if (!mjpeg) { this.quietSince = null; return; }
+      // Without a fresh status, the rate is not known.
+      if (now - engine.statusAt >= 3000) return;
+      const fps = engine.status.get(this.view)?.fps;
+      if (typeof fps === "number" && fps > 0) { this.quietSince = null; return; }
+      if (this.quietSince === null || this.quietSince === undefined) this.quietSince = now;
+      else if (now - this.quietSince >= MJPEG_QUIET_MS) { this.quietSince = null; this.failed(); }
     }
 
     async snapshot() {
@@ -1192,6 +1210,7 @@
     let timer = null;
     function refresh() {
       timer = null;
+      if (!ui.describe) describeThermal();
       updateToolbar();
       const active = doc().activeElement;
       const typing = active && card.contains(active) && ["INPUT", "SELECT"].includes(active.tagName);
@@ -1200,7 +1219,15 @@
     const soon = () => { if (!timer) timer = setTimeout(refresh, 1000); };
     engine.listeners.add(soon);
     api.onState(soon);
-    api.describe("thermal").then(value => { ui.describe = value; renderCard(); renderDrawbar(); }, () => { ui.describe = null; });
+    // A failed read hides Connect and the shutter: read again at most every 10 s.
+    let describeAt = -Infinity;
+    function describeThermal() {
+      if (ui.describing || nowMs() - describeAt < 10000) return;
+      ui.describing = true; describeAt = nowMs();
+      api.describe("thermal").then(value => { ui.describe = value; renderCard(); renderDrawbar(); }, () => { ui.describe = null; })
+        .finally(() => { ui.describing = false; });
+    }
+    describeThermal();
     api.onLanguage(() => { renderToolbar(); renderCard(); renderDrawbar(); for (const { node } of ui.cells.values()) node.labCameras.refresh(); });
     renderToolbar();
     arrange();
@@ -1218,7 +1245,7 @@
   }
 
   return {
-    tile, install, VIEWS, i18n, engine,
+    tile, install, VIEWS, i18n, engine, Tile,
     logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalTemperatures, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, fallbackFor, chase, frameRate, meter, measure, current, modeLine, rowFor },
   };
 });

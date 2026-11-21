@@ -39,6 +39,12 @@ def console_blueprints(service, prefix):
         # Resolved per request: some service stubs have no console.
         return service.console
 
+    def touch():
+        # An agent page that reads events, history or a description is still active.
+        page = request.headers.get("X-MG400-Client")
+        if page:
+            console().touch(page)
+
     blueprint = Blueprint("console", __name__, template_folder="templates", url_prefix=prefix)
     static = blueprint.root_path + "/static/console"
 
@@ -97,15 +103,18 @@ def console_blueprints(service, prefix):
 
     @blueprint.get("/api/console/events")
     def events():
+        touch()
         console().refresh_events()
         return jsonify(console().event_report(**_history_query("since")))
 
     @blueprint.get("/api/console/history")
     def history():
+        touch()
         return jsonify(states=service.store.device_states(**_history_query()))
 
     @blueprint.get("/api/console/describe/<name>")
     def describe(name):
+        touch()
         return jsonify(console().describe(_device(name)))
 
     @blueprint.post("/api/console/heartbeat")

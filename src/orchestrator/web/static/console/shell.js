@@ -312,16 +312,18 @@
     return (shell.snapshot?.control || []).filter(item => item.mine && item.state === "held");
   }
 
-  function applyControl(list) {
+  /** ended: device -> the server's end message for this page's ended controls. */
+  function applyControl(list, ended = {}) {
     if (!shell.snapshot) return;
     const previous = shell.knownControl;
     shell.snapshot.control = list;
     const next = new Map(list.filter(item => item.mine).map(item => [item.device, item]));
     for (const [device] of previous) {
       if (!next.has(device)) {
-        const ended = list.find(item => item.device === device);
-        if (!ended && shell.expectRelease?.has(device)) continue;
-        if (!ended) notify(t("control.lost", { device: deviceName(device), message: "lease ended" }), "warn");
+        if (list.some(item => item.device === device)) continue;
+        if (shell.expectRelease?.has(device)) continue;
+        const message = typeof ended?.[device] === "string" ? ended[device] : "lease ended";
+        notify(t("control.lost", { device: deviceName(device), message }), "warn");
       }
     }
     shell.knownControl = next;
@@ -471,7 +473,7 @@
       shell.stateAt = now();
       trackStops(body.operations);
       renderBand();
-      applyControl(body.control || []);
+      applyControl(body.control || [], body.control_ended);
       for (const listener of shell.stateListeners) { try { listener(body); } catch (error) { console.error(error); } }
       shell.offline = false;
     } catch {
@@ -488,8 +490,8 @@
     shell.beatBusy = true;
     try {
       const body = await request("/api/console/heartbeat", {}, { timeout: 2000 });
-      applyControl(body.control || []);
-    } catch { /* The server releases after 3 s without a heartbeat. */ }
+      applyControl(body.control || [], body.control_ended);
+    } catch { /* The server releases after 3 s without a heartbeat, or 120 s during a microscope recording. */ }
     finally { shell.beatBusy = false; }
   }
 

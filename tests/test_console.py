@@ -919,3 +919,97 @@ def test_stop_all_works_before_the_shell_script_runs(rig):
         "/lab/api/dashboard/motion", json={}, headers={"X-MG400-Client": "console-loading"}
     )
     assert response.status_code == 202
+
+
+RECORDING = "0123456789abcdef0123456789abcdef"
+
+
+def recording_rig(rig, monkeypatch):
+    """The page holds the stage and the microscope; the microscope records for this lease."""
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    scope = rig.devices["microscope"]
+    scope.commands["stop_recording"] = {"params": {"type": "object"}, "any_client": False}
+    post(rig, "control/stage/take")
+    holder = post(rig, "control/microscope/take").get_json()["control"]["holder"]
+    with scope.lock:
+        scope.state["recording"] = {"id": RECORDING, "client": holder, "status": "recording"}
+    rig.service.devices.start()
+    session = rig.service.console.sessions["microscope"]
+    wait_for(lambda: session.recording is not None)
+    return scope, holder
+
+
+def renewals(device, holder):
+    return sum(call == ("renew", holder) for call in device.calls)
+
+
+def test_a_hidden_page_keeps_its_recording_and_the_console_renews_the_lease(rig, monkeypatch):
+    scope, holder = recording_rig(rig, monkeypatch)
+    # A hidden tab beats once per minute. The stage keeps the 3 s timeout.
+    for _ in range(3):
+        count = renewals(scope, holder)
+        rig.clock.value += 60
+        wait_for(lambda: renewals(scope, holder) > count)
+        time.sleep(0.05)
+        assert scope.holder == holder
+        assert rig.devices["stage"].holder is None
+        assert post(rig, "heartbeat").status_code == 200
+    assert not any(call[0] == "command" for call in scope.calls)
+
+
+def test_a_short_gap_keeps_the_recording_and_3_s_returns_after_it(rig, monkeypatch):
+    scope, holder = recording_rig(rig, monkeypatch)
+    rig.clock.value += 10
+    time.sleep(0.05)
+    assert scope.holder == holder
+    post(rig, "heartbeat")
+    # The operator stops the recording: the 3 s timeout applies again.
+    with scope.lock:
+        scope.state["recording"] = {"id": RECORDING, "client": holder, "status": "completed"}
+    session = rig.service.console.sessions["microscope"]
+    wait_for(lambda: session.recording["status"] == "completed")
+    rig.clock.value += 3.1
+    wait_for(lambda: scope.holder is None)
+    ended = rig.client.get("/lab/api/console/state", headers=headers()).get_json()
+    assert ended["control_ended"]["microscope"] == "No browser heartbeat for 3 s."
+
+
+def test_a_long_gap_finalizes_the_recording_before_the_release(rig, monkeypatch):
+    scope, holder = recording_rig(rig, monkeypatch)
+    rig.clock.value += 121
+    wait_for(lambda: any(call[0] == "command" for call in scope.calls))
+    stops = [call for call in scope.calls if call[0] == "command"]
+    assert stops == [("command", holder, "stop_recording", {"recording_id": RECORDING})]
+    # The console keeps the lease while the service finalizes.
+    with scope.lock:
+        scope.state["recording"]["status"] = "finalizing"
+    for _ in range(2):
+        count = renewals(scope, holder)
+        rig.clock.value += 1
+        wait_for(lambda: renewals(scope, holder) > count)
+        assert scope.holder == holder
+    assert [item["state"] for item in rig.service.console.control()] == ["finalizing"]
+    with scope.lock:
+        scope.state["recording"]["status"] = "completed"
+    wait_for(lambda: scope.holder is None)
+    assert ("release", holder) in scope.calls
+    assert sum(call[0] == "command" for call in scope.calls) == 1
+    message = "No browser heartbeat for 120 s. The recording was stopped and finalized."
+    beat = post(rig, "heartbeat").get_json()
+    assert beat["control_ended"]["microscope"] == message
+    # Only this page reads it, for 10 min, and a new take clears it.
+    other = rig.client.get("/lab/api/console/state", headers=headers("console-page-b"))
+    assert other.get_json()["control_ended"] == {}
+    post(rig, "control/microscope/take")
+    assert "microscope" not in post(rig, "heartbeat").get_json()["control_ended"]
+    rig.clock.value += 601
+    assert post(rig, "heartbeat").get_json()["control_ended"] == {}
+
+
+def test_a_long_gap_releases_at_once_when_the_stop_is_refused(rig, monkeypatch):
+    scope, holder = recording_rig(rig, monkeypatch)
+    scope.fail["command"] = ServiceError(409, "Recording has not started or is already stopping")
+    rig.clock.value += 121
+    wait_for(lambda: scope.holder is None)
+    message = "No browser heartbeat for 120 s. The recording ended without a summary."
+    assert post(rig, "heartbeat").get_json()["control_ended"]["microscope"] == message

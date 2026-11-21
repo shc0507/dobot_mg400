@@ -154,8 +154,8 @@ class _TrayInputs:
 
         self.camera = integer("TRAY_CAMERA", 1, 4)
         if cup:
-            # The service reports an axis angle; the round cup does not use it.
-            self.axis = "long"
+            # The round cup needs no chip axis, so a square chip is not ambiguous.
+            self.axis = None
         else:
             self.axis = setting("CHIP_AXIS")
             if self.axis not in {"long", "short"}:
@@ -299,8 +299,11 @@ def _observe(ctx, robot, inputs, baseline):
                 not isinstance(point, list)
                 or len(point) != 2
                 or any(not _number(value, -1_000_000, 1_000_000) for value in point)
-                or not _number(item["angle_deg"], 0, 180)
-                or item["angle_deg"] == 180
+                or (
+                    item["angle_deg"] is not None
+                    if inputs.axis is None
+                    else not _number(item["angle_deg"], 0, 180) or item["angle_deg"] == 180
+                )
             ):
                 raise RuntimeError("Chip geometry is missing or ambiguous.")
         else:

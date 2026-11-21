@@ -399,7 +399,7 @@ It uses these fields:
 | `camera` | Configured camera number. The camera must have a stable port path and an installed calibration model. |
 | `tray` | Validated tray-model document, not a host file path. |
 | `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. A `null` value means that the slot has no taught station. Then only the chip is checked. |
-| `axis` | `long` or `short`, according to the explicit suction convention. |
+| `axis` | `long` or `short`, according to the explicit suction convention. Use `null` only when no target has a taught station (cup pick). Then each `angle_deg` is `null`, and a square chip is accepted. |
 
 The complete JSON command must fit within 16 KiB. A valid tray file does not guarantee that its command fits.
 Each observation uses 1 current frame and the camera-bound calibration model.
@@ -408,7 +408,8 @@ An empty result requires successful inference and valid tray, target, and calibr
 Missing data or ambiguous chip association does not establish an empty slot.
 The entire requested groove must be inside the detector region (the centered 4:3 crop). Either arm occlusion or a clipped chip mask prevents conclusive evidence.
 Chip evidence for a requested groove must not overlap another configured groove.
-An axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
+Chip association uses the groove width without `tolerance_mm`. Groove visibility and arm occlusion use the groove width plus `tolerance_mm`.
+With `axis` set to `long` or `short`, the axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
 
 Output contains `camera`, `camera_device`, `calibrated`, `image_size`, `model_created_at`, `frame_sha256`, `read_at`, and `axis`.
 Each slot reports `state`, `center_xy_mm`, `angle_deg`, and `reason`. Position and angle can be null.
@@ -461,6 +462,8 @@ The arm marker ID `4` is not a tray corner.
 
 The function maps measured centers through the camera model and fits a similarity transform to the configured tray geometry.
 Localization fails when any corner residual exceeds `tolerance_mm`.
+It also fails when the fitted scale moves the corner farthest from the corner centroid by more than `tolerance_mm`. For the supplied TOML with 4 corners, the scale limit is about 1 ± 1.9%.
+A scale error means that the tray model or the calibrated tray height is wrong. Recalibrate the camera when a new tray moves the tray surface.
 It returns the transform, measured marker residuals, and `slots` in `robot_xy_mm` coordinates.
 Each slot contains `centerline_xy_mm` and `reference_xy_mm`, plus its transformed `width_mm`.
 The output supplies XY geometry only. It does not establish a physical Z or a safe robot path.
@@ -504,6 +507,7 @@ For those slots, the full XY distance must also meet the tolerance. Both positio
 Each slot reports `status` as `ok`, `incomplete`, or `failed`, with `missing` and `failures` details.
 The result's `ok` is true only when every slot passes.
 An incomplete or failed check raises `TrayCheckError`. Inspect `TrayCheckError.report` for the complete per-slot report.
+In `observe_slots`, the error message names each slot that did not pass, with its failures, missing evidence, and residuals.
 Do not treat incomplete evidence as permission for motion. Normal robot limits, clearance checks, leases, and zone rules still apply.
 
 ## Stop and shutdown

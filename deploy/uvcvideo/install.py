@@ -9,7 +9,9 @@ with DKMS and sets `options uvcvideo mjpeg_bpp=200`. DKMS rebuilds the module fo
 new kernel of the same series. Other kernel series keep the stock driver; run the
 script again after you boot one.
 
-If a step fails, the script removes its DKMS package and the stock driver stays.
+If the download, patch or build fails, the script removes its new DKMS package and
+the installed driver stays. It removes older patched versions only after the new
+version builds.
 The script does not reload the driver. Stop the camera and thermal units, then run
 `rmmod uvcvideo` and `modprobe uvcvideo`, or reboot.
 
@@ -85,7 +87,7 @@ def build(series, version, kernel):
         shutil.rmtree(source, ignore_errors=True)
         shutil.copytree(work, source)
     run("dkms", "add", "-m", NAME, "-v", version)
-    run("dkms", "install", "-m", NAME, "-v", version, "-k", kernel)
+    run("dkms", "build", "-m", NAME, "-v", version, "-k", kernel)
 
 
 def main(argv):
@@ -102,17 +104,19 @@ def main(argv):
     if installed(version, kernel):
         print(f"{NAME}/{version} is already installed for {kernel}.")
     else:
-        for old in other_versions(version):
-            run("dkms", "remove", "-m", NAME, "-v", old, "--all")
-            shutil.rmtree(f"/usr/src/{NAME}-{old}", ignore_errors=True)
         try:
             build(series, version, kernel)
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             subprocess.run(["dkms", "remove", "-m", NAME, "-v", version, "--all"], check=False)
             shutil.rmtree(f"/usr/src/{NAME}-{version}", ignore_errors=True)
             raise SystemExit(
-                f"The patched driver was not installed ({error}). The stock driver stays."
+                f"The patched driver was not installed ({error}). The installed driver stays."
             )
+        # Remove the old patched versions only after the new one builds.
+        for old in other_versions(version):
+            run("dkms", "remove", "-m", NAME, "-v", old, "--all")
+            shutil.rmtree(f"/usr/src/{NAME}-{old}", ignore_errors=True)
+        run("dkms", "install", "-m", NAME, "-v", version, "-k", kernel)
     OPTIONS.write_text(
         f"# Written by deploy/uvcvideo/install.py.\noptions uvcvideo mjpeg_bpp={BPP}\n"
     )

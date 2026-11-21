@@ -77,6 +77,8 @@ def test_video_compilation_uses_ordered_segments_and_private_no_replace_output(
         assert kwargs["umask"] == 0o077 and kwargs["timeout"] > 0
         if command[0] == "ffprobe":
             return SimpleNamespace(returncode=0, stdout="120", stderr="")
+        # 3 segments of 120 s: 2 s per recorded second.
+        assert kwargs["timeout"] == 720
         assert "-n" in command and "-y" not in command
         manifest = Path(command[command.index("-i") + 1]).read_text()
         inputs = [

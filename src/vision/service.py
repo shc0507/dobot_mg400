@@ -38,7 +38,7 @@ from vision.calibration import (
 from vision.frames import DemoSource, FrameError, Go2RTCSource, validate_camera
 from vision.localizer import Detection, Localizer, draw_detections
 from vision.qr import DetectionCancelled, detect_qr_codes
-from vision.tray import cross_check_slots, locate_tray, validate_tray
+from vision.tray import TrayCheckError, cross_check_slots, locate_tray, validate_tray
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
@@ -50,10 +50,12 @@ def _slot_arguments(args):
     """Validate bounded data, never a server-side tray filename."""
     if set(args) != {"camera", "tray", "targets", "axis"}:
         raise ValueError("Slot observation needs camera, tray, targets and axis.")
-    if args["axis"] not in ("long", "short"):
-        raise ValueError("Chip axis must be explicitly long or short.")
+    if args["axis"] not in ("long", "short", None):
+        raise ValueError("Chip axis must be explicitly long, short or null.")
     tray = validate_tray(args["tray"])
     targets = args["targets"]
+    if args["axis"] is None and isinstance(targets, dict) and any(targets.values()):
+        raise ValueError("A null chip axis is only for slots without a taught station.")
     ids = {slot["id"] for slot in tray["slots"]}
     if not isinstance(targets, dict) or not 1 <= len(targets) <= 128:
         raise ValueError("Slot observation requires explicit taught XY targets.")
@@ -79,6 +81,23 @@ def _slot_arguments(args):
     ):
         raise ValueError("Slot command exceeds the complete 16 KiB request limit.")
     return tray
+
+
+def _tray_check_message(report):
+    """Name each slot that did not pass, with its failures, missing items and residuals."""
+    parts = []
+    for ident, item in report["slots"].items():
+        if item["status"] == "ok":
+            continue
+        reasons = item["failures"] + [f"missing {name}" for name in item["missing"]]
+        for key, label in (("station_residual_mm", "station"), ("chip_residual_mm", "chip")):
+            if item[key] is not None:
+                reasons.append(f"{label} {item[key]:.2f} mm")
+        parts.append(f"{ident}: {', '.join(reasons)}")
+    return (
+        f"Tray slot check did not pass (tolerance {report['tolerance_mm']:g} mm): "
+        + "; ".join(parts)
+    )[:1000]
 
 
 def _slot_observations(image, model, location, detections, axis, requested=None):
@@ -114,19 +133,24 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         vector = segment[1] - segment[0]
         unit = vector / np.linalg.norm(vector)
         normal = np.array([-unit[1], unit[0]])
-        margin = geometry["width_mm"] / 2 + location["tolerance_mm"]
-        start, end = segment[0] - unit * margin, segment[1] + unit * margin
-        polygon = np.array(
-            [
-                start + normal * margin,
-                end + normal * margin,
-                end - normal * margin,
-                start - normal * margin,
-            ]
-        )
-        slots[ident] = cv2.convexHull(polygon.astype(np.float32))
+
+        def outline(margin):
+            start, end = segment[0] - unit * margin, segment[1] + unit * margin
+            return np.array(
+                [
+                    start + normal * margin,
+                    end + normal * margin,
+                    end - normal * margin,
+                    start - normal * margin,
+                ]
+            )
+
+        # Chips associate with the groove itself; the tolerance would overlap neighbours.
+        slots[ident] = cv2.convexHull(outline(geometry["width_mm"] / 2).astype(np.float32))
         if ident not in requested:
             continue
+        # Visibility and arm occlusion use the groove plus the tolerance.
+        polygon = outline(geometry["width_mm"] / 2 + location["tolerance_mm"])
         xyz = np.column_stack((polygon, np.full(4, model["tray_height_mm"])))
         rotation = np.asarray(model["rotation"], np.float64)
         translation = np.asarray(model["translation"], np.float64)
@@ -202,16 +226,20 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         if not matches:
             continue
         center, size, angle = cv2.minAreaRect(mapped)
-        if min(size) <= 1e-6 or abs(size[0] - size[1]) <= max(size) * 0.01:
-            raise ValueError("Chip axis is ambiguous.")
-        # OpenCV's width axis is mapped into the calibrated robot plane first.
-        if (size[1] > size[0]) == (axis == "long"):
-            angle += 90
+        if axis is None:
+            angle = None  # A cup pick uses no chip axis.
+        else:
+            if min(size) <= 1e-6 or abs(size[0] - size[1]) <= max(size) * 0.01:
+                raise ValueError("Chip axis is ambiguous.")
+            # OpenCV's width axis is mapped into the calibrated robot plane first.
+            if (size[1] > size[0]) == (axis == "long"):
+                angle += 90
+            angle %= 180
         found[matches[0]].append(
             {
                 "state": "present",
                 "center_xy_mm": list(center),
-                "angle_deg": angle % 180,
+                "angle_deg": angle,
                 "reason": None,
             }
         )
@@ -321,6 +349,7 @@ class VisionService:
         self._active = None
         self._next = self._seq = self.expiry_count = 0
         self._fault = self._last_command = self._summary = None
+        self._failure_message = None
         self.events = EventLog(clock=wall_clock)
         self.lease = _VisionLease(
             3, clock, on_expire=self.on_lease_expired, on_release=self._released
@@ -406,7 +435,11 @@ class VisionService:
                 "maxProperties": 128,
                 "description": "Slot ID to taught robot XY, or null for no taught station.",
             },
-            axis={"type": "string", "enum": ["long", "short"]},
+            axis={
+                "type": ["string", "null"],
+                "enum": ["long", "short", None],
+                "description": "null only for slots without a taught station (cup pick).",
+            },
         )
         slots["required"] += ["tray", "targets", "axis"]
         return describe(
@@ -742,7 +775,9 @@ class VisionService:
                 },
             )
             device = self._devices[job["camera"] - 1]
-            saved = self.calibrations.save(device, model, commit_guard=lambda: self._commit(job))
+            saved = self.calibrations.save(
+                device, model, commit_guard=lambda: self._commit(job, published=True)
+            )
             with self._lock:
                 self._calibrated_cameras.add(job["camera"])
             result = {"camera": job["camera"], "calibrated": True, "calibration": saved}
@@ -843,7 +878,7 @@ class VisionService:
         return self._bounded_result(result), annotated
 
     @contextmanager
-    def _commit(self, job):
+    def _commit(self, job, *, published=False):
         # Slow solving, staging and inference precede this short authority fence.
         # Stop and lease expiry serialize with model installation or drift-result publication.
         with self.lease.control(job["client"]):
@@ -851,6 +886,9 @@ class VisionService:
                 if self._closed or self._active is not job or job["cancel"].is_set():
                     raise DetectionCancelled()
                 yield
+                if published:
+                    # The model is installed; a later Stop cannot discard it.
+                    job["published"] = True
 
     def _released(self, client):
         with self._lock:
@@ -887,6 +925,8 @@ class VisionService:
             outcome, error = "failed", ServiceError(503, str(exc))
         except ServiceError as exc:
             outcome, error = "failed", exc
+        except TrayCheckError as exc:
+            outcome, error = "failed", ServiceError(400, _tray_check_message(exc.report))
         except ValueError as exc:
             outcome, error = "failed", ServiceError(400, str(exc))
         except Exception as exc:
@@ -908,7 +948,7 @@ class VisionService:
     def _finish_result(self, job, result, image, outcome, error):
         with self._lock:
             # Stop can arrive after processing finishes but before publication.
-            if job["cancel"].is_set():
+            if job["cancel"].is_set() and not job.get("published"):
                 outcome, error = (
                     "stopped",
                     ServiceError(409, "Inference stopped; its result was discarded."),
@@ -941,15 +981,17 @@ class VisionService:
             )
             self._active = None
             self._seq += 1
-            # A detection preview polls every second, so only a failure is an event.
-            if outcome == "failed":
+            # A detection preview polls every second, so only a new failure cause is an event.
+            if outcome == "failed" and error.message != self._failure_message:
                 self.events.add(
                     "error",
                     "vision inference failed",
                     action=job["action"],
                     camera=job["camera"],
                     result=outcome,
+                    error=error.message,
                 )
+            self._failure_message = error.message if outcome == "failed" else None
             job["done"].set()
 
     def stop(self, client, wait_s=0):

@@ -33,7 +33,7 @@ uv run ruff format --check .
 `uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator` 和 `microscope`。
 `vision-gpu` 和 `notebook` 不在默认组中。
 `stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
-机器人服务和交互终端只用标准库，不依赖 `stage` 组。
+机器人服务只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
 拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
@@ -43,7 +43,7 @@ uv run ruff format --check .
 
 测试共用的 fixture 位于 `tests/conftest.py`。
 位移台测试的 `stage_rig`、`stage_ports` 和 `stage_usb` 也在此文件，测试按名称引用。
-模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_http.py`。
 服务契约测试的共用检查位于 `tests/contract_helpers.py`。
 位移台的时钟、串口和串口列表替身位于 `tests/stage_helpers.py`。
 新增测试时复用这些模块，不得在测试文件中另写副本。

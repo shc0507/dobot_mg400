@@ -10,7 +10,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Every main commit finishes its full run; a new PR push replaces the older run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -44,7 +45,9 @@ jobs:
         # 3 workers on the 4-vCPU runner; loadfile keeps each file's tests in one worker.
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
-            mapfile -t targets < <(git diff --name-only HEAD^1 HEAD | uv run python scripts/select_tests.py)
+            # A failed diff stops the step. --no-renames also lists the old path of a moved file.
+            changed=$(git diff --name-only --no-renames HEAD^1 HEAD)
+            mapfile -t targets < <(printf '%s\n' "$changed" | uv run python scripts/select_tests.py)
           else
             targets=(tests)
           fi
@@ -52,3 +55,20 @@ jobs:
           uv run pytest -ra -n 3 --dist loadfile "${targets[@]}"
       - name: JavaScript tests
         run: node --test tests/*.mjs
+
+  stage-firmware:
+    name: Stage firmware native checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a 32-bit compiler
+        # The checks need a 32-bit long and 32-bit float math, as on the AVR.
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends g++-multilib
+      - name: Download AccelStepper
+        run: |
+          curl -sSfLo "$RUNNER_TEMP/accel.zip" https://downloads.arduino.cc/libraries/github.com/waspinator/AccelStepper-1.64.0.zip
+          echo "45d152991271f8480bc939a7f325e006bfa3695a865eda383770bb68f0140e05  $RUNNER_TEMP/accel.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/accel.zip" -d "$RUNNER_TEMP"
+      - name: Run the checks
+        run: python3 firmware/stage-controller-v3/tests/run.py --library "$RUNNER_TEMP/AccelStepper-1.64.0" --compiler-arg=-m32 --compiler-arg=-msse2 --compiler-arg=-mfpmath=sse

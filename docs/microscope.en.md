@@ -126,6 +126,9 @@ Focus moves and autofocus stay within the configured limits and require a known 
 A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
 The service first moves the scan center inside the limits when clearance is at a range endpoint.
+Autofocus fails without a fault, and keeps zero, when the focus scores are flat or the best score is at a window edge that is not a focus limit.
+In the second case the peak can be outside a local window. Run full autofocus.
+During a recording, autofocus does not change stabilization.
 Snapshot creates a new PNG under the run root. It refuses an existing destination with HTTP 400 before dispatch.
 Its returned `captured_at` preserves the source clock. Real and demo main-camera frames use host wall time. Side-camera frames use monotonic receive time.
 These values do not measure sensor exposure time.

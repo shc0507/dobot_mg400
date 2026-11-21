@@ -877,6 +877,8 @@ def test_a_blocked_event_log_cannot_delay_the_stop(monkeypatch, signal_table):
 
     def close():
         closed.append(time.monotonic())
+        # The stop has its time; later log writes need not wait.
+        unblock.set()
 
     monkeypatch.setattr(sys, "stderr", BlockedStderr())
     try:

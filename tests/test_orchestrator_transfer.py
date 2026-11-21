@@ -22,6 +22,9 @@ from orchestrator.stations import AXES, BOUND_SETTINGS, StationStore, Workspace
 from orchestrator.store import RunStore
 from orchestrator.tool import Pose, ToolOffset, fingertip_to_flange, flange_to_fingertip
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 
 @pytest.fixture(autouse=True)
 def owned_loopback_only(monkeypatch):

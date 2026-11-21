@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+import stage_controller.controller
+import stage_controller.encoder
+from stage_controller.protocol import DemoTransport
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "console_preview", ROOT / "scripts/console_preview.py"
@@ -41,6 +45,31 @@ def client(tmp_path, monkeypatch):
     yield preview.create_app(tmp_path).test_client()
     for app in reversed(apps):
         app.extensions["preview_close"]()
+
+
+class ScaledClock:
+    """Run simulated stage motion `rate` times faster than real time."""
+
+    def __init__(self, rate):
+        self._real = self._now = time.monotonic()
+        self.rate = rate
+
+    def __call__(self):
+        real = time.monotonic()
+        self._now += (real - self._real) * self.rate
+        self._real = real
+        return self._now
+
+
+@pytest.fixture
+def fast_stage(monkeypatch):
+    """Speed up the simulated encoder board; the host keeps real time and a short cooldown."""
+    clock = ScaledClock(10)
+    monkeypatch.setattr(
+        stage_controller.controller, "DemoTransport", lambda _: DemoTransport(clock)
+    )
+    monkeypatch.setattr(stage_controller.encoder, "COOLDOWN_SECONDS", 0.05)
+    return clock
 
 
 def test_real_shell_and_workspace_polls_stay_offline(client):
@@ -346,7 +375,9 @@ def test_stops_cancel_simulated_encoder_move_without_control(client, path, ident
     assert stopped["motors"][2]["position_rotations"] < 0.1
 
 
-def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(client, tmp_path):
+def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(
+    fast_stage, client, tmp_path
+):
     service = client.application.extensions["preview_service"]
     assert (
         client.get(MOTION + "/state", headers=HEADERS).json["stage_operation"]["status"] == "idle"
@@ -395,6 +426,8 @@ def test_motion_coordinates_use_live_stage_and_all_stop_routes_cancel_sequence(c
     assert values(reached) == pytest.approx({"top": 0.7, "bottom": 0.65, "insert": 0.3}, abs=0.002)
     assert service.sample_transfer.pages == {}
 
+    # Each stop must arrive while Bottom moves.
+    fast_stage.rate = 2
     for path, identity in (
         ("/lab/api/console/stop/stage", "another-page"),
         ("/lab/api/dashboard/motion", "another-page"),
@@ -461,7 +494,7 @@ def wait_stage(client, condition, timeout=20):
     pytest.fail(f"Stage did not settle: {state}")
 
 
-def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path):
+def test_simulated_calibration_saved_target_and_sequential_move(fast_stage, client, tmp_path):
     take_stage(client)
     for motor in ("bottom", "top", "insert"):
         result = client.post(

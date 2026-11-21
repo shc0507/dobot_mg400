@@ -22,6 +22,9 @@ from .joint_limits import validate_joint_segment, validate_joints, validate_meas
 from .suction import PRESSURE_DO, bit, command_text
 from .suction import STEPS as VACUUM_STEPS
 
+# Arrival needs fresh, unchanged feedback for this long.
+STABLE_SECONDS = 0.4
+
 
 def _rest(joints, mode):
     """Joints that rest and agreement checks compare: J1-J3 while disabled (mode 4), else all four.
@@ -646,7 +649,7 @@ class JointControl:
     ):
         deadline = time.monotonic() + timeout
         jog_stop = jog_stop_ack is not None
-        stable_seconds = 0.05 if jog_stop else 0.4
+        stable_seconds = 0.05 if jog_stop else STABLE_SECONDS
         poll_seconds = 0.005 if jog_stop else 0.01
         previous_received = None
         anchor = stable_since = None
@@ -1025,7 +1028,7 @@ class JointControl:
                     anchor, stable_since, count = sample.joints_deg, received, 1
                 else:
                     count += 1
-                    if count >= 3 and received - stable_since >= 0.4:
+                    if count >= 3 and received - stable_since >= STABLE_SECONDS:
                         return sample
             time.sleep(0.05)
         raise TimeoutError("Robot did not reach a fresh, verified Cartesian target")

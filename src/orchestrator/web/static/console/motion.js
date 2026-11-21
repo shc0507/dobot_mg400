@@ -554,7 +554,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      port: "", refView: {}, stageTarget: null,
+      port: "", refView: {}, stageTarget: null, stopPresses: { robot: 0, stage: 0 },
     };
     let refs = {};
 
@@ -589,8 +589,11 @@
       clearStageTarget();
       model.inflight.add(device + ":" + key);
       update();
+      const presses = model.stopPresses[device];
       try {
         const result = path ? await checked(path, params) : await api.relay(device, action, params);
+        const motion = key === "move" || key.startsWith("move-") || action === "calibrate";
+        if (motion && result?.outcome !== "refused") stopAgain(device, presses);
         const vars = { device: api.deviceName(device), action: actionName(device, action), error: result?.error || "" };
         if (result?.outcome === "accepted") note(device, "info", t("out.accepted", vars));
         else if (result?.outcome === "refused") note(device, "warning", t("out.refused", vars));
@@ -602,9 +605,19 @@
       }
     }
 
+    /** A command can reach the console after a Stop that was pressed while it was in flight.
+     * Then it can start after the Stop: stop the device once more. */
+    function stopAgain(device, presses) {
+      if (presses === undefined || model.stopPresses[device] === presses) return;
+      api.stop(device).catch(() => {});
+    }
+
     async function stopDevice(device) {
+      if (device in model.stopPresses) model.stopPresses[device] += 1;
       clearStageTarget();
       if (device === "stage") holdEnd();
+      // Stop arm also turns the service keyboard off; the switch follows at once.
+      if (device === "robot" && kb.on) { kb.on = kb.seen = false; releaseKeys(); update(); }
       const result = await api.stop(device);
       const outcome = ["confirmed", "pending", "unconfirmed"].includes(result?.outcome) ? result.outcome : "unknown";
       note(device, outcome === "confirmed" ? "info" : "warning", t("out.stop", { device: api.deviceName(device), outcome: t("res." + outcome) }));
@@ -862,6 +875,8 @@
       releaseKeys();
       kb.on = true;
       kb.seen = false;
+      // A new disarm reason after this arm means the service turned keys off before the page saw them on.
+      kb.reasonAtArm = data.robot?.keyboard_disarm_reason ?? null;
       const result = await send("robot", "keyboard", { enabled: true, seq: ++kb.seq, speed: clampSpeed(kb.speed, data.kbCap) }, "keyboard");
       if (result?.outcome !== "accepted" && kb.on) { kb.on = false; releaseKeys(); update(); }
     }
@@ -944,7 +959,8 @@
       if (kb.on && !api.owns("robot")) { kb.on = kb.seen = false; releaseKeys(); }
       if (kb.on && robot && (robot.keyboard_enabled || robot.keyboard_arming)) kb.seen = true;
       // The service turned keys off (Stop, a button command, an alarm): follow it.
-      else if (kb.on && kb.seen && robot && !model.inflight.has("robot:keyboard")) { kb.on = kb.seen = false; releaseKeys(); }
+      else if (kb.on && robot && !model.inflight.has("robot:keyboard")
+        && (kb.seen || (typeof robot.keyboard_disarm_reason === "string" && robot.keyboard_disarm_reason !== kb.reasonAtArm))) { kb.on = kb.seen = false; releaseKeys(); }
       refs.kbSwitch.setAttribute("aria-checked", kb.on ? "true" : "false");
       refs.kbSwitch.className = "mo-switch" + (kb.on ? " mo-on" : "");
       refs.kbSwitch.disabled = !kb.on && !(ready && robot.enabled === true && !robot.busy && data.kbCap && !model.inflight.has("robot:keyboard-off"));
@@ -1322,13 +1338,17 @@
       item.status = "sending";
       model.inflight.add("stage:point");
       renderStageTarget();
+      const presses = model.stopPresses.stage;
       try {
-        const result = await api.request("stage/position", { target: item.target }, { timeout: 8000 });
+        // The console refuses the target when the stage stopped after it was chosen.
+        const result = await api.request("stage/position", { target: item.target, stop_epoch: item.stopEpoch ?? null }, { timeout: 8000 });
+        stopAgain("stage", presses);
         if (model.stageTarget !== item) return;
         if (!result.operation) throw new Error(result.error || t("target.failed"));
         data.stageOperation = result.operation;
         applyTargetOperation(item, result.operation);
       } catch (error) {
+        if (error.status === 0) stopAgain("stage", presses);
         if (model.stageTarget !== item) return;
         if (item.operationId) return;
         if (error.status === 0) {
@@ -1738,7 +1758,7 @@
         root.document?.removeEventListener?.("click", onGlobalStop, true);
         rootNode = null;
       },
-      _test: { data, model, kb, sh, refs: () => refs, refresh, update },
+      _test: { data, model, kb, sh, refs: () => refs, refresh, update, send },
     };
   }
 

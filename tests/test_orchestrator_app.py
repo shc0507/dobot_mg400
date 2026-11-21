@@ -970,3 +970,10 @@ def test_borrowed_runs_use_lent_adapters_and_return_them(rig, monkeypatch):
     assert runner.wait_closed(3)
     assert returned == ["stage"] and not rig.created
     assert held.holder == "agent-x-0123456789ab" and "release" not in held.calls
+
+
+def test_catalog_reports_an_unknown_recipe_id_as_invalid(tmp_path):
+    directory = tmp_path / "catalog"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="Unknown recipe ID"):
+        Catalog(directory).read("no-such-recipe")

@@ -65,7 +65,7 @@ function mount(snapshot) {
   };
   const root = new Element("section");
   registered.mount(root, api);
-  return { root, calls, refresh: () => listeners.state.forEach(fn => fn()), setLanguage: () => listeners.language.forEach(fn => fn()) };
+  return { root, calls, api, registered, refresh: () => listeners.state.forEach(fn => fn()), setLanguage: () => listeners.language.forEach(fn => fn()) };
 }
 
 test("the Overview updates in place, so a state update keeps every button", async () => {
@@ -125,4 +125,23 @@ test("the event filters update in place", () => {
   page.root.button("Warnings").click();
   assert.equal(select.value, "");
   assert.equal(page.root.button("Warnings").getAttribute("aria-pressed"), "true");
+});
+
+test("the events poll runs one read at a time and only while the Overview shows", async () => {
+  let intervals = 0, cleared = 0;
+  const page = mount({ value: { services: [], control: [] } });
+  await new Promise(resolve => setImmediate(resolve));
+  let reads = 0, finish;
+  page.api.consoleRequest = () => { reads++; return new Promise(resolve => { finish = resolve; }); };
+  globalThis.setInterval = () => ++intervals;
+  globalThis.clearInterval = () => { cleared++; };
+  page.registered.hide();
+  assert.equal(cleared, 1);
+  page.registered.show(); page.registered.show();
+  assert.equal(intervals, 1);
+  assert.equal(reads, 1);
+  finish({ events: [], errors: {} }); await new Promise(resolve => setImmediate(resolve));
+  page.registered.hide(); page.registered.show();
+  page.registered.show();
+  assert.equal(reads, 2);
 });

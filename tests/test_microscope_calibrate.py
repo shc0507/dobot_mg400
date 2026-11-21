@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -210,12 +211,15 @@ def test_focus_limits_and_unrestricted_reference_commands_are_refused(supervised
     assert not any(command == "FOCUS MOVE 100000" for command in rig.port.commands)
 
 
-@pytest.mark.parametrize("packet", [None, TimeoutError("fake frame timeout")])
-def test_missing_or_failed_frame_aborts_the_supervised_session(supervised_rig, packet):
+@pytest.mark.parametrize(
+    "packet, method",
+    [(None, "get_frame"), (TimeoutError("fake frame timeout"), "get_frame_packet")],
+)
+def test_missing_or_failed_frame_aborts_the_supervised_session(supervised_rig, packet, method):
     rig = supervised_rig()
     rig.camera.packet = packet
     with pytest.raises((RuntimeError, TimeoutError)):
-        rig.session.camera.get_frame_packet(wait=True)
+        getattr(rig.session.camera, method)(wait=True)
     assert rig.session.cancel_event.is_set()
     assert "STOP ALL" in rig.port.commands
     assert "FOCUS ZERO" not in rig.port.commands and not rig.operator.prompts
@@ -543,7 +547,7 @@ def test_calibration_worker_keeps_gui_defaults_and_guarded_callbacks(
 
         def run(self, **kwargs):
             runs.append(kwargs)
-            return "source result"
+            return SimpleNamespace(stable=True)
 
     monkeypatch.setattr(
         module,
@@ -598,13 +602,14 @@ def test_calibration_refused_handoff_cannot_be_hidden_by_source_cleanup(
                 self.motor.set_microstep(4)
             except RuntimeError:
                 pass  # Source cleanup can swallow an exception; authority cannot recover.
-            return "incorrect success"
+            return SimpleNamespace(stable=True)
 
     monkeypatch.setattr(module, "LightObjectiveCalibrator", Algorithm)
     with pytest.raises(SideCaptureCancelled):
         module.run_calibration("light", rig.session, reference_frame=np.zeros((4, 4, 3), np.uint8))
     assert rig.session.cancel_event.is_set()
-    assert (tmp_path / "calibration" / "light_objective_calibration.csv").is_file()
+    assert (tmp_path / "calibration" / "light_objective_calibration.failed.csv").is_file()
+    assert not (tmp_path / "calibration" / "light_objective_calibration.csv").exists()
     assert not any(
         command in {"FOCUS ZERO", "FOCUS HOME", "MICRO 4"} for command in rig.port.commands
     )
@@ -1228,7 +1233,7 @@ def test_invalid_nudge_window_fails_before_hardware(value, monkeypatch):
 def at_focus_rig(supervised_rig, monkeypatch):
     import microscope.calibrate as module
 
-    def make(*answers, start=101, window=2, home=False, reference=None):
+    def make(*answers, start=101, window=2, home=False, reference=None, focus=None):
         rig = supervised_rig(*(answers or ("CLEAR",)), home=home, reference=reference)
         calls = []
 
@@ -1242,7 +1247,8 @@ def at_focus_rig(supervised_rig, monkeypatch):
                 rig.session.motor.focus_move(2)
 
         monkeypatch.setattr(module, "AutoFocuser", LocalFocus)
-        rig.session.prepare_at_focus(window, start, validated_focus_settings(), lambda _: None)
+        settings = validated_focus_settings(focus)
+        rig.session.prepare_at_focus(window, start, settings, lambda _: None)
         rig.calls = calls
         return rig
 
@@ -1381,7 +1387,7 @@ def test_only_explicit_calibration_window_changes_algorithm_move_callback(
                 options.append(kwargs)
 
         def run(self, **kwargs):
-            return "source result"
+            return SimpleNamespace(stable=True)
 
     monkeypatch.setattr(module, "ObjectiveCalibrator", Algorithm)
     module.run_calibration(
@@ -1505,7 +1511,8 @@ def test_setup_refused_zero_stops_and_disables_without_zero(supervised_rig, answ
 
 
 def test_nearest_focus_return_outside_inward_limit_aborts_before_microstep(at_focus_rig):
-    rig = at_focus_rig(start=3, reference=ReferenceSettings(-5, 5, 0, False))
+    small = dict(local_half_range=2, local_step=2, local_fine_radius=2, local_min_step=1)
+    rig = at_focus_rig(start=3, reference=ReferenceSettings(-5, 5, 0, False), focus=small)
     assert rig.raw.read_status().focus.position == 5
     before = len(rig.port.commands)
     with pytest.raises(ValueError, match="inward-rounded"):
@@ -1875,3 +1882,106 @@ def test_setup_idle_timeout_stops_disables_and_clears_declared_zero(supervised_r
     status = rig.raw.read_status()
     assert not status.focus.enabled and not status.objective.enabled and not status.zeroed
     assert rig.session.cancel_event.is_set()
+
+
+def test_timed_out_frame_wait_returns_none_and_keeps_the_session(supervised_rig):
+    rig = supervised_rig()
+    rig.camera.packet = None
+    assert rig.session.camera.get_frame_packet(wait=True, timeout=0.01) is None
+    assert not rig.session.cancel_event.is_set()
+
+
+def test_at_focus_start_near_a_limit_moves_the_local_window_inside(at_focus_rig):
+    rig = at_focus_rig(start=0, reference=ReferenceSettings(0, 10000, 0, False))
+    assert "FOCUS MOVE 1500" in rig.port.commands
+    assert "1500 MICRO 4 pulses" in rig.operator.prompts[0]
+    assert rig.calls[1][1]["half_range"] == 1500
+    assert rig.raw.read_status().focus.position == 1502
+
+
+def test_at_focus_window_wider_than_the_limits_is_refused(at_focus_rig):
+    with pytest.raises(ValueError, match="does not fit"):
+        at_focus_rig(start=0, reference=ReferenceSettings(0, 2000, 0, False))
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_unstable_calibration_fails_after_writing_its_log(
+    stable, supervised_rig, tmp_path, monkeypatch
+):
+    import microscope.calibrate as module
+
+    monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
+    rig = supervised_rig()
+
+    class Algorithm:
+        def __init__(self, camera, motor, **kwargs):
+            self.measurements = []
+
+        def run(self, **kwargs):
+            return SimpleNamespace(stable=stable)
+
+    monkeypatch.setattr(module, "ObjectiveCalibrator", Algorithm)
+
+    def run():
+        return module.run_calibration(
+            "objective",
+            rig.session,
+            reference_frame=np.zeros((4, 4, 3), np.uint8),
+            progress=lambda _: None,
+        )
+
+    if stable:
+        run()
+    else:
+        with pytest.raises(RuntimeError, match="not stable"):
+            run()
+    assert (tmp_path / "calibration" / "objective_calibration.csv").is_file()
+
+
+def test_light_autofocus_scales_micro_4_focus_settings_to_the_coarse_microstep(monkeypatch):
+    import microscope.light_calibration as module
+
+    class Stop(Exception):
+        pass
+
+    created, windows = [], []
+
+    class SpyFocus:
+        def __init__(self, camera, motor, **kwargs):
+            created.append(kwargs)
+
+        def run_local(self, **kwargs):
+            created.append(kwargs)
+            raise Stop
+
+    motor = Mock(connected=True)
+    calibrator = module.LightObjectiveCalibrator(
+        FakeCamera(),
+        motor,
+        reference_frame=np.zeros((4, 4, 3), np.uint8),
+        before_focus=windows.append,
+    )
+    monkeypatch.setattr(module, "AutoFocuser", SpyFocus)
+    monkeypatch.setattr(calibrator, "_wait", lambda seconds: None)
+    monkeypatch.setattr(calibrator, "_scan_units", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        calibrator, "_matching_region", lambda *args: (0, 0, SimpleNamespace(position_units=0))
+    )
+    monkeypatch.setattr(calibrator, "_coarse_motor_axis", lambda: None)
+    monkeypatch.setattr(calibrator, "_return_to_saved_view", lambda **kwargs: None)
+    with pytest.raises(Stop):
+        calibrator.run(
+            focus_half_range=1500,
+            focus_step=100,
+            focus_fine_radius=200,
+            focus_min_step=10,
+            focus_speed=1200,
+            focus_backlash_steps=0,
+            lock_exposure=False,
+        )
+    motor.set_microstep.assert_called_once_with(2)
+    assert windows == [750]
+    assert created[0]["speed"] == 600 and created[0]["backlash_steps"] == 0
+    assert created[1] == dict(
+        half_range=750, step=50, fine_radius=100, min_step=5, lock_exposure=False
+    )

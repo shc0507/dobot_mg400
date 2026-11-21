@@ -16,6 +16,7 @@ from .agent import (
     DEFAULT_URL,
     DO_TIMEOUT_S,
     Agent,
+    Unreachable,
     exit_code,
     failure,
     parse_params,
@@ -368,5 +369,9 @@ def main(argv=None, *, out=None, agent_factory=Agent):
         result = failure("usage", str(error))
     except KeyboardInterrupt:
         result = failure("interrupted", "Interrupted before a command was sent.")
+    except Unreachable as error:
+        result = failure("unknown", f"{error} Read the state before you repeat the command.")
+    except Exception as error:  # Keep the contract: always print 1 JSON object.
+        result = failure("unknown", f"labctl failed: {error!r}")
     print(json.dumps(result, ensure_ascii=False, allow_nan=False), file=out, flush=True)
     return exit_code(result)

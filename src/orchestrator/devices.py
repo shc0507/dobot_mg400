@@ -266,7 +266,10 @@ class Devices:
         return self.get(name)
 
     def fresh(self, name, timeout=1.0):
-        """Return a row from a read that started after this call."""
+        """Return a row from a read that started after this call.
+
+        Without such a read within timeout, the row has the phase "stale": a caller
+        that needs fresh state must not act on an older row."""
         self.start()
         deadline = time.monotonic() + timeout
         with self.changed:
@@ -278,4 +281,8 @@ class Devices:
                 if left <= 0:
                     break
                 self.changed.wait(left)
-        return self.get(name)
+            done = self.reads[name] >= target
+        entry = self.get(name)
+        if not done and entry["phase"] == "ready":
+            entry["phase"] = "stale"
+        return entry

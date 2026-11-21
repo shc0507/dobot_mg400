@@ -527,6 +527,22 @@ test("a furnace fault shows Acknowledge, which is sent once after a confirmation
   assert.equal(role(healthy.root, "acknowledge").hidden, true);
 });
 
+test("a slow step or end gas shows a warning line", async () => {
+  const status = statusBody();
+  status.furnace.sequence = { ...status.furnace.sequence, running: true, phase: "ramping", current_index: 0,
+    warning: { code: "step_slow", step_index: 0, target_c: 300, minutes: 30, message: "x" } };
+  const { root } = await load({ status });
+  assert.equal(role(root, "seq-warning").hidden, false);
+  assert.equal(role(root, "seq-warning").className, "pr-warn");
+  assert.match(role(root, "seq-warning").textContent, /Step 1 has not reached 300 °C after 30 min/);
+  status.furnace.sequence.warning = { code: "end_gas_slow", end_gas_until_c: 40, hours: 12 };
+  status.furnace.sequence.phase = "cooling";
+  const cooling = await load({ status });
+  assert.match(role(cooling.root, "seq-warning").textContent, /above 40 °C after 12 h/);
+  const healthy = await load();
+  assert.equal(role(healthy.root, "seq-warning").hidden, true);
+});
+
 test("a failed microscope command shows its reason until the next command", async () => {
   const status = statusBody();
   status.microscope.last_command = { action: "select_objective", result: "failed", message: "Objective identification failed: black_frame" };

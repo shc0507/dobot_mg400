@@ -56,6 +56,7 @@ SEQUENCE_KEYS = (
     "hold_remaining_seconds",
     "end_gas",
     "end_gas_until_c",
+    "warning",
 )
 CHANNEL_KEYS = ("channel_index", "gas_name", "target_percent", "actual_percent", "available")
 VALVE_KEYS = ("channel_index", "open", "verified")

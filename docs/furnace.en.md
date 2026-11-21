@@ -101,6 +101,14 @@ The hold timer starts only after verified HOLD and PV within `1` °C of the targ
 The service advances after the hold duration. Ramp and settling time make total duration longer than the sum of holds.
 It does not repeatedly send temperature setters during a hold.
 After the final hold, heating stops. The end-gas plan continues until PV falls below its threshold, or for at most `24` h. The service then applies idle gas, which defaults to all off.
+
+A slow run causes a warning. The warning does not stop the run or lock the furnace:
+
+- A step that does not reach its target within `2` times its ramp time sets `sequence.warning` with `code` `step_slow`. The minimum wait is `30` min. The ramp time is the difference between PV at the step start and the target, divided by the ramp rate. A service restart starts the timer again.
+- An end-gas plan with PV above its threshold after `12` h sets `sequence.warning` with `code` `end_gas_slow`.
+- Each warning also adds 1 warning event. The console shows the warning at the top of the furnace card. `labctl furnace state` shows it in `sequence.warning`.
+- The warning clears when the step reaches its target, the end-gas plan ends, or the run stops.
+
 A gas stop during a sequence holds until the sequence ends: later steps and the end-gas plan keep that channel off. Idle gas still applies at the end.
 A sequence edit during a run without `end_gas` and `end_gas_until_c` keeps the current end-gas plan.
 If the controller enters STOP during a sequence, for example from its front panel, the service locks the furnace until a fault acknowledgement.

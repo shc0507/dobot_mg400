@@ -4,7 +4,6 @@ Lease authorization precedes the device lock. A stop epoch cancels delayed
 sequence commands without allowing another process to own the serial stream.
 """
 
-import math
 import time
 import uuid
 
@@ -15,6 +14,7 @@ from labkit.events import EventLog
 from .lease import StageLease
 from .protocol import (
     ENCODER_COUNTS_PER_ROTATION,
+    ENCODER_NOISE_COUNTS,
     MAX_ROTATIONS,
     MAX_SPEED,
     MICROSTEP_MODES,
@@ -24,19 +24,13 @@ from .protocol import (
     POSITION_LIMIT,
     ControllerError,
     LinkError,
+    position_reached,
+    target_counts,
 )
-
-# Firmware EncoderNoiseCounts: the spread of one encoder sample.
-ENCODER_NOISE_COUNTS = 2
 
 
 def _counts(rotations):
     return round(rotations * ENCODER_COUNTS_PER_ROTATION)
-
-
-def _rounded_counts(rotations):
-    """Round like the firmware: floor(rotations * 4096 + 0.5)."""
-    return math.floor(rotations * ENCODER_COUNTS_PER_ROTATION + 0.5)
 
 
 class StageContract:
@@ -166,8 +160,9 @@ class StageContract:
             reached = healthy and (
                 state.calibration == "done"
                 if entry["action"] == "calibrate"
-                else abs(_counts(state.position) - entry["target_counts"])
-                <= max(_counts(state.tolerance), 1) + entry["slack_counts"]
+                else position_reached(
+                    state.position, entry["target_counts"], state.tolerance, entry["slack_counts"]
+                )
             )
             self._finish_command(
                 entry,
@@ -258,9 +253,9 @@ class StageContract:
                 # starts from the firmware's own encoder sample, which can differ
                 # from the host's last reading by the encoder noise.
                 if operation == "move_to_position":
-                    target, slack = _rounded_counts(args["position"]), 0
+                    target, slack = target_counts(args["position"]), 0
                 else:
-                    step = _rounded_counts(abs(state.remaining))
+                    step = target_counts(abs(state.remaining))
                     target = _counts(state.position) + (step if state.remaining >= 0 else -step)
                     slack = ENCODER_NOISE_COUNTS
                 self._pending_commands[entry["id"]] = {

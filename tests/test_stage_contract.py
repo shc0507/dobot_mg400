@@ -1,16 +1,21 @@
 """Console lease, STOP and measured-rotation command boundaries; no hardware."""
 
 import math
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from contract_helpers import check_contract
 
 from labkit.errors import ServiceError
+from stage_controller import protocol
 from stage_controller.app import create_app
 from stage_controller.protocol import ControllerError, DemoTransport, LinkError
+
+FIRMWARE = Path(__file__).resolve().parents[1] / "firmware" / "stage-controller-v3"
 
 CLIENT = {"X-MG400-Client": "automation-a"}
 HOLD_ID = "automation-hold-0001"
@@ -181,6 +186,39 @@ def test_absolute_completion_uses_the_rounded_firmware_target(contract):
     state = controller.snapshot()
     assert state["motors"][0]["position_rotations"] * 4096 == pytest.approx(3068)
     assert state["last_command"]["result"] == "ok"
+
+
+def test_host_completion_constants_match_the_firmware():
+    config = (FIRMWARE / "EncoderConfig.h").read_text()
+    motor = (FIRMWARE / "MotorControl.cpp").read_text()
+    noise = re.search(r"EncoderNoiseCounts = ([\d.]+)f;", config)
+    microstep = re.search(r"microstepDivisor = (\d+);", motor)
+    assert float(noise[1]) == protocol.ENCODER_NOISE_COUNTS
+    assert int(microstep[1]) == protocol.REQUIRED_MICROSTEP
+    # The demo reports the tolerance by the firmware formula.
+    assert (
+        "ceilf(0.5f * countsPerRotation / pulsesPerRotation(m) + EncoderConfig::EncoderNoiseCounts)"
+        in motor
+    )
+    assert DemoTransport().motors["bottom"].tolerance * 4096 == 4
+
+
+@pytest.mark.parametrize(("error", "reached"), [(3, True), (4, True), (5, False)])
+def test_absolute_completion_accepts_the_firmware_tolerance(contract, error, reached):
+    controller, transport, clock, web, _ = contract
+    calibrate(controller, clock)
+    acquire(web)
+    result = post(
+        web,
+        "command",
+        dict(action="move_to_position", motor="bottom", position=0.75, speed=0.25),
+    )
+    assert result.status_code == 202
+    end_short(transport, "bottom", error)
+    clock.advance(1)
+    controller.poll()
+    last = controller.snapshot()["last_command"]
+    assert last["result"] == ("ok" if reached else "failed")
 
 
 @pytest.mark.parametrize(("short", "result"), [(-4, "ok"), (6, "ok"), (9, "failed")])

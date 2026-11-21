@@ -32,6 +32,7 @@ from orchestrator.transfer_profiles import (
     record_endpoint,
     record_position,
 )
+from stage_controller.protocol import ENCODER_NOISE_COUNTS
 
 PROFILE_ROOT = Path("/var/lib/mg400/calibration/sample-transfer")
 MAX_SECONDS = 600
@@ -373,7 +374,7 @@ class SampleTransfer:
                     if result.get("outcome") != "accepted":
                         raise ValueError(result.get("error") or "The stage command was refused.")
                     # A jog is relative: it starts from the firmware's own encoder sample.
-                    slack = 0 if jog is None else 2
+                    slack = 0 if jog is None else ENCODER_NOISE_COUNTS
                     self._wait(operation, motor, target, result.get("command_id"), slack)
                 self._check(operation)
                 with self.lock:

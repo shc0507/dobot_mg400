@@ -122,8 +122,8 @@ on_fail = "hold"
 | `vision.slot_state` | `slot` | 机器人、视觉 |
 | `vision.pick_chip` | `slot`，可选 `speed` | 机器人、视觉 |
 | `vision.tray_transfer` | `from_slot`、`to_slot`，可选 `speed` | 机器人、视觉 |
-| `crucible.load` | `from_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉 |
-| `crucible.unload` | `to_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉、热成像 |
+| `crucible.load` | `from_slot`，可选限制见下文和 `speed` | 机器人、位移台、高温炉 |
+| `crucible.unload` | `to_slot`，可选限制见下文和 `speed` | 机器人、位移台、高温炉、热成像 |
 | `microscope.record` | `chip_id`、`seconds`，可选 `run_name`、`mode` | 显微镜 |
 | `sample.record` | `chip_id`、`note` | 无 |
 
@@ -485,7 +485,7 @@ Insert 或机器人接收命令前，先检查两条完整路径和所有工具�
 机器人按示教路线高度移动，保留实测到位检查，以及 `contact`、`arrived` 和 `dropped` 检查。
 操作单元不会自动归零、初始化、使能、解锁或重试设备。
 
-电动台每轴必须有当前细分模式下的新鲜归零参考和软限位。
+位移台每轴必须有当前细分模式下的新鲜归零参考和软限位。
 只读字段 `automation.at_poses` 将每个已配置位姿与实测位置比较：
 
 ```json
@@ -503,7 +503,7 @@ Insert 或机器人接收命令前，先检查两条完整路径和所有工具�
 Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成功不表示已离开该区域。
 
 卸载先占用 `furnace-tube`，只移动 Insert 到 `load`，实测命名位置到位后才释放区域。
-发送命令前，通过读取等待电动台现有冷却间隔结束。运动命令被拒绝后，不会重试。
+发送命令前，通过读取等待位移台现有冷却间隔结束。运动命令被拒绝后，不会重试。
 随后请求明确的保持通电时长，并只读取命名热区 `crucible`。
 读数最大值必须严格低于 `unload_max_c`。不得改用整帧温度。
 操作单元固定采用 `api/describe` 提供的整数像素边界。每次读数必须匹配该矩形，且位于原生 160 乘 120 传感器内。
@@ -519,7 +519,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 同一运行的后续卸载可以复用已知的管内占用。
 独立卸载满足全部实测前提后，可以占用尚无声明的区域。
 其他运行、未知或已终止运行保留的占用必须通过现有明确物理清空恢复。新运行不会自动接管。
-软件检查不能证明物理间隙足够。操作者必须验证示教路径、电动台标定、温度限制和接近高度。
+软件检查不能证明物理间隙足够。操作者必须验证示教路径、位移台标定、温度限制和接近高度。
 
 ## 演练与安装后的命令
 
@@ -534,7 +534,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 
 坩埚演练保留上述明确的安全输入。它从 `MG400_ORCH_CRUCIBLE_ROIS_FILE` 读取自有热成像演示的命名热区数据。
 没有该数据时，不定义热区。它不会选择真实摄像头、生产高温炉或设备路径。
-演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
+演示位移台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
 
 安装后，`labctl` 分派所有命令。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。[智能体命令行](agent-cli.md)命令组为 `robot`、`stage`、`furnace`、`microscope`、`vision`、`thermal`、`camera` 和 `all`。管理命令仍要求 root。

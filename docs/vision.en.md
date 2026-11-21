@@ -105,7 +105,8 @@ Robot motion targets still require a validated calibration on the applicable pla
 
 Routes are relative to `--base-path` and use the [service contract](adr/0001-instrument-service-contract.en.md).
 Only 1 operation runs at a time, including detection, QR reading, marker reading, calibration, drift checks, and slot observations.
-An overlapping request returns 409. The service does not queue extra operations.
+A command that overlaps another command returns 409. The service does not queue extra commands.
+A read route waits for the running operation and does not make the service busy. A command that arrives during a read waits for the read.
 
 | Read route | Result |
 | --- | --- |
@@ -165,7 +166,7 @@ Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
 `last_result` holds `camera`, `action`, `count`, and `finished_at` of the latest successful operation.
 A live service reports `connected=false` until its first successful frame operation.
-Each failed operation sets `fault`. The next successful operation clears it. Only a failure with 503 sets `connected` to `false`.
+Each failed command sets `fault`. The next successful command or read clears it. Only a command failure with 503 sets `connected` to `false`. A failed read returns its error and changes no state.
 While `fault` is set, the calibration skill and the drift check refuse to run. First complete 1 successful read, for example `GET api/detect`.
 
 ## Camera-to-robot calibration

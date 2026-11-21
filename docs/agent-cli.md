@@ -78,9 +78,11 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
+- 每次运行结束时，都会停止该运行使用的每台设备。显微镜停止会禁用电机并清除对焦零点。使用过显微镜的运行结束后，先重新设置对焦零点，再移动对焦。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
 - 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。用 `POST /lab/api/runs/<run_id>/abort` 终止该运行。HTTP 路由见 [配方编排器](orchestrator.md)。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
+- `microscope-record` 在采集后需要时间完成收尾。`seconds` 最多设为 3000，`--timeout` 至少设为 `seconds` 加 600。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
 

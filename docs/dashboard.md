@@ -293,6 +293,7 @@ uv run python -m orchestrator serve --demo --recipes-dir ./recipes --port 8790 -
 - 停止运动和加热依次经过 Stopping、Holding run、Final stop 和 Done。停止气体经过 Stopping 和 Done。
 - 到 Done 之前，已确认的运动或加热目标显示 Confirmed (provisional)。
 - 请求未到达控制台时，结果条显示 Not sent 和错误。
+- 编排服务重启或关闭期间，控制台不响应任何请求，停止按钮显示 Not sent。此时使用 `sudo labctl all stop`、`sudo labctl furnace stop` 或物理急停按钮。
 
 逐项查看结果。目标状态可能为等待、已确认、未确认、不可用或失败。
 停止运动或加热时，首次确认只是暂定结果。服务仍须暂停运行并等待已接受操作结束。

@@ -57,8 +57,12 @@ def _controlled(method):
     def call(self, *args, client=None, **kwargs):
         if client is None:
             raise ServiceError(409, "Acquire the control lease before sending a command.")
+        stops = self._stop_requests
         with self.lease.control(client):
             with self._operation_lock:
+                # A stop that arrived while this command waited must not be undone by it.
+                if self._stop_requests != stops:
+                    raise ServiceError(409, "A stop arrived before this command ran. Send again.")
                 if self._locked and method.__name__ != "connect":
                     raise ServiceError(409, "Acknowledge the furnace fault before control.")
                 if self._closed:
@@ -143,6 +147,11 @@ class FurnaceService:
         self._furnace_factory = furnace_factory or (lambda **kw: Furnace.attach(**kw))
         self._flow_factory = flow_factory or MFCFlowController
         self._operation_lock = threading.RLock()
+        self._stop_ticket_lock = threading.Lock()
+        # Stop requests received, and per stop key the request count when a stop began.
+        self._stop_requests = 0
+        self._stops_begun = {}
+        self._transports_closed = False
         self._state_lock = self._io_lock = self._flow_io_lock = self._operation_lock
         self._furnace = self._flow_controller = None
         self._stop_event = threading.Event()
@@ -446,7 +455,10 @@ class FurnaceService:
 
     def stop_gas_flow(self, channel):
         channel = MFCFlowController._gas_channel(channel)
+        ticket = self._stop_ticket()
         with self._operation_lock:
+            if not self._stop_needed(ticket, f"gas{channel}"):
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -486,7 +498,10 @@ class FurnaceService:
 
     def stop_water_flow(self, unit_id):
         unit = self._assert_flow_channel_kind("water", unit_id)
+        self._stop_ticket()
         with self._operation_lock:
+            if self._transports_closed:
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -517,7 +532,10 @@ class FurnaceService:
             raise RuntimeError("; ".join(str(error) for error in errors))
 
     def stop_all_flow(self):
+        ticket = self._stop_ticket()
         with self._operation_lock:
+            if not self._stop_needed(ticket, "gas0", "gas1", "gas2", "water"):
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -1029,6 +1047,25 @@ class FurnaceService:
                 )
             return []
 
+    def _stop_ticket(self):
+        with self._stop_ticket_lock:
+            self._stop_requests += 1
+            return self._stop_requests
+
+    def _stop_needed(self, ticket, *keys):
+        """Call under the operation lock. Return False when an equal stop ran after this request.
+
+        Parallel stops (labctl sends up to 6) then run their I/O 1 time, not 1 time each.
+        Key "all" (heat and gas) covers every key. A stop after close() sends nothing.
+        """
+        if self._transports_closed:
+            return False
+        if any(self._stops_begun.get(key, 0) >= ticket for key in ("all", *keys)):
+            return False
+        for key in keys:
+            self._stops_begun[key] = self._stop_requests
+        return True
+
     @staticmethod
     def _close_quietly(handle):
         try:
@@ -1066,25 +1103,30 @@ class FurnaceService:
     def stop_sequence(self, stop_furnace=True):
         if not stop_furnace:
             raise ValueError("Stopping sequence tracking must also stop output")
+        ticket = self._stop_ticket()
         with self._operation_lock:
-            was_running = self._sequence_running
-            self._sequence_running = False
-            self._sequence_phase = "fault" if self._locked else "stopped"
-            self._hold_started_at = self._hold_started_wall = None
-            self._orphan_started_at = self._orphan_started_wall = None
-            if self._prepare_stop():
-                errors = self._stop_outputs()
-                if errors:
-                    self._fail(RuntimeError("; ".join(str(error) for error in errors)))
-                else:
-                    try:
-                        self._persist()
-                    except Exception as error:
-                        self._fail(error)
-            if was_running:
-                self._notifications.append("stopped")
+            if self._stop_needed(ticket, "all"):
+                self._stop_all()
         self._notify_pending()
         return self.status()
+
+    def _stop_all(self):
+        was_running = self._sequence_running
+        self._sequence_running = False
+        self._sequence_phase = "fault" if self._locked else "stopped"
+        self._hold_started_at = self._hold_started_wall = None
+        self._orphan_started_at = self._orphan_started_wall = None
+        if self._prepare_stop():
+            errors = self._stop_outputs()
+            if errors:
+                self._fail(RuntimeError("; ".join(str(error) for error in errors)))
+            else:
+                try:
+                    self._persist()
+                except Exception as error:
+                    self._fail(error)
+        if was_running:
+            self._notifications.append("stopped")
 
     def acknowledge(self, *, client):
         with self.lease.control(client):
@@ -1220,6 +1262,8 @@ class FurnaceService:
                         device.close(stop_output=False)
                     except Exception as error:
                         self._error = error
+            # A stop that a server thread serves after this point must not reopen the ports.
+            self._transports_closed = True
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=max(2, self.poll_interval + 1))
         return self.status()

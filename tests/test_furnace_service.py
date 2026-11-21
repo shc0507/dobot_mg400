@@ -1,5 +1,6 @@
 """Offline lifecycle tests through real drivers and memory-only transports."""
 
+import contextlib
 import os
 import socket
 import stat
@@ -1226,3 +1227,48 @@ def test_state_read_returns_the_last_state_while_an_operation_runs(lab, monkeypa
     result = lab.service.status(wait=0.01)
     assert result["sequence"]["phase"] == "manual"
     assert result["lease"]["holder"] == "operator"
+
+
+def test_parallel_stops_share_one_stop(lab):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    waiting = [lab.service._stop_ticket() for _ in range(2)]
+    lab.service.stop_sequence()
+    with lab.service._operation_lock:
+        # Requests that arrived before the stop began need no I/O of their own.
+        assert not lab.service._stop_needed(waiting[0], "all")
+        assert not lab.service._stop_needed(waiting[1], "gas0")
+        assert lab.service._stop_needed(lab.service._stop_ticket(), "gas0")
+    before = (len(lab.mfc.requests), len(writes(lab.serial)))
+    lab.service.stop_all_flow()
+    lab.service.stop_sequence()
+    assert len(lab.mfc.requests) > before[0] and len(writes(lab.serial)) > before[1]
+
+
+def test_command_waiting_when_a_stop_arrives_is_refused(lab, monkeypatch):
+    control = lab.service.lease.control
+
+    @contextlib.contextmanager
+    def stop_arrives(client):
+        lab.service.stop_sequence()
+        with control(client):
+            yield
+
+    monkeypatch.setattr(lab.service.lease, "control", stop_arrives)
+    with pytest.raises(ServiceError, match="stop arrived"):
+        lab.service.apply_setpoint(30, 10, client="operator")
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    monkeypatch.setattr(lab.service.lease, "control", control)
+    lab.service.apply_setpoint(30, 10, client="operator")
+    assert lab.serial.registers[p.SRUN_REGISTER] != 1
+
+
+def test_stop_after_close_sends_nothing_and_keeps_the_state(lab):
+    lab.service.close()
+    saved = lab.store.load()
+    before = (len(lab.mfc.requests), len(lab.serial.requests), list(lab.factories))
+    result = lab.service.stop_sequence()
+    lab.service.stop_gas_flow(0)
+    lab.service.stop_all_flow()
+    assert not result["locked"]
+    assert (len(lab.mfc.requests), len(lab.serial.requests), list(lab.factories)) == before
+    assert lab.store.load() == saved

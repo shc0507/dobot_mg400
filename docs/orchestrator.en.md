@@ -451,7 +451,7 @@ Replace both placeholders with exact taught slot IDs. Keep the operator at the e
 - Z, R, approach, zone and route come from 1 taught station named `tray`. Teach it with the cup tip on the top of a chip in the tray.
 - The step needs no slot stations and no `MG400_ORCH_CHIP_AXIS` or `MG400_ORCH_CHIP_R_*` settings. It needs `MG400_ORCH_TRAY_FILE` and `MG400_ORCH_TRAY_CAMERA`.
 
-Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
+Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain exactly 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
 
 ```sh
 uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'

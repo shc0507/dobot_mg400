@@ -8,7 +8,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 代码检出：`uv run labctl <group> ...`，访问同一组回环服务。
 - 演示：先启动 `uv run python -m orchestrator serve --demo --port 18772 --base-path /lab/`，再在每次调用中加 `--url http://127.0.0.1:18772/lab/`。
 
-命令行不增加限制和检查。各服务保留测试台保护：停止、每台设备 1 个控制者、高温炉上限、机器人速度上限和报警阻止、显微镜对焦限位和物镜转换间隙位、电动台软限位。
+命令行不增加限制和检查。各服务保留测试台保护：停止、每台设备 1 个控制者、高温炉上限、机器人速度上限和报警阻止、显微镜对焦限位和物镜转换间隙位、位移台软限位。
 
 ## 会话和控制权
 
@@ -51,7 +51,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `stage calibrate MOTOR [--speed N]` | `calibrate`。默认速度为 0.25 圈/秒 |
 | `stage reset-position MOTOR`, `stage set-limit MOTOR` | `reset_position`、`set_limit` |
 | `stage clear-upper-limit MOTOR`, `stage clear-lower-limit MOTOR`, `stage clear-fault MOTOR` | `clear_upper_limit`、`clear_lower_limit`、`clear_fault` |
-| `stage connect [PORT]` | 连接电动台串口。不给 PORT 时列出串口 |
+| `stage connect [PORT]` | 连接位移台串口。不给 PORT 时列出串口 |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | 从 JSON 文件发送 `set_sequence` 或 `start_sequence` |
 | `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve` |
@@ -92,7 +92,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 | 命令 | 作用 |
 | --- | --- |
-| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、电动台和显微镜的停止 |
+| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、位移台和显微镜的停止 |
 | `labctl <device> stop` | 停止 1 台设备 |
 | `labctl furnace stop` | 关闭加热和气体 |
 | `labctl furnace gas-off [CHANNEL]` | 停止 1 路气体，或全部 3 路 |
@@ -131,6 +131,6 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ## 限制
 
 - 没有保持运行的操作员提示：`do` 终止该运行。
-- 不支持键盘点动和电动台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
+- 不支持键盘点动和位移台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
 - 命令行退出前已开始的运动按命令继续。
 - 未给 `--out` 时，图像文件保存到 `/tmp/labctl/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

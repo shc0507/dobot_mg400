@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from orchestrator.clients import Clients
+from orchestrator.clients import Borrowed, Clients
 from orchestrator.recipe import validate
 from orchestrator.runner import Revoked, Runner
 from orchestrator.skills import Registry
@@ -153,6 +153,76 @@ def test_success_is_sequential_acquires_required_only_and_keeps_chip_identity(tm
         assert row["artifacts"][0]["chip_id"] == "chip-001"
         event = next(event for event in row["events"] if event["kind"] == "measurement")
         assert event["chip_id"] == "chip-001"
+
+
+def lent(name="microscope"):
+    service, returned = FakeService(name), []
+    return service, Borrowed(service, lambda: returned.append(name)), returned
+
+
+def test_successful_borrowed_run_sends_no_end_of_run_stop(tmp_path):
+    # The console page keeps the devices as the run left them (focus zero, enabled arm).
+    registry = Registry()
+    service, borrowed, returned = lent()
+    registry.register(
+        "step", lambda ctx: ctx.clients["microscope"].command("move"), services=("microscope",)
+    )
+    with running(tmp_path, registry, ["step"], {"microscope": borrowed}) as (runner, store):
+        assert runner.wait() == "completed"
+        assert runner.wait_closed(3)
+        assert "stop" not in service.events and "release" not in service.events
+        assert returned == ["microscope"]
+        assert runner.snapshot()["unconfirmed_services"] == []
+        assert not [e for e in store.get(runner.run_id)["events"] if e["kind"] == "stop"]
+
+
+def test_owned_successful_run_still_stops_every_service(tmp_path):
+    registry, service = Registry(), FakeService("microscope")
+    registry.register("step", lambda ctx: None, services=("microscope",))
+    with running(tmp_path, registry, ["step"], {"microscope": service}) as (runner, _):
+        assert runner.wait() == "completed"
+        assert runner.wait_closed(3)
+        assert "stop" in service.events and service.events[-2:] == ["release", "close"]
+
+
+def test_failed_borrowed_run_still_stops_the_lent_devices(tmp_path):
+    registry = Registry()
+    service, borrowed, returned = lent()
+
+    def fail(ctx):
+        raise RuntimeError("step failed")
+
+    registry.register("step", fail, services=("microscope",))
+    with running(tmp_path, registry, ["step"], {"microscope": borrowed}, on_fail="abort") as (
+        runner,
+        _,
+    ):
+        until(lambda: runner.status == "aborted")
+        assert runner.wait_closed(3)
+        assert "stop" in service.events and "release" not in service.events
+        assert returned == ["microscope"]
+
+
+def test_aborted_borrowed_run_still_stops_the_lent_devices(tmp_path):
+    registry, entered = Registry(), threading.Event()
+    service, borrowed, returned = lent()
+    finish = threading.Event()
+
+    def step(ctx):
+        entered.set()
+        finish.wait()
+
+    registry.register("step", step, services=("microscope",))
+    with running(tmp_path, registry, ["step"], {"microscope": borrowed}, gates=(finish,)) as (
+        runner,
+        _,
+    ):
+        assert entered.wait(1)
+        runner.abort()
+        finish.set()
+        until(lambda: runner.status == "aborted")
+        assert runner.wait_closed(3)
+        assert "stop" in service.events and returned == ["microscope"]
 
 
 def test_resume_requires_manual_completion_and_fresh_stop_after_repair(tmp_path):

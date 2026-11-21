@@ -41,6 +41,12 @@ POLL_READ_FAILURES = 3
 MAX_HOLD_MIN = 43_200
 # The end-gas plan ends after this time even if PV stays above its threshold.
 COOLING_MAX_S = 24 * 3600
+# A step that has not reached its target after this multiple of its ramp time raises a
+# warning, never sooner than STEP_REACH_MIN_S. A warning never stops the run.
+STEP_REACH_FACTOR = 2
+STEP_REACH_MIN_S = 30 * 60
+# The end-gas plan raises a warning when PV is still above its threshold after this time.
+COOLING_WARN_S = 12 * 3600
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -177,6 +183,8 @@ class FurnaceService:
         self._end_gas = None
         self._end_gas_until_c = None
         self._cooling_started_wall = None
+        self._step_started_at = self._step_reach_s = None
+        self._warning = None
         self._gas_targets = {}
         self._last_persist_at = self.clock()
         self._stop_retry_at = None
@@ -280,6 +288,7 @@ class FurnaceService:
         self._sequence_running = False
         self._sequence_phase = "stopped"
         self._hold_started_at = self._hold_started_wall = None
+        self._warning = None
         self._orphan_started_at = self._orphan_started_wall = None
         if not self._prepare_stop():
             return
@@ -688,6 +697,7 @@ class FurnaceService:
         self._sequence_running = False
         self._sequence_phase = "manual"
         self._hold_started_at = self._hold_started_wall = None
+        self._warning = None
         self._orphan_started_at = self._orphan_started_wall = None
         self._active_target, self._active_ramp = target, ramp
 
@@ -741,6 +751,7 @@ class FurnaceService:
         if thermal_changed:
             self._sequence_phase = "ramping"
             self._hold_started_at = self._hold_started_wall = None
+            self._start_reach_timer()
 
         def apply():
             self._apply_gas(step.get("gas"))
@@ -784,6 +795,51 @@ class FurnaceService:
             self._hold_started_at, self._hold_started_wall = self.clock(), self.wall_clock()
             self._sequence_phase = "holding"
             self._persist_or_fail()
+
+    def _start_reach_timer(self):
+        pv = self._snapshot["pv"]
+        ramp_s = 0 if pv is None else abs(self._active_target - pv) / self._active_ramp * 60
+        self._step_started_at = self.clock()
+        self._step_reach_s = max(STEP_REACH_FACTOR * ramp_s, STEP_REACH_MIN_S)
+        self._warning = None
+
+    def _check_reach(self):
+        """Warn when a step or the end-gas plan takes too long. Never stop the run."""
+        if self._sequence_running and self._sequence_phase == "ramping":
+            if self._step_started_at is None:
+                # A recovered run restarts the timer from the current PV.
+                self._start_reach_timer()
+            if self._warning is None and (
+                self.clock() - self._step_started_at >= self._step_reach_s
+            ):
+                step = self._sequence_index + 1
+                minutes = round(self._step_reach_s / 60)
+                self._warn(
+                    "step_slow",
+                    f"Step {step} has not reached {self._active_target:g} °C after {minutes} min",
+                    step_index=self._sequence_index,
+                    target_c=self._active_target,
+                    minutes=minutes,
+                )
+            return
+        self._step_started_at = self._step_reach_s = None
+        if self._sequence_phase == "cooling":
+            if self._warning is None and (
+                self.wall_clock() - self._cooling_started_wall >= COOLING_WARN_S
+            ):
+                hours = round(COOLING_WARN_S / 3600)
+                self._warn(
+                    "end_gas_slow",
+                    f"End gas: PV is still above {self._end_gas_until_c:g} °C after {hours} h",
+                    end_gas_until_c=self._end_gas_until_c,
+                    hours=hours,
+                )
+            return
+        self._warning = None
+
+    def _warn(self, code, message, **fields):
+        self._warning = dict(code=code, message=message, at=self.wall_clock(), **fields)
+        self.events.add("warning", message, code=code, **fields)
 
     def _transition(self, operation):
         phase = self._sequence_phase
@@ -1017,6 +1073,7 @@ class FurnaceService:
         self._sequence_running = False
         self._sequence_phase = "fault"
         self._hold_started_at = self._hold_started_wall = None
+        self._warning = None
         self.events.add("error", "Furnace locked; acknowledgement required", error=str(error))
         try:
             self._persist()
@@ -1190,6 +1247,7 @@ class FurnaceService:
         self._sequence_running = False
         self._sequence_phase = "fault" if self._locked else "stopped"
         self._hold_started_at = self._hold_started_wall = None
+        self._warning = None
         self._orphan_started_at = self._orphan_started_wall = None
         if self._prepare_stop():
             errors = self._stop_outputs()
@@ -1310,6 +1368,7 @@ class FurnaceService:
                         self.events.add("warning", "End-gas plan timed out above its threshold")
                     self._sequence_phase = "complete"
                     self._transition(lambda: self._apply_gas(self.idle_gas))
+                self._check_reach()
                 if self._sequence_phase == "holding" and self.clock() - self._last_persist_at >= 60:
                     self._persist()
             except Exception as error:
@@ -1452,6 +1511,7 @@ class FurnaceService:
                     started_at=self._sequence_started_at,
                     end_gas=self._end_gas,
                     end_gas_until_c=self._end_gas_until_c,
+                    warning=self._warning,
                 ),
             )
         )

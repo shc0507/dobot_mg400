@@ -112,6 +112,12 @@ def test_status_reports_page_fields_and_crucible(rig):
     assert len(body["history"]) == 1 and body["history"][0][1:] == [24.5, 0.0]
 
 
+def test_furnace_view_keeps_the_sequence_warning():
+    warning = {"code": "step_slow", "step_index": 0, "target_c": 300, "minutes": 30}
+    view = process.furnace_view({"sequence": {"phase": "ramping", "warning": warning}})
+    assert view["sequence"]["warning"] == warning
+
+
 def test_history_keeps_60_minutes_at_the_sample_interval(rig):
     now = [1000.0]
     reader = process.ProcessStatus(rig.service, wall=lambda: now[0])

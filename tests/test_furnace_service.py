@@ -18,9 +18,12 @@ from furnace.config import FurnaceConfig
 from furnace.controller import Furnace, MFCFlowController
 from furnace.service import (
     COOLING_MAX_S,
+    COOLING_WARN_S,
     FRAME_METADATA_FIELDS,
     MAX_HOLD_MIN,
     POLL_READ_FAILURES,
+    STEP_REACH_FACTOR,
+    STEP_REACH_MIN_S,
     STOP_RETRY_S,
     FurnaceService,
 )
@@ -516,6 +519,68 @@ def test_end_gas_plan_ends_after_its_time_bound(lab):
     result = lab.service.poll_once()
     assert result["sequence"]["phase"] == "complete" and not result["locked"]
     assert lab.mfc.channel_state(7)["target_percent"] == 0
+
+
+def warnings(lab, code):
+    return [
+        event
+        for event in lab.service.events.since()["events"]
+        if event["level"] == "warning" and event["fields"].get("code") == code
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "ramp", "limit_s"),
+    [(100, 60, STEP_REACH_MIN_S), (500, 1, STEP_REACH_FACTOR * 475 * 60)],
+)
+def test_slow_step_warns_and_keeps_running(lab, monkeypatch, target, ramp, limit_s):
+    steps = [dict(temperature_c=target, ramp_rate_c_per_min=ramp, hold_minutes=0.1)]
+    lab.service.start_sequence(steps, client="operator")
+    # The furnace cannot heat: PV stays at ambient.
+    monkeypatch.setattr(lab.serial, "_evolve", lambda *args, **kwargs: None)
+    lab.clock.advance(limit_s - 1)
+    assert lab.service.poll_once()["sequence"]["warning"] is None
+    lab.clock.advance(1)
+    result = lab.service.poll_once()
+    warning = result["sequence"]["warning"]
+    assert warning["code"] == "step_slow" and warning["step_index"] == 0
+    assert result["sequence"]["running"] and result["sequence"]["phase"] == "ramping"
+    assert not result["locked"] and result["run_state_code"] != 1
+    lab.service.poll_once()
+    assert len(warnings(lab, "step_slow")) == 1
+    monkeypatch.undo()
+    lab.clock.advance(limit_s)
+    result = lab.service.poll_once()
+    assert result["sequence"]["phase"] == "holding"
+    assert result["sequence"]["warning"] is None
+
+
+def test_slow_end_gas_warns_and_keeps_the_plan(lab):
+    lab.service.start_sequence(
+        recipe(hold=0, gas={0: 20}), end_gas={0: 10}, end_gas_until_c=0, client="operator"
+    )
+    enter_hold(lab)
+    lab.service.poll_once()
+    lab.clock.advance(COOLING_WARN_S - 10)
+    assert lab.service.poll_once()["sequence"]["warning"] is None
+    lab.clock.advance(10)
+    result = lab.service.poll_once()
+    assert result["sequence"]["warning"]["code"] == "end_gas_slow"
+    assert result["sequence"]["phase"] == "cooling" and not result["locked"]
+    assert lab.mfc.channel_state(7)["target_percent"] == 10
+    lab.clock.advance(COOLING_MAX_S - COOLING_WARN_S)
+    result = lab.service.poll_once()
+    assert result["sequence"]["phase"] == "complete"
+    assert result["sequence"]["warning"] is None
+    assert len(warnings(lab, "end_gas_slow")) == 1
+
+
+def test_stop_clears_the_step_warning(lab, monkeypatch):
+    lab.service.start_sequence(recipe(target=100), client="operator")
+    monkeypatch.setattr(lab.serial, "_evolve", lambda *args, **kwargs: None)
+    lab.clock.advance(STEP_REACH_MIN_S)
+    assert lab.service.poll_once()["sequence"]["warning"] is not None
+    assert lab.service.stop_sequence()["sequence"]["warning"] is None
 
 
 def test_hold_time_has_a_fixed_maximum(lab):

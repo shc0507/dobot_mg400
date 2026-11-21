@@ -36,6 +36,8 @@
       "seq.confirm": "Start the {count}-step sequence? It heats the furnace.",
       "seq.state": "{phase}", "seq.stateRunning": "Step {n} · {phase}",
       "seq.holding": "Holding step {n}: {seconds} s left.", "seq.cooling": "End gas continues until the temperature is below {until} °C.",
+      "seq.stepSlow": "Step {n} has not reached {target} °C after {minutes} min. The run continues.",
+      "seq.endGasSlow": "The temperature is still above {until} °C after {hours} h of end gas. The run continues.",
       "seq.needEnd": "Enter an end-gas temperature when a step sets gas.", "seq.invalid": "Step {n}: enter a target, a ramp above 0 and a hold of 0 or more.",
       "seq.none": "Add at least 1 step.",
       "gas.title": "Gas", "gas.stopAll": "Stop all gas", "gas.flow": "Flow % for {gas}", "gas.send": "Send flow",
@@ -102,6 +104,8 @@
       "seq.confirm": "启动 {count} 步程序？炉子会加热。",
       "seq.state": "{phase}", "seq.stateRunning": "步骤 {n} · {phase}",
       "seq.holding": "步骤 {n} 保持中：剩余 {seconds} s。", "seq.cooling": "结束气体持续到温度低于 {until} °C。",
+      "seq.stepSlow": "步骤 {n} 在 {minutes} min 后仍未到达 {target} °C。程序继续运行。",
+      "seq.endGasSlow": "结束气体 {hours} h 后温度仍高于 {until} °C。程序继续运行。",
       "seq.needEnd": "步骤设置了气体时，填写结束气体温度。", "seq.invalid": "步骤 {n}：填写目标温度、大于 0 的速率和不小于 0 的保持时间。",
       "seq.none": "至少添加 1 个步骤。",
       "gas.title": "气体", "gas.stopAll": "停止全部气体", "gas.flow": "{gas} 流量 %", "gas.send": "发送流量",
@@ -235,6 +239,17 @@
     const mode = furnace?.control_mode || "DISCONNECTED";
     if (mode === "RUN" && furnace?.waiting_for_program_step_2) return "mode.RAMP";
     return i18n.en["mode." + mode] ? "mode." + mode : "mode.UNKNOWN";
+  }
+
+  /** The text of a sequence warning from the furnace service, or "". */
+  function seqWarning(warning) {
+    if (!warning || typeof warning !== "object") return "";
+    const t = view.api.t;
+    if (warning.code === "step_slow") {
+      return t("seq.stepSlow", { n: (warning.step_index ?? 0) + 1, target: fmt(warning.target_c, 0), minutes: warning.minutes });
+    }
+    if (warning.code === "end_gas_slow") return t("seq.endGasSlow", { until: fmt(warning.end_gas_until_c, 0), hours: warning.hours });
+    return typeof warning.message === "string" ? warning.message : "";
   }
 
   function recordingId(cryptoObject) {
@@ -494,6 +509,7 @@
 
     n.seqState = el("span", { class: "pr-summary-state", "data-role": "seq-state" });
     n.seqProgress = el("p", { class: "lc-muted" });
+    n.seqWarning = el("p", { class: "pr-warn", "data-role": "seq-warning", hidden: true });
     n.add = button(t("seq.add"), () => { view.rows.push(editorRows(null)[0]); view.dirty = true; buildSequence(); update(); }, { "data-role": "add-step" });
     n.save = button(t("seq.save"), () => sendSequence("set_sequence"), { "data-role": "save-sequence" });
     n.start = button(t("seq.start"), () => ask("start"), { class: "lc-button pr-strong", "data-role": "start-sequence" });
@@ -523,6 +539,7 @@
         el("div", { class: "pr-row" }, ...controlButtons("furnace"))),
       el("button", { type: "button", class: "lc-stop pr-stop-wide", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }),
       n.furnaceNote,
+      n.seqWarning,
       n.ack = button(t("fault.ack"), () => ask("ack"), { class: "lc-danger pr-danger", "data-role": "acknowledge", hidden: true }),
       confirmBox("ack", t("fault.confirm"), () => send("furnace", "acknowledge", {})),
       n.connectRow = el("div", { class: "pr-row" }, n.connect),
@@ -750,6 +767,9 @@
     setText(n.seqProgress, seq.phase === "holding" && finite(seq.hold_remaining_seconds) !== null
       ? t("seq.holding", { n: (seq.current_index ?? 0) + 1, seconds: Math.ceil(seq.hold_remaining_seconds) })
       : seq.phase === "cooling" ? t("seq.cooling", { until: fmt(seq.end_gas_until_c, 0) }) : "");
+    const warning = seqWarning(seq.warning);
+    n.seqWarning.hidden = !warning;
+    setText(n.seqWarning, warning);
     // Mark the running step only when the editor shows the running sequence.
     const shownSeq = seq.running === true && JSON.stringify(view.rows) === JSON.stringify(editorRows(seq));
     Array.from(n.sequenceBody.children || []).forEach((row, index) => { row.className = shownSeq && index === seq.current_index ? "pr-current" : ""; });

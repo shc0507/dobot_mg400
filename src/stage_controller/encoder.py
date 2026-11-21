@@ -44,6 +44,10 @@ from .protocol import (
 )
 
 
+def _configured(state):
+    return bool(state.lower_limit_set or state.upper_limit_set or state.calibration == "done")
+
+
 class MotorController:
     def __init__(self, *, demo=False, transport_factory=None, clock=time.monotonic):
         self.demo = demo
@@ -72,6 +76,7 @@ class MotorController:
         self._active = set()
         self._holds = {}
         self._closed_holds = {}
+        self._stopped_at = float("-inf")
         self._cooldowns = dict.fromkeys(MOTOR_IDS, 0.0)
         self._events = deque(maxlen=30)
         self._event_id = 0
@@ -252,6 +257,12 @@ class MotorController:
                 raise
             self._transport = transport
             self._port = port
+            # Opening the port resets the Arduino, which clears limits and calibration.
+            reset = [
+                motor.title()
+                for motor, state in self._motors.items()
+                if _configured(state) and motor in statuses and not _configured(statuses[motor])
+            ]
             self._motors = statuses
             self._microstep = transport.microstep
             self._positive_direction = transport.positive_direction
@@ -300,6 +311,12 @@ class MotorController:
             self._error = None
             # Preserve cooldowns across reconnects; reconnecting is not a bypass.
             self._event(f"Connected to {port} · {BAUD_RATE:,} baud")
+            if reset:
+                self._event(
+                    f"Arduino reset cleared the travel limits and calibration of "
+                    f"{', '.join(reset)}. Set the limits or Auto calibrate again.",
+                    "warning",
+                )
             return self.snapshot()
 
     def disconnect(self):
@@ -496,10 +513,20 @@ class MotorController:
                 self._require_motion_ready(motor, speed)
                 if self._motors[motor].switch_mask == 3:
                     raise ControllerError("Resolve the conflicting home-switch signals first.")
+                state = self._motors[motor]
+                # Limits set with Set limit (calibration not done) do not survive a calibration.
+                manual_limits = state.calibration != "done" and (
+                    state.lower_limit_set or state.upper_limit_set
+                )
                 for command in (f"motor {motor}", f"speed {speed:.9g}", "calibrate"):
                     self._transport.command(command)
+                if manual_limits:
+                    self._event(
+                        f"{motor.title()} auto calibration cleared the travel limits; "
+                        "it moves to both home switches.",
+                        "warning",
+                    )
                 self._active.add(motor)
-                state = self._motors[motor]
                 state.calibration, state.mode, state.remaining = "lower", "continuous", 0.0
                 state.speed = speed
                 self._event(
@@ -544,7 +571,12 @@ class MotorController:
             now = self.clock()
             # Expire delayed start requests. Closed identifiers outlive this window,
             # so a release arriving before its start can never turn into a late move.
-            if type(sampled_at) not in (int, float) or not now - 2.0 <= sampled_at <= now:
+            # A stop also cancels a hold whose start was sampled before the stop.
+            if (
+                type(sampled_at) not in (int, float)
+                or not now - 2.0 <= sampled_at <= now
+                or sampled_at < self._stopped_at
+            ):
                 raise ControllerError("Hold request expired. Release and press again.")
             self._closed_holds = {
                 key: ended for key, ended in self._closed_holds.items() if now - ended < 10
@@ -623,6 +655,7 @@ class MotorController:
 
     def stop_all(self):
         with self._lock:
+            self._stopped_at = self.clock()
             self._require_connection()
             try:
                 self._transport.command("stop all")

@@ -321,7 +321,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ## 侧视相机流
 
-显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
+显微镜侧视相机为固定集线器端口 `6.1` 上的 AC410，拍摄物镜转盘。
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 `select_objective` 运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。

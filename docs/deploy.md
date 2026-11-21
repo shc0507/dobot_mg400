@@ -35,7 +35,6 @@
 | `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/labctl` | 日常命令，链接到 `/opt/mg400/deploy/labctl` | 无 |
-| `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
 
 所有服务以数字 ID `1000` 的用户和组运行。
 服务定义位于 `config/systemd/`，安装到 `/etc/systemd/system/`：
@@ -135,7 +134,7 @@
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd。
-9. 链接 `labctl`，删除旧的 `labctl` 链接。
+9. 链接 `labctl`，删除旧的 `mg400ctl` 链接。
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
@@ -546,7 +545,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 
 ## 面板连接锁
 
-机器人服务、交互终端和模式切换在连接机械臂前取得文件锁。
+机器人服务和模式切换在连接机械臂前取得文件锁。
 机器人服务的只读模式也使用此锁。
 另一个程序持锁时，新连接返回 `Robot controlled by another panel`，`Disable` 也被拒绝。
 此时 `Stop` 和 STOP ALL 仍发送 1 次 `ResetRobot()`，但不检查静止，结果为未确认。机器人服务锁定控制。锁空闲后，同步反馈并点击 Recover。
@@ -559,7 +558,6 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 此目录固定在代码中。它必须支持操作系统文件锁。
 所有程序以 UID 1000 运行。锁文件权限为 `0600`。
 以 root 运行时，程序拒绝使用属主不是 root 的锁目录。
-已有锁文件的属主不同时，原地修改属主，保留原文件。
 
 不要删除锁文件来解除占用。进程退出时，操作系统释放该进程持有的锁。
 进程退出不能确认机械臂已停止。

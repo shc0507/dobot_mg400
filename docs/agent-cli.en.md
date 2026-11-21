@@ -54,7 +54,7 @@ Shortcuts:
 | `stage connect [PORT]` | Connect the stage port. Without PORT, list the ports |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | `set_sequence`, or `start_sequence`, from a JSON file |
-| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`, `set_gas_valve` |
+| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`, `set_gas_valve`. `CHANNEL` is 0, 1 or 2 for Gas 1 to 3 |
 | `furnace acknowledge` | Acknowledge the furnace alarm |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`, `objective_nudge`, `focus_move` |
 | `microscope autofocus full\|local`, `microscope zero`, `microscope home` | `autofocus`, `set_focus_zero`, `home_focus` |
@@ -135,6 +135,6 @@ A refusal:
 ## Limitations
 
 - No operator prompt for a held run: `do` aborts it.
-- No keyboard jog and no stage hold. They need refreshes every 100 ms and 500 ms.
+- No keyboard jog and no stage hold. They need a refresh within 0.4 s (keyboard jog) and 1 s (stage hold).
 - A motion that started before the CLI stopped continues as commanded.
 - Image files go to `/tmp/labctl-<UID>/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.

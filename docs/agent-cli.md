@@ -54,7 +54,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `stage connect [PORT]` | 连接位移台串口。不给 PORT 时列出串口 |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | 从 JSON 文件发送 `set_sequence` 或 `start_sequence` |
-| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve` |
+| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve`。`CHANNEL` 为 0、1 或 2，对应 Gas 1 到 3 |
 | `furnace acknowledge` | 确认高温炉报警 |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`、`objective_nudge`、`focus_move` |
 | `microscope autofocus full\|local`, `microscope zero`, `microscope home` | `autofocus`、`set_focus_zero`、`home_focus` |
@@ -135,6 +135,6 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ## 限制
 
 - 没有保持运行的操作员提示：`do` 终止该运行。
-- 不支持键盘点动和位移台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
+- 不支持键盘点动和位移台按住运动。它们分别需要在 0.4 秒（键盘点动）和 1 秒（位移台按住）内刷新。
 - 命令行退出前已开始的运动按命令继续。
 - 未给 `--out` 时，图像文件保存到 `/tmp/labctl-<UID>/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

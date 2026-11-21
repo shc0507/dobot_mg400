@@ -103,7 +103,13 @@ float motionSpeed(const MotorState &m) {
 }
 bool canConfigure() { return initialized && selectedState().mode == Mode::Idle && !calibrating(selectedState()); }
 uint8_t decodeSwitch(uint16_t raw) { return raw < 100 ? 2 : raw < 700 ? 1 : 0; }
-uint8_t switchMask(uint8_t index) { return switches[index].candidate | switches[index].stable; }
+uint8_t switchMask(uint8_t index) {
+  // A released upper contact rises through the lower band. While the upper contact is
+  // the debounced state, a lower reading is that transition: the lower switch is at the
+  // other end of travel. A real lower contact becomes stable after the debounce time.
+  const SwitchState &s = switches[index];
+  return s.stable == 2 && s.candidate == 1 ? 2 : s.candidate | s.stable;
+}
 uint8_t directionBit(float direction) { return direction > 0 ? 1 : 2; }
 float intendedDirection(const MotorState &m) {
   return m.outputSpeed != 0 ? m.outputSpeed : (m.direction == Direction::Clockwise ? 1.0f : -1.0f);
@@ -259,6 +265,14 @@ void serviceCalibration(uint8_t index) {
     fail(m, Fault::Timeout); return;
   }
   const uint8_t wanted = m.calibration == Calibration::Lower ? 1 : 2;
+  if (m.mode == Mode::Idle && !(switchMask(index) & directionBit(intendedDirection(m)))) {
+    // A contact reading that did not confirm halted the seek: continue it. The phase
+    // timeout still runs from the start of the phase.
+    const unsigned long started = m.phaseStartedMs;
+    beginSearch(m);
+    m.phaseStartedMs = started;
+    return;
+  }
   if (switches[index].stable != wanted || switches[index].candidate != wanted) return;
   halt(m);
   if (!captureSwitch(index, wanted)) return;
@@ -401,9 +415,11 @@ void feedback(MotorState &m, const Encoders::Reading &r) {
       return;
     }
     desired = direction * feedforwardSpeed + EncoderConfig::PositionGain * error;
-    // Held motion corrects rate but never reverses the chosen direction.
-    desired = direction * clamp(direction * desired, 0,
-                    minimum(EncoderConfig::MaxShaftSpeed, maximumPulseRate / ppr));
+    // Held motion corrects rate but never reverses the chosen direction. Held and seek
+    // catch-up after an obstruction stays near the requested speed.
+    const float cap = m.held || seeking(m) ? 1.25f * approachSpeed :
+        minimum(EncoderConfig::MaxShaftSpeed, maximumPulseRate / ppr);
+    desired = direction * clamp(direction * desired, 0, cap);
     if (m.held || seeking(m)) {
       const float maxChange = m.acceleration * dt;
       m.outputSpeed += clamp(desired - m.outputSpeed, -maxChange, maxChange);

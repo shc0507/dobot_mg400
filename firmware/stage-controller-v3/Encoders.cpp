@@ -70,10 +70,11 @@ void sample(Axis &axis) {
   }
   const unsigned long now = millis();
   if (!ok) {
+    // Keep the baseline: the next good sample checks the gap (MaxGapMs) and keeps
+    // trust only when continuity is provable. One failed transaction is not lost tracking.
     axis.online = false;
-    axis.trusted = false;
-    axis.baseline = false;
     axis.velocity = 0;
+    if (!axis.baseline) axis.trusted = false; // Offline at start-up: clear before use.
     return;
   }
   const uint16_t raw = (static_cast<uint16_t>(angle[0] & 0x0F) << 8) | angle[1];

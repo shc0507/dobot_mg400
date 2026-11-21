@@ -61,7 +61,7 @@ sudo labctl thermal call connect
 sudo labctl thermal state
 ```
 
-连接失败时，状态显示 `error` 和 `diagnostics`：USB 后端和设备访问情况。
+收到第 1 帧后，`connect` 返回 `ok`。连接失败时，`connect` 返回 `failed`，状态显示 `error` 和 `diagnostics`：USB 后端和设备访问情况。
 
 ## 启动服务
 

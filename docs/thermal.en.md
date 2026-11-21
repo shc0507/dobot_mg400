@@ -61,7 +61,7 @@ sudo labctl thermal call connect
 sudo labctl thermal state
 ```
 
-When the connection fails, the state shows `error` and `diagnostics`: USB backend and device access.
+`connect` returns `ok` after the first frame. When the connection fails, `connect` returns `failed`, and the state shows `error` and `diagnostics`: USB backend and device access.
 
 ## Start the service
 

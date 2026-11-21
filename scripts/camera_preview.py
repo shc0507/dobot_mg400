@@ -393,13 +393,14 @@ class Preview(BaseHTTPRequestHandler):
         self.respond(body, "image/jpeg")
 
     def still(self, stream):
-        if SIDE == stream and microscope_busy():
-            self.send_error(409, "The microscope is using this camera")
-            return
         if not STILL_LOCK.acquire(timeout=45):
             self.send_error(503, "Another still is in progress")
             return
         try:
+            # Every still overlay stops or resizes the side stream.
+            if SIDE and microscope_busy():
+                self.send_error(409, "A microscope job reads the side camera")
+                return
             body = grab_still(stream)
         except (OSError, ValueError, UnicodeError, HTTPException):
             self.send_error(502)

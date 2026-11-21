@@ -176,6 +176,7 @@ class CameraService:
         self._diagnostics = None
         self._command_serial = 0
         self._last_command = None
+        self._pending_connect = None
 
     def _event(self, level, message):
         self.events.add(level, message, service="thermal", source=self.source)
@@ -337,6 +338,13 @@ class CameraService:
                 finished_at=time.time(),
             )
 
+    def _settle_connect(self, result, message=""):
+        """Finish a running connect command. Call with the lock held."""
+        if self._pending_connect is not None:
+            ident, client = self._pending_connect
+            self._pending_connect = None
+            self._finish_command(ident, "connect", client, result, message)
+
     def contract_command(self, action, args, client):
         """Start connect or the shutter (NUC) once; return the command ID at once."""
         validate_client(client)
@@ -346,8 +354,15 @@ class CameraService:
             self._command_serial += 1
             ident = str(self._command_serial)
         if action == "connect":
+            # The result stays running until the first frame or the open error.
+            with self._lock:
+                self._finish_command(ident, action, client, "running")
+                self._last_command["finished_at"] = None
+                self._pending_connect = (ident, client)
             self.connect()
-            self._finish_command(ident, action, client, "ok")
+            with self._lock:
+                if self._state == "streaming":
+                    self._settle_connect("ok")
             return ident
         with self._lock:
             if self._state != "streaming" or self._stop.is_set():
@@ -423,6 +438,7 @@ class CameraService:
                     if self._state != "streaming":
                         self._event("info", "Camera is streaming.")
                     self._state = "streaming"
+                    self._settle_connect("ok")
                     self._camera_stats = camera.stats()
         except Exception as exc:
             # A demo has no USB device to inspect.
@@ -434,6 +450,7 @@ class CameraService:
                 self._frame = None
                 self._fps = 0.0
                 self._event("error", self._error)
+                self._settle_connect("failed", self._error)
         finally:
             try:
                 if camera is not None:
@@ -446,6 +463,7 @@ class CameraService:
                 if self._stop.is_set():
                     self._state = "disconnected"
                     self._frame = None
+                self._settle_connect("failed", self._error or "Camera stopped")
                 while not self._commands.empty():
                     _, _, future = self._commands.get_nowait()
                     if not future.done():

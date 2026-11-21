@@ -400,6 +400,14 @@ class Clients:
                 self._failed(exc)
                 return
 
+    @property
+    def borrowed(self):
+        """True when the console lent every acquired service to this run."""
+        with self._lock:
+            return bool(self.acquired) and all(
+                isinstance(self.services[name], Borrowed) for name in self.acquired
+            )
+
     def stop_all(self, round_id=None):
         return self._stop_all(round_id)
 

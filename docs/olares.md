@@ -192,7 +192,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    labctl status
    ```
 
-   `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
+   `is-enabled` 对 3 个服务都显示 `static`，表示服务不会开机自启。
 
 8. 启用[实验室控制台](dashboard.md#实验室控制台)后，核对以下各项：
    - Cameras 工作区显示所有已配置的画面。

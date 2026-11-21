@@ -28,6 +28,8 @@ REQUIRED_MICROSTEP = 8
 MICROSTEP_MODES = {REQUIRED_MICROSTEP: "Eighth step (1/8)"}
 TELEMETRY_TIMEOUT_SECONDS = 1.0
 ENCODER_COUNTS_PER_ROTATION = 4096
+# Firmware EncoderConfig::EncoderNoiseCounts: the spread of one encoder sample.
+ENCODER_NOISE_COUNTS = 2
 ENCODER_COUNT_LIMIT = 1_000_000_000
 POSITION_LIMIT = ENCODER_COUNT_LIMIT / ENCODER_COUNTS_PER_ROTATION
 ACTIVE_CALIBRATION = ("lower", "upper", "center")
@@ -266,6 +268,20 @@ def has_calibrated_range(state: MotorStatus) -> bool:
         and state.positive_direction == "ccw"
         and state.lower_limit_direction == "cw"
     )
+
+
+def target_counts(rotations: float) -> int:
+    """Round a target like the firmware: floor(rotations * 4096 + 0.5)."""
+    return math.floor(rotations * ENCODER_COUNTS_PER_ROTATION + 0.5)
+
+
+def position_reached(position: float, target: int, tolerance: float, slack_counts=0) -> bool:
+    """Compare whole encoder counts with the firmware's completion tolerance.
+
+    tolerance is the value that the firmware reports, in rotations. slack_counts
+    covers the start sample of a relative move (ENCODER_NOISE_COUNTS)."""
+    error = abs(round(position * ENCODER_COUNTS_PER_ROTATION) - target)
+    return error <= max(round(tolerance * ENCODER_COUNTS_PER_ROTATION), 1) + slack_counts
 
 
 def absolute_position_error(state: MotorStatus, position: float) -> str | None:
@@ -1058,7 +1074,8 @@ class DemoTransport:
             motor: MotorStatus(
                 motor,
                 encoder="ok",
-                tolerance=math.ceil(0.5 * 4096 / (200 * REQUIRED_MICROSTEP) + 2) / 4096,
+                tolerance=math.ceil(0.5 * 4096 / (200 * REQUIRED_MICROSTEP) + ENCODER_NOISE_COUNTS)
+                / 4096,
                 max_speed=800 / (200 * REQUIRED_MICROSTEP),
                 lower_limit=-POSITION_LIMIT,
                 upper_limit=POSITION_LIMIT,

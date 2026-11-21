@@ -125,6 +125,7 @@ A refusal:
 - `error.code`: `usage`, `invalid`, `not_controlled`, `held_by_other`, `locked`, `busy`, `refused`, `failed`, `rejected`, `stopped`, `unknown`, `timeout`, `unreachable`, `interrupted`.
 - `hint`: the next command to run, when one applies.
 - A stop prints `results` with `confirmed`, `pending`, `unconfirmed`, `unreachable` or `not-configured` for each device.
+- If the reply to a command is lost, the CLI reads the device state for up to 3 s. If the service recorded the command for this session, the CLI reports that result. A robot command stays `unknown`.
 
 | Exit | Meaning | Next step |
 | --- | --- | --- |

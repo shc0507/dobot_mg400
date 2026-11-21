@@ -167,6 +167,21 @@ def test_turret_capture_timeout_does_not_change_lease_transport(monkeypatch, act
     assert adapter._http.timeout == original_timeout
 
 
+@pytest.mark.parametrize(("action", "timeout"), [("connect", 10), ("move", 2)])
+def test_connect_waits_for_the_arduino_reset(monkeypatch, action, timeout):
+    adapter = ServiceAdapter("http://127.0.0.1:1", "orch-stage")
+    calls = []
+
+    def call(client, path, data=None):
+        calls.append(client)
+        return {"command_id": "1"}
+
+    monkeypatch.setattr(adapter._client_type, "_call", call)
+    assert adapter.command(action, port="/dev/ttyACM0") == {"command_id": "1"}
+    assert calls[0].timeout == timeout and calls[0]._opener is adapter._http._opener
+    assert adapter._http.timeout == 2
+
+
 def reconciliation_pool(monkeypatch, name, state):
     """An already-owned, stopped run; only adapter state reads are replaced."""
     identity = "orch-recovery-test"

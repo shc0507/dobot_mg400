@@ -32,6 +32,8 @@ FINAL = {"ok", "failed", "rejected", "stopped"}
 IN_PROGRESS = {"running", "pending"}
 POLL_S = 0.2
 BEAT_S = 1.0
+# Seconds to look for a command in the state after its relay reply was lost.
+RECORDED_S = 3.0
 DEFAULT_TIMEOUT_S = 300.0
 STOP_TIMEOUT_S = 2.0
 GAS_STOP_TIMEOUT_S = 10.0
@@ -386,10 +388,16 @@ class Agent:
         try:
             status, body = self._post("command/" + device, {"action": action, "params": params})
         except Unreachable as error:
-            return failure("unknown", str(error), device=device, **info)
-        if status == 502 or status >= 500:
+            status, body = None, {"error": str(error)}
+        if status is None or status >= 500:
             message = body.get("error", "Command outcome is unknown.")
-            return failure("unknown", message, status=status, device=device, **info)
+            unknown = failure("unknown", message, status=status, device=device, **info)
+            # The reply was lost, but the service can still record the command:
+            # a stage connect outlasts the relay timeout, or fails with 503.
+            found = self._recorded(device, action, holder, before) if wait else None
+            if found is None:
+                return unknown
+            return self._await(device, action, found, holder, before, timeout, info)
         if status != 202:
             message = body.get("error", "The command was refused.")
             code = code_for(status, message)
@@ -414,6 +422,30 @@ class Agent:
                 "command_id": command_id,
                 "stop": stopped,
             }
+
+    def _recorded(self, device, action, holder, before):
+        """Return the id of this session's newer command of this action, or None."""
+        if device == "robot" or holder is None:
+            return None
+        baseline = ((before if isinstance(before, dict) else {}).get("last_command") or {}).get(
+            "id"
+        )
+        deadline = self.clock() + RECORDED_S
+        while True:
+            try:
+                state = self._read(device, fresh=True).get("state")
+            except (Unreachable, ServiceError):
+                state = None
+            last = (state.get("last_command") if isinstance(state, dict) else None) or {}
+            if (
+                last.get("id") not in (None, baseline)
+                and last.get("action") == action
+                and last.get("client") == holder
+            ):
+                return last["id"]
+            if self.clock() >= deadline:
+                return None
+            self.sleep(POLL_S)
 
     def _await(self, device, action, command_id, holder, before, timeout, info):
         before = before if isinstance(before, dict) else {}

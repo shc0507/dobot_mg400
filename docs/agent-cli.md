@@ -125,6 +125,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `error.code`：`usage`、`invalid`、`not_controlled`、`held_by_other`、`locked`、`busy`、`refused`、`failed`、`rejected`、`stopped`、`unknown`、`timeout`、`unreachable`、`interrupted`。
 - `hint`：适用时给出下一条要运行的命令。
 - 停止输出 `results`，每台设备为 `confirmed`、`pending`、`unconfirmed`、`unreachable` 或 `not-configured`。
+- 命令的回复丢失时，命令行最多读取 3 s 设备状态。服务记录了本会话的该命令时，命令行报告记录的结果。机器人命令仍为 `unknown`。
 
 | 退出码 | 含义 | 下一步 |
 | --- | --- | --- |

@@ -395,6 +395,49 @@ def test_lost_connection_after_send_is_unknown():
     assert code == 3 and result["outcome"] == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("reply", "final", "code", "outcome"),
+    [
+        (Unreachable("timed out"), "ok", 0, "ok"),
+        ((502, {"outcome": "unknown"}), "ok", 0, "ok"),
+        ((502, {"outcome": "unknown"}), "failed", 1, "failed"),
+    ],
+)
+def test_a_lost_relay_reply_reports_the_recorded_result(reply, final, code, outcome):
+    before = {"last_command": {"id": "8", "action": "connect", "client": "h"}}
+    last = {"id": "9", "action": "connect", "client": "h", "result": final, "message": "M."}
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states(before, {"last_command": last}),
+            "api/console/command/stage": reply,
+        }
+    )
+    exit_, result = run_cli(["stage", "connect", "/dev/ttyACM0"], agent)
+    assert exit_ == code and result["outcome"] == outcome
+    assert result["command_id"] == "9" and result["last_command"]["message"] == "M."
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        {"id": "8", "action": "connect", "client": "h"},
+        {"id": "9", "action": "stop_all", "client": "h"},
+        {"id": "9", "action": "connect", "client": "other"},
+    ],
+)
+def test_a_lost_relay_reply_without_its_record_stays_unknown(last):
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states({"last_command": last}),
+            "api/console/command/stage": (502, {"outcome": "unknown"}),
+        }
+    )
+    code, result = run_cli(["stage", "connect", "/dev/ttyACM0"], agent)
+    assert code == 3 and result["outcome"] == "unknown"
+
+
 def test_interrupt_during_a_wait_sends_one_device_stop(monkeypatch):
     calls = {"n": 0}
 

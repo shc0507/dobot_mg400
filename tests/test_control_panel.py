@@ -1058,10 +1058,11 @@ def test_labkit_client_drives_the_robot_contract():
             assert agent.state()["lease"]["holder"] is None
             assert not agent.state()["locked"]
             # Any client may stop. Feedback ends with the disconnect, so the stop
-            # cannot confirm rest and locks the service.
+            # cannot confirm rest. Nothing can move without a new sync: no lock.
             stopped = other.stop(wait_s=1)
             assert stopped["stop"] == "unconfirmed"
-            assert stopped["state"]["locked"]
+            assert not stopped["state"]["locked"]
+            assert not stopped["state"]["stop_unconfirmed"]
     finally:
         state.close()
 

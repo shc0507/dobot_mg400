@@ -1096,7 +1096,8 @@ def test_default_dry_run_lists_every_step(host):
     binary.write_bytes(b"offline Caddy fixture; never execute")
     assert host.install("--dry-run", "--caddy", str(binary)) == 0
     assert host.out.getvalue().replace(str(host.root), "<host>").splitlines() == [
-        "The Toupcam library is not installed. Pass it with --toupcam PATH.",
+        "The Toupcam library is not installed. The microscope service does not start "
+        "without it. Pass it with --toupcam PATH.",
         "Would ensure <host>/etc/mg400 (0755, 0:0)",
         "Would create <host>/etc/mg400/mg400.env",
         "Would ensure <host>/var/lib/mg400 (0750, 0:1000)",

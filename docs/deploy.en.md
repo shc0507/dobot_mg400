@@ -309,7 +309,7 @@ It copies the verified bytes atomically to `/usr/local/lib/mg400/libtoupcam.so`,
 It does not load the library or open a camera. Add `--dry-run` to validate and list the steps without changing files.
 Without `--toupcam`, an existing library stays unchanged.
 
-Without the library, the installer prints a warning and installs the microscope service without its camera.
+Without the library, the installer prints a warning and installs the microscope service. The microscope service does not start without the library.
 An installed library must have the pinned hash and safe ownership and permissions.
 The installer rejects untrusted destination directories before changing the host.
 Existing destination directories must be root-owned, traversable by UID `1000`, and not writable by the service or other users.

@@ -526,12 +526,18 @@ class Console:
                 self.service.events.add(
                     "warning", "Console command " + outcome + ".", device=device, action=action
                 )
-                return {"outcome": outcome, "error": self.service.dashboard.text(message)}
+                reply = {"outcome": outcome, "error": self.service.dashboard.text(message)}
+                if outcome == "refused":
+                    # Keep the service status: 400 is invalid params, 409 is a conflict.
+                    status = _status(exc)
+                    reply["status"] = status if 400 <= status < 500 else 400
+                return reply
             if isinstance(result, dict) and type(result.get("status")) is int:
                 # The robot WebSocket protocol reports refusals in its reply.
                 if result["status"] >= 400:
                     return {
                         "outcome": "refused",
+                        "status": result["status"] if result["status"] < 500 else 409,
                         "error": self.service.dashboard.text(str(result.get("error", "Refused."))),
                     }
             self.service.events.add("info", "Console command sent.", device=device, action=action)

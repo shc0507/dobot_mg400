@@ -659,6 +659,84 @@ def test_agent_page_idles_after_10_min_and_the_console_renews_its_leases(rig, mo
     assert ("release", holder) in stage.calls and rig.service.console.control() == []
 
 
+def test_agent_state_reads_count_as_activity(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    for _ in range(2):
+        rig.clock.value += 590
+        assert (
+            rig.client.get("/lab/api/console/state/stage", headers=headers(AGENT)).status_code
+            == 200
+        )
+        time.sleep(0.05)
+        assert stage.holder == holder
+    rig.clock.value += 590
+    assert rig.client.get("/lab/api/console/events", headers=headers(AGENT)).status_code == 200
+    rig.clock.value += 590
+    time.sleep(0.05)
+    assert stage.holder == holder
+
+
+def test_a_slow_robot_end_does_not_stop_agent_renewals(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    robot, stage = rig.devices["robot"], rig.devices["stage"]
+    gate = threading.Event()
+    monkeypatch.setattr(robot, "_maybe_fail", lambda call: gate.wait(3) if call == "run" else None)
+    post(rig, "control/robot/take")
+    holder = post(rig, "control/stage/take", page=AGENT).get_json()["control"]["holder"]
+    # The browser page goes away: its robot end waits in the disable.
+    rig.clock.value += 3.1
+    wait_for(lambda: any(call[0] == "run" for call in robot.calls))
+    count = sum(call == ("renew", holder) for call in stage.calls)
+    rig.clock.value += 1.0
+    wait_for(lambda: sum(call == ("renew", holder) for call in stage.calls) > count)
+    gate.set()
+    wait_for(lambda: robot.holder is None)
+
+
+def test_watcher_survives_a_failed_pass(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    console = rig.service.console
+    original, failures = console._watch_once, []
+
+    def flaky():
+        if not failures:
+            failures.append(1)
+            raise RuntimeError("boom")
+        original()
+
+    monkeypatch.setattr(console, "_watch_once", flaky)
+    stage = rig.devices["stage"]
+    post(rig, "control/stage/take")
+    rig.clock.value += 3.1
+    wait_for(lambda: stage.holder is None)
+    assert failures == [1]
+
+
+def test_stage_release_stops_the_stage_before_it_ends_control(rig, monkeypatch):
+    monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
+    stage = rig.devices["stage"]
+    for close in (
+        lambda: post(rig, "control/stage/release"),
+        lambda: rig.clock.__setattr__("value", rig.clock.value + 3.1),
+    ):
+        holder = post(rig, "control/stage/take").get_json()["control"]["holder"]
+        stage.calls.clear()
+        close()
+        wait_for(lambda: stage.holder is None)
+        names = [call[0] for call in stage.calls if call[0] in {"stop", "release"}]
+        assert names == ["stop", "release"], names
+        assert ("release", holder) in stage.calls
+
+
+def test_a_lent_stage_refuses_page_holds(rig):
+    post(rig, "control/stage/take", page=AGENT)
+    rig.service.console.lend(AGENT, ["stage"])
+    with pytest.raises(ServiceError, match="run is using"):
+        rig.service.console.stage_hold(AGENT, "h-1", "x", 1, 1)
+
+
 def test_agent_lease_lost_during_renewal_is_never_reacquired(rig, monkeypatch):
     monkeypatch.setattr(console_module, "WATCH_INTERVAL_S", 0.01)
     stage = rig.devices["stage"]
@@ -793,3 +871,29 @@ def test_history_route_keeps_state_changes_and_samples_values(rig, monkeypatch):
     assert len(rows()) == 3
     response = rig.client.get("/lab/api/console/history?device=nope", headers=headers())
     assert response.status_code == 404
+
+
+def test_a_fresh_read_that_times_out_never_returns_the_old_row(monkeypatch):
+    from types import SimpleNamespace
+
+    from orchestrator import devices as devices_module
+
+    devices = devices_module.Devices(SimpleNamespace(store=None))
+    # No reader runs, so no read starts after the call.
+    monkeypatch.setattr(devices, "start", lambda: None)
+    devices.entries["robot"] = devices._entry(
+        "ready", state={"connected": True}, describe={}, observed=devices.clock()
+    )
+    assert devices.get("robot")["phase"] == "ready"
+    assert devices.fresh("robot", timeout=0.05)["phase"] == "stale"
+
+
+def test_stop_all_works_before_the_shell_script_runs(rig):
+    text = rig.client.get("/lab/").get_data(as_text=True)
+    early = text.index('"/lab" + "/api/dashboard/motion"')
+    assert text.index('id="lc-stop-all"') < early < text.index("console-static/shell.js")
+    # The early handler's request is a valid STOP ALL MOTION.
+    response = rig.client.post(
+        "/lab/api/dashboard/motion", json={}, headers={"X-MG400-Client": "console-loading"}
+    )
+    assert response.status_code == 202

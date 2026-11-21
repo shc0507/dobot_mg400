@@ -324,7 +324,6 @@
         if (!ended) notify(t("control.lost", { device: deviceName(device), message: "lease ended" }), "warn");
       }
     }
-    shell.expectRelease?.clear();
     shell.knownControl = next;
     renderControls();
   }
@@ -500,18 +499,23 @@
     return body.control;
   }
 
-  async function release(device) {
+  /** Run an own release. A control list that arrives meanwhile does not report the device as lost. */
+  async function expectingRelease(devices, work) {
     shell.expectRelease = shell.expectRelease || new Set();
-    shell.expectRelease.add(device);
-    const body = await request(`/api/console/control/${encodeURIComponent(device)}/release`, {});
-    await poll();
-    return body;
+    for (const device of devices) shell.expectRelease.add(device);
+    try {
+      const body = await work();
+      await poll();
+      return body;
+    } finally { for (const device of devices) shell.expectRelease.delete(device); }
+  }
+
+  async function release(device) {
+    return expectingRelease([device], () => request(`/api/console/control/${encodeURIComponent(device)}/release`, {}));
   }
 
   async function releaseAll() {
-    shell.expectRelease = new Set(myControls().map(item => item.device));
-    const body = await request("/api/console/release-all", {});
-    await poll();
+    const body = await expectingRelease(myControls().map(item => item.device), () => request("/api/console/release-all", {}));
     return body.results;
   }
 
@@ -522,7 +526,8 @@
       if (body.outcome === "unknown") notify(t("outcome.unknown"), "error");
       return body;
     } catch (error) {
-      if (error.status === 0) {
+      // No answer, a server error or an unreadable reply: the command may have run.
+      if (error.status === 0 || error.status >= 500 || error.body === null) {
         notify(t("outcome.unknown"), "error");
         return { outcome: "unknown", error: error.message };
       }
@@ -635,6 +640,8 @@
     shell.lang = pickLanguage(stored, root.navigator?.language);
     $("lc-lang").addEventListener("click", () => setLanguage(shell.lang === "en" ? "zh" : "en"));
     $("lc-theme")?.addEventListener("click", toggleTheme);
+    // The page sends STOP ALL itself before this script runs; from now on the shell sends it.
+    $("lc-stop-all").onclick = null;
     $("lc-stop-all").addEventListener("click", () => { stopAll().catch(() => {}); });
     root.addEventListener("hashchange", () => show(String(root.location.hash || "").slice(1)));
     root.addEventListener("pagehide", () => {
@@ -659,6 +666,6 @@
     register, start, strings, shell,
     logic: { translate, pickLanguage, serviceChip, runsChip, chips, filterEvents, latestOperation, stopView },
     STALE_MS, BEAT_MS, SERVICES,
-    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops },
+    _internal: { request, relay, take, release, beat, applyControl, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops },
   };
 });

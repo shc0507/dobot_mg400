@@ -127,8 +127,8 @@ test("H.265 turns into H.264 only when it cannot play, not when the host does no
   assert.equal(logic.fallbackFor(true, false, true, true), "h264");
   // go2rtc restarts: retry H.265 after the backoff, so a 4K camera does not turn into MJPEG.
   assert.equal(logic.fallbackFor(true, false, true, false), null);
-  // H.264 that never played turns into MJPEG.
-  assert.equal(logic.fallbackFor(true, false, false, false), "mjpeg");
+  // H.264 that never played turns into MJPEG only when it cannot play; a 502 retries H.264.
+  assert.equal(logic.fallbackFor(true, false, false, false), null);
   assert.equal(logic.fallbackFor(true, false, false, true), "mjpeg");
   // A stream that played, and an MJPEG stream, retry the same format.
   assert.equal(logic.fallbackFor(true, true, true, true), null);
@@ -148,6 +148,31 @@ test("a playing microscope tile is live", () => {
   } finally {
     cameras.engine.tiles.delete(tile);
     cameras.engine.status.delete("microscope");
+  }
+});
+
+test("a live MJPEG tile whose sender rate stays 0 for 3 s reconnects", () => {
+  const row = { id: "camera2", fps: 3 };
+  cameras.engine.status.set("camera2", row);
+  const saved = cameras.engine.statusAt;
+  let failures = 0;
+  const tile = { view: "camera2", running: true, live: true, stopVideo: null, img: { src: "/camera/camera2.mjpeg" }, quietSince: null, failed() { failures++; } };
+  const check = now => { cameras.engine.statusAt = now; cameras.Tile.prototype.checkQuiet.call(tile, now); };
+  try {
+    check(1000);
+    row.fps = 0;
+    check(2000); check(4900);
+    assert.equal(failures, 0);
+    check(5000);
+    assert.equal(failures, 1);
+    // A sender rate above 0 resets the count; an H.264 tile is never judged by it.
+    check(6000); row.fps = 2; check(7000); row.fps = 0; check(9500);
+    assert.equal(failures, 1);
+    tile.stopVideo = () => {}; check(20000); check(30000);
+    assert.equal(failures, 1);
+  } finally {
+    cameras.engine.status.delete("camera2");
+    cameras.engine.statusAt = saved;
   }
 });
 

@@ -437,10 +437,62 @@ def test_frame_failure_is_reported_without_stale_success(make_service):
         frames=SimpleNamespace(read=Mock(side_effect=FrameError("camera unavailable")))
     )
     client = create_app(service).test_client()
+    before = service.snapshot()
+    # A preview read answers the failure and leaves the service state alone.
     assert_error(client.get("/api/detect?camera=1"), 503)
     state = service.snapshot()
-    assert not state["connected"] and not state["busy"] and state["last_result"] is None
+    assert state["connected"] == before["connected"] and state["fault"] is None
+    assert not state["busy"] and state["last_result"] is None
+    headers = {"X-MG400-Client": "owner"}
+    client.post("/api/heartbeat", headers=headers, json={})
+    command = client.post("/api/command", headers=headers, json={"action": "detect", "camera": 1})
+    state = completed(service, command.get_json()["command_id"])
+    assert not state["connected"] and state["last_result"] is None
     assert state["fault"]["code"] == "vision_failed"
+    # A successful preview read clears the fault again.
+    service.frames.read = Mock(return_value=Image.new("RGB", (96, 64)))
+    assert client.get("/api/detect?camera=1").status_code == 200
+    state = service.snapshot()
+    assert state["connected"] and state["fault"] is None
+
+
+def test_a_preview_read_makes_a_leased_command_wait_not_fail(make_service):
+    entered, release = threading.Event(), threading.Event()
+    model = DemoLocalizer()
+    original = model.predict
+    calls = []
+
+    def predict(image):
+        calls.append(image.size)
+        if len(calls) == 2:  # The first call is the startup warm-up.
+            entered.set()
+            assert release.wait(2)
+        return original(image)
+
+    model.predict = predict
+    service = make_service(localizer_factory=lambda: model)
+    app = create_app(service)
+    preview = {}
+    reader = threading.Thread(
+        target=lambda: preview.update(response=app.test_client().get("/api/detect?camera=4"))
+    )
+    reader.start()
+    try:
+        assert entered.wait(1)
+        assert not service.snapshot()["busy"]
+        client = app.test_client()
+        headers = {"X-MG400-Client": "owner"}
+        client.post("/api/heartbeat", headers=headers, json={})
+        command = client.post(
+            "/api/command", headers=headers, json={"action": "detect", "camera": 1}
+        )
+        assert command.status_code == 202
+    finally:
+        release.set()
+        reader.join(2)
+    assert preview["response"].status_code == 200
+    state = completed(service, command.get_json()["command_id"])
+    assert state["last_command"]["result"] == "ok"
 
 
 @pytest.mark.parametrize("expire", [False, True])
@@ -466,7 +518,6 @@ def test_stop_or_expiry_keeps_inference_serial_and_discards_late_result(make_ser
     command = client.post("/api/command", headers=headers, json={"action": "detect", "camera": 1})
     try:
         assert entered.wait(1)
-        assert_error(client.get("/api/labels?camera=2"), 409)
         assert_error(
             client.post("/api/command", headers=headers, json={"action": "detect", "camera": 2}),
             409,

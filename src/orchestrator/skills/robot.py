@@ -334,6 +334,12 @@ class _Transfer:
             fingertip_to_flange(self._inside(self.pose(endpoint, approach=True)), self.offset)
         state, _ = self.state()
         start = self.starting_station(state)
+        # A zone that is missing or has another owner would hold the run mid-route.
+        definitions = self.ctx.zone_definitions()
+        for station in (start, *(station for route in routes for station in route)):
+            zone = station["zone"]
+            if zone and definitions.get(zone, {}).get("owner") != "robot":
+                raise ValueError(f"Configure zone {zone} with the robot owner before a transfer.")
         plans = []
         for route in routes:
             destination = route[-1]

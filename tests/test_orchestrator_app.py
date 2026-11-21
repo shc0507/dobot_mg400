@@ -719,7 +719,7 @@ class CLIService:
 
 
 @pytest.mark.parametrize("signal_name", ["SIGINT", "SIGTERM", "SIGHUP"])
-def test_serve_signal_drains_before_closing_server(signal_name):
+def test_serve_signal_closes_the_server_before_the_drain(signal_name):
     import signal
 
     from orchestrator.__main__ import main
@@ -754,7 +754,7 @@ def test_serve_signal_drains_before_closing_server(signal_name):
         )
         == 0
     )
-    assert calls == ["bind", "start", "run", "service-close", "server-close"]
+    assert calls == ["bind", "start", "run", "server-close", "service-close"]
     assert arguments[0]["recipes_dir"] == "/explicit/catalog"
     assert signal.getsignal(getattr(signal, signal_name)) == previous
 
@@ -790,9 +790,9 @@ def test_serve_failures_use_correct_exit_and_cleanup(phase, code):
             [], environ={}, service_factory=lambda **kwargs: Service(calls), server_factory=server
         )
     assert error.value.code == code
-    assert calls[-1] == ("service-close" if phase == "bind" else "server-close")
+    assert calls[-1] == "service-close"
     if phase != "bind":
-        assert calls[-2:] == ["service-close", "server-close"]
+        assert calls[-2:] == ["server-close", "service-close"]
 
 
 @pytest.mark.parametrize(
@@ -907,7 +907,36 @@ def test_serve_runs_the_control_socket_beside_the_server(bind_fails):
     else:
         socket = ("socket", {"host": "127.0.0.1", "port": SOCKET_PORT, "base_path": "/lab/"})
         expected = [socket, "start", "socket-start", "run", "socket-close"]
-    assert calls == expected + ["service-close", "server-close"]
+    assert calls == expected + ["server-close", "service-close"]
+
+
+def test_a_demo_serve_leaves_the_fixed_control_socket_port_free():
+    from orchestrator.__main__ import serve
+
+    calls = []
+
+    class Server:
+        def run(self):
+            calls.append("run")
+
+        def close(self):
+            calls.append("server-close")
+
+    def socket(app, **kwargs):
+        raise AssertionError("A demo must not bind the control socket.")
+
+    environ = demo_environment({})
+    assert (
+        serve(
+            ["--demo", "--port", "18772"],
+            environ=environ,
+            service_factory=lambda **kwargs: CLIService(calls),
+            server_factory=lambda app, **kwargs: Server(),
+            socket_factory=socket,
+        )
+        == 0
+    )
+    assert calls == ["start", "run", "server-close", "service-close"]
 
 
 def test_serve_passes_the_server_options():
@@ -970,3 +999,10 @@ def test_borrowed_runs_use_lent_adapters_and_return_them(rig, monkeypatch):
     assert runner.wait_closed(3)
     assert returned == ["stage"] and not rig.created
     assert held.holder == "agent-x-0123456789ab" and "release" not in held.calls
+
+
+def test_catalog_reports_an_unknown_recipe_id_as_invalid(tmp_path):
+    directory = tmp_path / "catalog"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="Unknown recipe ID"):
+        Catalog(directory).read("no-such-recipe")

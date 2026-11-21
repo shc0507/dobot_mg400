@@ -547,14 +547,11 @@ class ArucoObjectiveSwitcher:
             raise ValueError("Switch direction must be -1 or +1")
         return self._execute(direction, log_path, source_id=source_id)
 
-    def calibrate_current(self, log_path, *, marker_id=None):
-        """Recognize and recover the current objective; no +/-185-step move."""
-        return self._execute(0, log_path, source_id=marker_id)
-
     def _execute(self, direction, log_path, *, source_id=None):
         if source_id is not None and source_id not in OBJECTIVE_ORDER:
             raise ValueError(f"Unknown source objective ID {source_id}")
         path = run_path(log_path)
+        primary = None
         try:
             with private_open(path, "x", newline="", encoding="utf-8", buffering=1) as output:
                 self.writer = csv.writer(output)
@@ -576,6 +573,9 @@ class ArucoObjectiveSwitcher:
                     )
                 )
                 result = self._run(direction, path, source_id=source_id)
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             self.writer = None
             # Cancellation cannot suppress STOP/DISABLE. Attempt both even if
@@ -590,7 +590,11 @@ class ArucoObjectiveSwitcher:
                 except Exception as error:
                     errors.append(str(error))
             if errors:
-                raise RuntimeError("Could not confirm objective disabled: " + "; ".join(errors))
+                message = "Could not confirm objective disabled: " + "; ".join(errors)
+                if primary is None:
+                    raise RuntimeError(message)
+                # Keep the cause of the failed switch. The caller stops and disables.
+                primary.add_note(message)
         return result
 
     def _run(self, direction, path, *, source_id=None):

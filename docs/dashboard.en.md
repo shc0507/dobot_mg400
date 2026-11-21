@@ -293,6 +293,7 @@ The stop result band shows the button and the time, the phase and the result of 
 - Motion and heat stops go through Stopping, Holding run, Final stop and Done. Gas stops go through Stopping and Done.
 - Before Done, a confirmed motion or heat target shows Confirmed (provisional).
 - When the request does not get to the console, the band shows Not sent and the error.
+- While the orchestrator restarts or shuts down, the console answers no request and its stop buttons show Not sent. Then use `sudo labctl all stop`, `sudo labctl furnace stop` or the physical emergency stop.
 
 Read every target result. A target can be pending, confirmed, unconfirmed, unavailable, or failed.
 For motion and heat stops, initial confirmations are provisional while the run hold and accepted work drain.

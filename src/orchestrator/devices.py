@@ -103,6 +103,14 @@ def normalize(name, state, description):
     return row
 
 
+def _without_output(state):
+    """Return the state for a history row, without the large last_command.output."""
+    last = state.get("last_command") if isinstance(state, dict) else None
+    if not isinstance(last, dict) or "output" not in last:
+        return state
+    return {**state, "last_command": {key: value for key, value in last.items() if key != "output"}}
+
+
 class Devices:
     """The device cache. Readers start at the first read and stop at close."""
 
@@ -175,7 +183,7 @@ class Devices:
             if now - last[2] < SAMPLE_S or not changed(last[1], state):
                 return
         try:
-            store.add_device_state(name, now, entry["phase"], row, state)
+            store.add_device_state(name, now, entry["phase"], row, _without_output(state))
             with self.lock:
                 prune = self.pruned_at is None or now - self.pruned_at >= PRUNE_S
                 if prune:
@@ -266,7 +274,10 @@ class Devices:
         return self.get(name)
 
     def fresh(self, name, timeout=1.0):
-        """Return a row from a read that started after this call."""
+        """Return a row from a read that started after this call.
+
+        Without such a read within timeout, the row has the phase "stale": a caller
+        that needs fresh state must not act on an older row."""
         self.start()
         deadline = time.monotonic() + timeout
         with self.changed:
@@ -278,4 +289,8 @@ class Devices:
                 if left <= 0:
                     break
                 self.changed.wait(left)
-        return self.get(name)
+            done = self.reads[name] >= target
+        entry = self.get(name)
+        if not done and entry["phase"] == "ready":
+            entry["phase"] = "stale"
+        return entry

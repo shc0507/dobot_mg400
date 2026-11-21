@@ -1227,3 +1227,25 @@ def test_autofocus_on_a_window_edge_inside_the_limits_fails_without_a_fault(demo
     assert state["fault"] is None and state["focus_zero_known"]
     if result == "failed":
         assert "edge of the autofocus window" in state["last_command"]["message"]
+
+
+def test_switch_cleanup_error_keeps_the_switch_failure(tmp_path, monkeypatch):
+    from microscope.aruco_switch import ArucoObjectiveSwitcher
+
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path)
+    switcher = object.__new__(ArucoObjectiveSwitcher)
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("Microscope command was stopped")
+
+    def fail(*args, **kwargs):
+        raise ValueError("Objective identity could not be confirmed")
+
+    switcher.motor = SimpleNamespace(send_and_wait=refuse)
+    switcher._run = fail
+    with pytest.raises(ValueError, match="identity") as caught:
+        switcher.run(1, "switch.csv")
+    assert "Could not confirm objective disabled" in caught.value.__notes__[0]
+    switcher._run = lambda *args, **kwargs: "switched"
+    with pytest.raises(RuntimeError, match="Could not confirm objective disabled"):
+        switcher.run(1, "switch-2.csv")

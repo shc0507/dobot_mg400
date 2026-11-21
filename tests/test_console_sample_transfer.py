@@ -735,6 +735,22 @@ def test_motion_position_route_starts_coordinates_and_reports_status(motion_clie
     assert state["stage_operation"]["status"] == "completed"
 
 
+def test_motion_position_refuses_a_target_chosen_before_a_stage_stop(motion_client, rig):
+    manager, adapter = rig
+    url, headers = "/motion/stage/position", {"X-MG400-Client": PAGE}
+    target = {"x": 6, "y": 5}
+    old = motion_client.post(
+        url, headers=headers, json={"target": target, "stop_epoch": adapter.epoch - 1}
+    )
+    assert old.status_code == 409 and "stopped after this target" in old.json["error"]
+    assert manager.operation is None and adapter.moves == []
+    current = motion_client.post(
+        url, headers=headers, json={"target": target, "stop_epoch": adapter.epoch}
+    )
+    assert current.status_code == 202
+    assert manager.operation["done"].wait(3)
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -851,3 +867,16 @@ def test_live_cleanup_ownership_checks_the_device_and_same_console_session():
 
     item.adapter.state = changed_session
     assert not adapter.owns_current(PAGE)
+
+
+def test_drafts_are_kept_only_for_the_latest_pages(rig):
+    from orchestrator.web import sample_transfer as module
+
+    manager, _ = rig
+    first = manager._page("page-0")
+    for index in range(1, module.PAGE_DRAFTS + 5):
+        manager._page(f"page-{index}")
+    assert len(manager.pages) == module.PAGE_DRAFTS
+    assert "page-0" not in manager.pages and manager._page("page-0") is not first
+    latest = manager._page(f"page-{module.PAGE_DRAFTS + 4}")
+    assert manager._page(f"page-{module.PAGE_DRAFTS + 4}") is latest

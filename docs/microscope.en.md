@@ -246,6 +246,7 @@ The columns in `video.timestamps.csv` remain unchanged.
 Demo mode uses generated frames without a furnace connection. Its metadata stays blank unless an embedding supplies fake readings.
 
 Unavailable furnace readings leave metadata fields blank and add a service event while capture continues.
+After 1 failed read, the service keeps the last healthy sample. After 2 consecutive failed reads, the fields are blank. The event includes the error text.
 A missing reply does not mean sequence completion. A changed sequence identity or an unhealthy sequence refuses normal completion.
 
 The service reserves recording IDs exclusively under `/var/lib/mg400/recordings/`.
@@ -285,7 +286,6 @@ Use simulated objects for software tests.
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | Switch or align an objective using side-camera markers. |
 | `microscope.objective_calibration.ObjectiveCalibrator` | Calibrate objective motion against an image displacement map. |
 | `microscope.light_calibration.LightObjectiveCalibrator` | Align a known reference view with a short scan and autofocus. |
-| `microscope.side_capture.capture_objective_series` | Capture fresh side-camera images after objective moves. |
 | `microscope.motors.MotorController` | Manage explicit serial connections and command replies. |
 | `cameras.uvc.USBCamera` | Read side-camera frames from the local go2rtc owner. |
 | `cameras.usb.enumerate_usb_cameras` | List Linux camera metadata and stable device paths without opening capture. |
@@ -460,6 +460,8 @@ Run calibration commands only under the supervision rules above:
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
 `--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
 Calibration can replace an existing owned private output file. Select another output name to retain the previous result.
+A failed or stopped run keeps the existing file and writes its log to `<name>.failed.csv`.
+A run that ends with an unstable result writes the file and exits with status `1`.
 Reference capture requires terminal and device ownership checks, but does not require motion measurements or a reference confirmation.
 It accepts camera dimensions in `[focus]` and still stops and disables motors during cleanup.
 
@@ -489,6 +491,8 @@ sudo labctl calibrate light --focus-start N
 Replace `N` with the measured starting focus coordinate.
 Before the first `CLEAR`, check focus at clearance and the objective in its working position.
 The tool then moves focus to `N` and runs local autofocus once with the `[focus]` settings.
+If `N` is nearer than `local_half_range` to a limit, focus moves inward until the local window fits inside the limits.
+Light calibration runs a second local autofocus at its coarse microstep. It converts the `[focus]` pulse values from `MICRO 4` to that microstep and moves the window inside the limits in the same way.
 
 Each turret move requires a current reference, measured limits, and stationary focus.
 The tool counts commanded turret displacement from the position at the first confirmation, in `1/16` full steps.

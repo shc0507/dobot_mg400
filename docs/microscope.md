@@ -246,6 +246,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 演示模式使用生成帧，不连接炉控。除非嵌入程序提供模拟读数，否则元数据留空。
 
 炉控读数不可用时，元数据字段留空，并添加服务事件，采集继续。
+读取失败 1 次后，服务保留上一个健康样本。连续失败 2 次后，字段留空。事件包含错误文本。
 缺少回复不代表序列结束。序列标识改变或序列不健康时，不正常完成录像。
 
 服务在 `/var/lib/mg400/recordings/` 内独占预留录像 ID。
@@ -285,7 +286,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | 根据侧视相机标记切换或对准物镜。 |
 | `microscope.objective_calibration.ObjectiveCalibrator` | 根据图像位移图谱校准物镜运动。 |
 | `microscope.light_calibration.LightObjectiveCalibrator` | 通过短行程扫描和自动调焦对准已知参考视图。 |
-| `microscope.side_capture.capture_objective_series` | 物镜移动后，采集新的侧视图像。 |
 | `microscope.motors.MotorController` | 管理显式串口连接和命令回复。 |
 | `cameras.uvc.USBCamera` | 从本机 go2rtc 相机所有者读取侧视图像。 |
 | `cameras.usb.enumerate_usb_cameras` | 列出 Linux 相机元数据和稳定设备路径，不打开采集。 |
@@ -460,6 +460,8 @@ sudo labctl calibrate --help
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
 `--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
 校准可以替换现有的自有私有输出文件。若要保留原结果，选择其他输出名称。
+运行失败或被停止时，工具保留现有文件，并把日志写入 `<name>.failed.csv`。
+运行结束但结果不稳定时，工具写入文件，并以状态 `1` 退出。
 参考图像采集必须通过终端和设备占用检查，但不要求运动测量值或零点确认。
 它接受 `[focus]` 中的相机尺寸，并在清理时停止和禁用电机。
 
@@ -489,6 +491,8 @@ sudo labctl calibrate light --focus-start N
 把 `N` 替换为实测调焦起点坐标。
 首次输入 `CLEAR` 前，检查调焦轴在避让位置，且物镜在工作位置。
 工具随后移动调焦轴到 `N`，并按 `[focus]` 配置执行一次局部自动调焦。
+若 `N` 到限位的距离小于 `local_half_range`，调焦轴向内移动，直到局部窗口位于限位内。
+光路校准在其粗扫细分下再执行 1 次局部自动调焦。它把 `[focus]` 的脉冲值从 `MICRO 4` 换算到该细分，并以同样方式把窗口移到限位内。
 
 每次转盘移动都必须具备当前零点、实测限位和静止的调焦轴。
 工具从首次确认时的转盘位置起累计指令位移，单位为 `1/16` 整步。

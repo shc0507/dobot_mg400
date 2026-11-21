@@ -66,6 +66,8 @@ packages = ["src/mg400", "src/stage_controller", "src/labkit", "src/vision", "sr
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A test that hangs prints the stack of every thread after 120 s.
+faulthandler_timeout = 120
 
 [tool.ruff]
 target-version = "py312"

@@ -97,7 +97,11 @@ class _Crucible:
         clients = dict(ctx.clients)
         clients["robot"] = _CheckedRobot(clients["robot"], self.robot_check)
         context = SimpleNamespace(
-            clients=clients, check=ctx.check, sleep=ctx.sleep, zones=ctx.zones
+            clients=clients,
+            check=ctx.check,
+            sleep=ctx.sleep,
+            zones=ctx.zones,
+            zone_definitions=ctx.zone_definitions,
         )
         self.robot = _Transfer(context, speed)
         source, target = ("crucible-load", slot) if unloading else (slot, "crucible-load")

@@ -15,7 +15,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `--session NAME` 选择智能体会话。默认值为 `main`。控制台页面为 `agent-NAME`，Overview **Control** 卡片上的持有者为 `agent-NAME-<12 hex>`。
 - 每个智能体使用 1 个会话。同一会话的调用共享控制权。
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
-- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
+- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。释放位移台前，先停止位移台。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
 - 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 
@@ -25,7 +25,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | --- | --- |
 | `labctl all state` | 所有设备的状态、控制持有者和当前运行 |
 | `labctl all session` | 本会话的设备和剩余空闲时间（`idle_left_s`） |
-| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
+| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。使用 `--since` 时，结果为 `ID` 之后最早的 500 条事件。要读取全部新事件，用最大的 `id` 重复查询，直到结果为空。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | 已保存的设备状态记录，最新在前。`T` 是 Unix 时间 |
 | `labctl <device> state` | 1 台设备的完整状态、持有者和 `mine` |
 | `labctl <device> describe` | 服务列出的命令及其 JSON Schema |
@@ -78,9 +78,11 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
+- 每次运行结束时，都会停止该运行使用的每台设备。显微镜停止会禁用电机并清除对焦零点。使用过显微镜的运行结束后，先重新设置对焦零点，再移动对焦。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
 - 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。用 `POST /lab/api/runs/<run_id>/abort` 终止该运行。HTTP 路由见 [配方编排器](orchestrator.md)。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
+- `microscope-record` 在采集后需要时间完成收尾。`seconds` 最多设为 3000，`--timeout` 至少设为 `seconds` 加 600。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
 
@@ -98,6 +100,10 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `labctl furnace gas-off [CHANNEL]` | 停止 1 路气体，或全部 3 路 |
 
 使用默认 `--url` 时，每次停止还直接发到回环上的服务，因此控制台停机时也有效。使用其他 `--url` 时，停止只经过该控制台。
+
+`/etc/mg400/mg400.env` 缺失或无效时，`sudo labctl` 的停止命令仍会执行。
+
+对只写流量控制器，炉控无法读回流量。停止这类气路时，炉控发送零流量并关闭阀门，但结果仍为 `unconfirmed`。用 `labctl furnace state` 检查该气路。
 
 没有同步客户端的机器人服务无法确认停止。它发送 `ResetRobot()` 并报告 `unconfirmed`，但不锁定。之后的 `labctl robot take` 重新读取机械臂状态。
 
@@ -133,4 +139,4 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 没有保持运行的操作员提示：`do` 终止该运行。
 - 不支持键盘点动和位移台按住运动。它们分别需要在 0.4 秒（键盘点动）和 1 秒（位移台按住）内刷新。
 - 命令行退出前已开始的运动按命令继续。
-- 未给 `--out` 时，图像文件保存到 `/tmp/labctl/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。
+- 未给 `--out` 时，图像文件保存到 `/tmp/labctl-<UID>/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

@@ -106,6 +106,7 @@ class RunStore:
                 );
                 CREATE INDEX IF NOT EXISTS device_events_ts ON device_events(ts);
                 CREATE INDEX IF NOT EXISTS device_states_ts ON device_states(device, ts);
+                CREATE INDEX IF NOT EXISTS device_states_time ON device_states(ts);
                 DROP TABLE IF EXISTS gateway_calls;
             """)
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(device_events)")}
@@ -506,15 +507,21 @@ class RunStore:
             if value is not None:
                 clauses.append(clause)
                 parameters.append(value)
+        # After a cursor, take the oldest rows first, so a poller that continues from
+        # the newest returned id skips none. The reply is still newest first.
+        order = "id ASC" if since else "ts DESC, id DESC"
         with self._lock:
-            return [
+            rows = [
                 dict(row)
                 for row in self._db.execute(
                     f"SELECT {columns} FROM {table} WHERE {' AND '.join(clauses)} "
-                    "ORDER BY ts DESC, id DESC LIMIT ?",
+                    f"ORDER BY {order} LIMIT ?",
                     (*parameters, limit),
                 )
             ]
+        if since:
+            rows.sort(key=lambda row: (row["ts"], row["id"]), reverse=True)
+        return rows
 
     def device_events(self, *, device=None, since=0, start=None, end=None, limit=500):
         """Return stored device events, newest first. id is the cursor for since."""

@@ -34,6 +34,7 @@ POLL_S = 0.2
 BEAT_S = 1.0
 DEFAULT_TIMEOUT_S = 300.0
 STOP_TIMEOUT_S = 2.0
+GAS_STOP_TIMEOUT_S = 10.0
 DO_TIMEOUT_S = 1800.0
 ABORT_WAIT_S = 30.0
 EXIT = {"usage": 2, "invalid": 2, "unknown": 3, "timeout": 3, "interrupted": 130}
@@ -68,8 +69,13 @@ class Http:
             with self.opener.open(request, timeout=self.timeout) as response:
                 status, payload = response.status, response.read()
         except urllib.error.HTTPError as error:
-            status, payload = error.code, error.read()
-            error.close()
+            status = error.code
+            try:
+                payload = error.read()
+            except (OSError, http.client.HTTPException) as read_error:
+                raise Unreachable(f"The console answer broke off: {read_error}") from read_error
+            finally:
+                error.close()
         except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
             raise Unreachable(f"The console did not answer: {error}") from error
         if raw and status < 300:
@@ -98,12 +104,13 @@ def code_for(status, message):
     if status == 409:
         if "take control" in text or "acquire the control lease" in text:
             return "not_controlled"
+        # Check busy first: the robot says "Another robot operation is in progress".
+        if "busy" in text or "in progress" in text or "run is using" in text:
+            return "busy"
         if "another" in text or "holds" in text or "controls this device" in text:
             return "held_by_other"
         if "locked" in text:
             return "locked"
-        if "busy" in text or "in progress" in text or "run is using" in text:
-            return "busy"
         return "refused"
     if status == 0:
         return "unreachable"
@@ -642,9 +649,13 @@ class Agent:
             pass
 
     def _drive(self, recipe, params, timeout, info, lost):
-        status, body = self.http.request(
-            "api/runs", {"recipe": recipe, "params": params, "borrow": True}
-        )
+        try:
+            status, body = self.http.request(
+                "api/runs", {"recipe": recipe, "params": params, "borrow": True}
+            )
+        except Unreachable as error:
+            message = f"{error} A run may have started; read labctl all state."
+            return None, failure("unknown", message, **info)
         if status != 202:
             message = body.get("error", "The run was refused.")
             result = failure(code_for(status, message), message, status=status, **info)
@@ -740,13 +751,13 @@ class Agent:
 
     # Stops --------------------------------------------------------------------
 
-    def _direct_stop(self, device):
+    def _direct_stop(self, device, *, timeout=STOP_TIMEOUT_S, **params):
         """Send api/stop straight to the service once. Return a stop result string."""
         identity = f"{self.page}-stop-{uuid.uuid4().hex[:12]}"
         adapter = None
         try:
-            adapter = ServiceAdapter(self.urls[device], identity, timeout=STOP_TIMEOUT_S)
-            value = adapter.stop()
+            adapter = ServiceAdapter(self.urls[device], identity, timeout=timeout)
+            value = adapter.stop(**params)
         except Exception:
             return "unreachable"
         finally:
@@ -780,8 +791,11 @@ class Agent:
         return {"result": "refused", "status": status, "error": body.get("error")}
 
     @staticmethod
-    def _parallel(tasks):
-        """Run each task once in its own thread; return name -> result."""
+    def _parallel(tasks, wait_s=STOP_TIMEOUT_S * 4):
+        """Run each task once in its own thread; return name -> result.
+
+        A task that has not answered after wait_s gets the result "unconfirmed".
+        """
         results = {}
 
         def run(name, function):
@@ -796,9 +810,14 @@ class Agent:
         ]
         for worker in workers:
             worker.start()
+        deadline = time.monotonic() + wait_s
         for worker in workers:
-            worker.join(STOP_TIMEOUT_S * 4)
-        return results
+            worker.join(max(0.0, deadline - time.monotonic()))
+        return {name: results.get(name, "unconfirmed") for name in tasks}
+
+    @staticmethod
+    def _answered(value):
+        return value if isinstance(value, dict) else {"result": "no-answer"}
 
     @staticmethod
     def _best(*values):
@@ -835,7 +854,12 @@ class Agent:
             device: self._best(sent.get("console:" + device), sent.get(device)) for device in MOTION
         }
         ok = all(value in {"confirmed", "not-configured"} for value in results.values())
-        report = {"ok": ok, "kind": "motion", "results": results, "dashboard": sent["dashboard"]}
+        report = {
+            "ok": ok,
+            "kind": "motion",
+            "results": results,
+            "dashboard": self._answered(sent["dashboard"]),
+        }
         if not ok:
             report["outcome"] = "unknown"
             report["error"] = {
@@ -861,7 +885,7 @@ class Agent:
             "ok": ok,
             "kind": "heat",
             "results": {"furnace": result},
-            "dashboard": sent["dashboard"],
+            "dashboard": self._answered(sent["dashboard"]),
         }
         if not ok:
             report["outcome"] = "unknown"
@@ -883,24 +907,17 @@ class Agent:
             return body.get("outcome", "unconfirmed") if status == 200 else "unconfirmed"
 
         def direct(index):
-            identity = f"{self.page}-gas-{uuid.uuid4().hex[:12]}"
-            try:
-                value = ServiceAdapter(self.urls["furnace"], identity, timeout=STOP_TIMEOUT_S)
-                value = value.stop(gas_channel=index)
-            except Exception:
-                return "unreachable"
-            return "sent" if isinstance(value, dict) else "unconfirmed"
+            return self._direct_stop("furnace", timeout=GAS_STOP_TIMEOUT_S, gas_channel=index)
 
         tasks = {}
         for index in channels:
             tasks[f"console:{index}"] = lambda index=index: console(index)
             if self.direct:
                 tasks[f"direct:{index}"] = lambda index=index: direct(index)
-        sent = self._parallel(tasks)
+        # The furnace closes the gas channels one at a time; each takes about 1 s.
+        sent = self._parallel(tasks, GAS_STOP_TIMEOUT_S + STOP_TIMEOUT_S)
         results = {
-            str(index): "confirmed"
-            if sent[f"console:{index}"] == "confirmed"
-            else sent.get(f"direct:{index}", sent[f"console:{index}"])
+            str(index): self._best(sent[f"console:{index}"], sent.get(f"direct:{index}"))
             for index in channels
         }
         ok = all(value == "confirmed" for value in results.values())
@@ -910,7 +927,8 @@ class Agent:
             report["error"] = {
                 "code": "unknown",
                 "status": None,
-                "message": "A gas stop is unconfirmed.",
+                "message": "A gas stop is unconfirmed. A write-only flow controller "
+                "takes the zero but cannot report the flow, so its stop stays unconfirmed.",
             }
             report["hint"] = "labctl furnace state"
         return report
@@ -921,7 +939,8 @@ class Agent:
     def _out(path, name):
         if path is not None:
             return Path(path)
-        directory = Path("/tmp/labctl")
+        # One directory per user: sudo labctl and uv run labctl run as different users.
+        directory = Path(f"/tmp/labctl-{os.getuid()}")
         directory.mkdir(mode=0o755, exist_ok=True)
         return directory / name
 
@@ -935,9 +954,12 @@ class Agent:
         if status != 200:
             message = payload.get("error") if isinstance(payload, dict) else None
             return failure(code_for(status, message), message or "Read failed.", status=status)
-        path = self._out(out, f"{self.session}-{name}")
-        path.write_bytes(payload)
-        os.chmod(path, 0o644)
+        try:
+            path = self._out(out, f"{self.session}-{name}")
+            path.write_bytes(payload)
+            os.chmod(path, 0o644)
+        except OSError as error:
+            return failure("failed", f"Cannot save the image: {error}", device=device)
         return {"ok": True, "device": device, "path": str(path), "bytes": len(payload)}
 
     def camera_still(self, view, out=None):

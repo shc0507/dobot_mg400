@@ -7,5 +7,6 @@ type = "string"
 [[steps]]
 skill = "crucible.load"
 params = { from_slot = "${from_slot}" }
-timeout_s = 300
+# At most MG400_ORCH_CRUCIBLE_AWAKE_S, which is at most 60 s.
+timeout_s = 60
 on_fail = "hold"

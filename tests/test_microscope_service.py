@@ -1201,3 +1201,29 @@ def test_stop_wait_rechecks_rearmed_cleanup_with_original_budget(monkeypatch, ou
         caller.join(5)
         service._stop_thread.join(5)
         assert not service._stop_thread.is_alive()
+
+
+@pytest.mark.parametrize("best, result", [(1500, "failed"), (-1500, "ok"), (300, "ok")])
+def test_autofocus_on_a_window_edge_inside_the_limits_fails_without_a_fault(demo_rig, best, result):
+    from microscope.autofocus import FocusMeasurement
+
+    class EdgeFocus:
+        def __init__(self, camera, motor, **options):
+            self.motor = motor
+
+        def run_local(self, **options):
+            self.motor.focus_move(best)
+            return FocusMeasurement(best, 50.0, "local_final")
+
+    from dataclasses import replace
+
+    rig = demo_rig(autofocus_factory=EdgeFocus)
+    rig.service.config = replace(rig.service.config, focus_limits=(0, 10000)).validate()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    # Zero is the lower limit: the local window is 0..3000, so only +1500 is an inner edge.
+    state = dispatch(rig, "autofocus", mode="local")
+    assert state["last_command"]["result"] == result, state
+    assert state["fault"] is None and state["focus_zero_known"]
+    if result == "failed":
+        assert "edge of the autofocus window" in state["last_command"]["message"]

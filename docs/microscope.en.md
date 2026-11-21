@@ -246,6 +246,7 @@ The columns in `video.timestamps.csv` remain unchanged.
 Demo mode uses generated frames without a furnace connection. Its metadata stays blank unless an embedding supplies fake readings.
 
 Unavailable furnace readings leave metadata fields blank and add a service event while capture continues.
+After 1 failed read, the service keeps the last healthy sample. After 2 consecutive failed reads, the fields are blank. The event includes the error text.
 A missing reply does not mean sequence completion. A changed sequence identity or an unhealthy sequence refuses normal completion.
 
 The service reserves recording IDs exclusively under `/var/lib/mg400/recordings/`.
@@ -285,7 +286,6 @@ Use simulated objects for software tests.
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | Switch or align an objective using side-camera markers. |
 | `microscope.objective_calibration.ObjectiveCalibrator` | Calibrate objective motion against an image displacement map. |
 | `microscope.light_calibration.LightObjectiveCalibrator` | Align a known reference view with a short scan and autofocus. |
-| `microscope.side_capture.capture_objective_series` | Capture fresh side-camera images after objective moves. |
 | `microscope.motors.MotorController` | Manage explicit serial connections and command replies. |
 | `cameras.uvc.USBCamera` | Read side-camera frames from the local go2rtc owner. |
 | `cameras.usb.enumerate_usb_cameras` | List Linux camera metadata and stable device paths without opening capture. |

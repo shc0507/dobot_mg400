@@ -13,6 +13,7 @@ from PIL import Image
 
 from vision import tray as tray_module
 from vision.calibration import VALIDATION_INDICES, detect_markers
+from vision.service import _slot_observations, _tray_check_message
 from vision.tray import (
     TrayCheckError,
     _fit_similarity,
@@ -281,10 +282,76 @@ def location(tray):
     }
 
 
+def _chip_evidence(calibration, chips):
+    """Detector evidence for chips given as robot-XY rectangles (center, width, length)."""
+    detections = []
+    for (x, y), width, length in chips:
+        corners = [[x + dx * width / 2, y + dy * length / 2, 0] for dx, dy in CHIP_CORNERS]
+        polygon = _project(corners, calibration).tolist()
+        detections.append({"label": "Chip", "confidence": 0.9, "polygon": polygon})
+    return {
+        "image_size": {"width": 1000, "height": 1000},
+        "coordinate_system": "oriented_original_image_pixels",
+        "detections": detections,
+        "counts": {"Chip": len(detections)} if detections else {},
+    }
+
+
+CHIP_CORNERS = [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+
+
+@pytest.mark.parametrize("width", [2.0, 4.0, 4.8])
+def test_groove_filling_chip_on_the_real_tray_belongs_to_one_groove(tray, calibration, width):
+    location = _locate(_render(tray, calibration), calibration, tray)
+    center = location["slots"]["groove_07"]["reference_xy_mm"]
+    detections = _chip_evidence(calibration, [(center, width, 10)])
+    image = Image.new("RGB", (1000, 1000))
+    result = _slot_observations(
+        image, calibration, location, detections, "long", {"groove_07", "groove_08"}
+    )
+    assert result["groove_07"]["state"] == "present"
+    assert result["groove_07"]["center_xy_mm"] == pytest.approx(center, abs=0.1)
+    assert result["groove_08"]["state"] == "empty"
+
+
+def test_chip_across_a_groove_wall_on_the_real_tray_is_refused(tray, calibration):
+    location = _locate(_render(tray, calibration), calibration, tray)
+    x, y = location["slots"]["groove_07"]["reference_xy_mm"]
+    detections = _chip_evidence(calibration, [((x + 5.35 / 2, y), 3, 10)])
+    with pytest.raises(ValueError, match="multiple configured grooves"):
+        _slot_observations(
+            Image.new("RGB", (1000, 1000)), calibration, location, detections, "long", {"groove_07"}
+        )
+
+
+def test_square_chip_needs_no_axis_for_a_cup_pick(tray, calibration):
+    location = _locate(_render(tray, calibration), calibration, tray)
+    center = location["slots"]["groove_07"]["reference_xy_mm"]
+    detections = _chip_evidence(calibration, [(center, 4, 4)])
+    image = Image.new("RGB", (1000, 1000))
+    with pytest.raises(ValueError, match="axis is ambiguous"):
+        _slot_observations(image, calibration, location, detections, "long", {"groove_07"})
+    result = _slot_observations(image, calibration, location, detections, None, {"groove_07"})
+    assert result["groove_07"]["state"] == "present"
+    assert result["groove_07"]["angle_deg"] is None
+
+
 def _evidence(location):
     stations = {ident: slot["reference_xy_mm"] for ident, slot in location["slots"].items()}
     chips = {ident: {"state": "empty"} for ident in stations}
     return stations, chips
+
+
+def test_failed_check_message_names_each_failed_slot_and_its_residual(location):
+    stations, chips = _evidence(location)
+    stations["groove_06"] = [48.075, 88.9]
+    chips.pop("groove_07")
+    with pytest.raises(TrayCheckError) as caught:
+        cross_check_slots(location, taught_stations=stations, chips=chips)
+    message = _tray_check_message(caught.value.report)
+    assert "groove_06: station_outside_groove, station 10.00 mm" in message
+    assert "groove_07: missing chip_observation" in message
+    assert "groove_05" not in message
 
 
 def test_chip_y_is_measured_and_can_differ_from_station_y(location):
@@ -456,7 +523,7 @@ def similarity(angle=0.25, scale=1.1, translation=(0, 0)):
 
 @pytest.mark.parametrize("indices", list(itertools.combinations(range(4), 3)) + [(0, 1, 2, 3)])
 def test_any_three_or_all_four_recover_proper_similarity(indices):
-    expected = similarity(0.47, 1.08, (-80, 55))
+    expected = similarity(0.47, 1.01, (-80, 55))
     source = CORNERS[list(indices)]
     target = _transform(source, expected)
     actual = _fit_similarity(source, target, 2)
@@ -484,7 +551,7 @@ def test_any_three_or_all_four_recover_proper_similarity(indices):
 )
 def test_bad_similarity_refuses_without_dropping_any_observation(fault):
     source = CORNERS.copy()
-    target = _transform(source, similarity())
+    target = _transform(source, similarity(scale=1.01))
     if fault == "two":
         source, target = source[:2], target[:2]
     elif fault == "duplicate-source":
@@ -514,10 +581,18 @@ def test_similarity_tolerance_is_bounded_without_float_overflow(tolerance):
         _fit_similarity(CORNERS, CORNERS, tolerance)
 
 
-def test_similarity_scale_has_no_invented_physical_acceptance_window():
-    expected = similarity(scale=2.5)
-    fit = _fit_similarity(CORNERS, _transform(CORNERS, expected), 2)
-    assert fit["scale"] == pytest.approx(2.5)
+@pytest.mark.parametrize("scale", [0.985, 1.015])
+def test_similarity_scale_within_tolerance_at_the_farthest_corner_passes(scale):
+    # The corners are 104.3 mm from their centroid: 1.5 % moves them 1.56 mm.
+    fit = _fit_similarity(CORNERS, _transform(CORNERS, similarity(scale=scale)), 2)
+    assert fit["scale"] == pytest.approx(scale)
+
+
+@pytest.mark.parametrize("scale", [0.97, 1.023, 1.125, 2.5])
+def test_similarity_scale_error_refuses_wrong_tray_height_or_size(scale):
+    # A tray 10 mm above the calibrated plane fits scale 1.023 with 0 residual.
+    with pytest.raises(ValueError, match="tray height"):
+        _fit_similarity(CORNERS, _transform(CORNERS, similarity(scale=scale)), 2)
 
 
 def scene_model():

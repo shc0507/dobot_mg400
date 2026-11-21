@@ -728,12 +728,15 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
         "work/request.json": b'{"outcome":"unknown"}',
         "work/locks/persistent.json": b"do not omit nested lock directories",
         "locks/process.lock": b"exclude only this process-lock tree",
+        "twin-test/deployment-manifest.json": b"{}",
     }
     for name, content in files.items():
         path = ctl.host.data / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         path.chmod(0o600 if name.endswith(("key", ".json")) else 0o640)
+    # The stage test backend procedure keeps a runtime link in the test deploy state.
+    (ctl.host.data / "twin-test/stage-runtime").symlink_to("deployment-manifest.json")
     old_umask = os.umask(0)
     try:
         assert ctl.call("backup", str(ctl.archive)) == 0
@@ -756,12 +759,13 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
             assert member.mode == stat.S_IMODE(info.st_mode)
             assert not member.uname and not member.gname
         for name, content in files.items():
-            if name.startswith("locks/"):
+            if name.startswith(("locks/", "twin-test/")):
                 assert f"var/lib/mg400/{name}" not in names
             else:
                 assert archive.extractfile(f"var/lib/mg400/{name}").read() == content
             assert (ctl.host.data / name).read_bytes() == content
         assert "var/lib/mg400/locks" not in names
+        assert "var/lib/mg400/twin-test" not in names
     assert list(ctl.archive.parent.iterdir()) == [ctl.archive]
     assert SETTINGS not in ctl.out.getvalue()
     ctl.run.assert_not_called()

@@ -267,9 +267,19 @@ def combine_run_to_target(
             verb = "is" if len(missing) == 1 else "are"
             raise VideoToolsMissing(f"{' and '.join(missing)} {verb} not installed")
         total_seconds = 0
-        for descriptor in segments:
+        readable = []
+        for name, descriptor in zip(names, segments):
             _check_cancel(check_cancel)
-            total_seconds += _ffprobe_duration(ffprobe_path, descriptor)
+            try:
+                total_seconds += _ffprobe_duration(ffprobe_path, descriptor)
+            except RuntimeError as exc:
+                # A crash before release() leaves a segment without its MP4 index.
+                print(f"Skipped unreadable segment {name}: {exc}")
+                continue
+            readable.append(descriptor)
+        if not readable:
+            raise RuntimeError("No video segment of the selected run is readable")
+        segments = readable
         _check_cancel(check_cancel)
         actual_minutes = total_seconds / 60.0
         speed = speed_factor_for_target(actual_minutes, target_minutes)

@@ -41,6 +41,8 @@ CAMERA_PORT = ports.PORTS["camera"]
 PRELOAD = ports.url("go2rtc", "api/preload")
 PASSED = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE")
 BACKUP_OWNER = (0, 0)
+# Process locks, and the test Console deploy state with its stage runtime link.
+BACKUP_SKIP = ("locks", "twin-test")
 CALIBRATION_OWNER = (SERVICE_UID, SERVICE_GID)
 CALIBRATION_MAX_FILES = 10000
 CALIBRATION_MAX_ENTRIES = 20000
@@ -292,7 +294,7 @@ def backup(host, output):
                         ) as archive:
                             for source, target, skip, expected in (
                                 (host.settings, "etc/mg400/mg400.env", (), stat.S_IFREG),
-                                (host.data, "var/lib/mg400", ("locks",), stat.S_IFDIR),
+                                (host.data, "var/lib/mg400", BACKUP_SKIP, stat.S_IFDIR),
                             ):
                                 with assets._directory(source.parent) as source_parent:
                                     _archive_entry(

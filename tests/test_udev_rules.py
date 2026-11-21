@@ -45,6 +45,9 @@ def test_device_rules_keep_inventory_identities_and_restricted_permissions(servi
             selectors.append('ENV{DEVTYPE}=="usb_device"')
         if serial is not None:
             selectors.append(f'{attribute}{{serial}}=="{serial}"')
+        if subsystem == "tty":
+            # ModemManager AT probes would corrupt the next line to the firmware.
+            selectors.append('ENV{ID_MM_DEVICE_IGNORE}="1"')
         expected = {*selectors, 'MODE="0660"', 'GROUP="@SERVICE_GROUP@"'}
         assert set(rule.split(", ")) == expected
         assert re.search(r'ATTRS?\{idVendor\}=="[0-9a-f]{4}"', rule)

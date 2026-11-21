@@ -9,7 +9,7 @@ import math
 import uuid
 
 MAX_MANIFEST = 64 * 1024
-MAX_SEGMENTS = 128
+MAX_SEGMENTS = 1024
 
 
 def _text(value, label, maximum, *, empty=False):

@@ -717,9 +717,10 @@ class MicroscopeCamera:
                 success, raw = source.read(timeout=0.5)
                 if not success or self._stop_event.is_set() or source is not self._source:
                     continue
+                # Receive time, before stabilization adds its processing time.
+                captured_at = time.time()
                 with self._stabilization_lock:
                     frame = self._stabilize(raw) if self.stabilization_enabled else raw.copy()
-                captured_at = time.time()
                 with self._frame_condition:
                     self._latest_raw_frame = raw
                     self._latest_frame = frame
@@ -736,7 +737,11 @@ class MicroscopeCamera:
                             self._recording = None
                             self._recording_error = exc
                             self._last_recording_segments = list(session.segments)
-                            session.close()
+                            try:
+                                session.close()
+                            except Exception as cleanup_error:
+                                # Keep acquiring: only the recording failed.
+                                self._recording_error = cleanup_error
         except Exception as exc:
             if not self._stop_event.is_set():
                 self._error = exc

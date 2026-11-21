@@ -50,7 +50,8 @@ AREAS = [
     ("src/labkit/*", [FULL]),
     ("tests/fixtures/*", [FULL]),
     ("tests/*.py", None),  # Shared helpers; test files are handled before this table.
-    ("scripts/select_tests.py", [FULL]),
+    # A push to main runs the full suite, so a selection error shows there.
+    ("scripts/select_tests.py", ["test_select_tests.py"]),
     # Areas.
     ("src/mg400/*", ROBOT),
     ("apps/control_panel/*", ROBOT),
@@ -114,7 +115,8 @@ AREAS = [
         ],
     ),
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
-    ("firmware/stage-controller-v3/*", ["test_stage_*.py", "test_console_preview.py"]),
+    # Host tests cannot detect firmware bugs; the stage-firmware CI job runs the native checks.
+    ("firmware/stage-controller-v3/*", []),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
     ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_position_finder.py"]),
     (
@@ -216,7 +218,8 @@ def select(changed, root=ROOT):
     tests = root / "tests"
     patterns = set(ALWAYS)
     # The area table can miss a module that imports a changed package.
-    parts = [Path(path).parts for path in changed]
+    # Only Python files can be imported; static web files and data use the area table.
+    parts = [Path(path).parts for path in changed if path.endswith(".py")]
     packages = {p[1] for p in parts if len(p) > 2 and p[0] == "src"}
     for path in changed:
         if fnmatch(path, "tests/test_*.py"):

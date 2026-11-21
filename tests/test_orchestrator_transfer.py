@@ -131,6 +131,11 @@ class Robot:
             self.after(action)
 
 
+class RobotZones(dict):
+    def get(self, name, default=None):
+        return {"owner": "robot"}
+
+
 class Context:
     def __init__(self):
         self.robot = Robot()
@@ -140,6 +145,10 @@ class Context:
         self.held = set()
         self.checks = 0
         self.cancel_after = None
+
+    def zone_definitions(self):
+        # Every station zone in these tests belongs to the robot.
+        return RobotZones()
 
     def check(self):
         self.checks += 1
@@ -809,3 +818,11 @@ def test_robot_move_always_checks_the_fingertip_workspace(geometry, monkeypatch)
     with pytest.raises(ValueError, match="fingertip x_mm=.*outside the workspace"):
         move(ctx, 600.0, 0.0, 4.0, 0.0)
     assert robot.run.call_count == 2
+
+
+def test_a_station_zone_without_the_robot_owner_refuses_before_any_motion(geometry):
+    ctx = Context()
+    ctx.zone_definitions = lambda: {"aisle": {"owner": "robot"}, "source": {"owner": "stage"}}
+    with pytest.raises(ValueError, match="Configure zone source with the robot owner"):
+        transfer(ctx, "source", "target")
+    assert ctx.robot.calls == [] and ctx.events == []

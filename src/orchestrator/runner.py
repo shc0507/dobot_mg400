@@ -370,6 +370,8 @@ class Runner:
         self._settled = False
         self._resolving = False
         self._final_round = None
+        # A successful borrowed run sends no end-of-run stop (see _final_cleanup).
+        self._kept = False
         self._failure = ""
         self.persistence_error = None
         self.release_errors = {}
@@ -406,7 +408,9 @@ class Runner:
                 "detail": self._failure,
                 "persistence_error": self.persistence_error,
                 "stops": stops,
-                "unconfirmed_services": sorted(
+                "unconfirmed_services": []
+                if self._kept
+                else sorted(
                     name
                     for name in self.clients.acquired
                     if stops.get(name, {}).get("stop") != "confirmed"
@@ -1007,7 +1011,7 @@ class Runner:
             return RuntimeError("Cannot record step completion.")
         return None
 
-    def _final_cleanup(self):
+    def _final_cleanup(self, *, keep=False):
         # This guard also runs after an unexpected coordinator error. Audit
         # failures cannot jump directly to lease release with old writes alive.
         with self._condition:
@@ -1016,6 +1020,26 @@ class Runner:
             if self._authority is not None:
                 self._authority.revoke()
             self._monitor_stop.set()
+        if keep:
+            # A successful run with lent devices leaves them as the console page
+            # had them: the arm stays enabled and the microscope keeps focus zero.
+            # A late hold, abort, shutdown or lease failure still stops them.
+            while not self._drained():
+                time.sleep(0.02)
+            with self._condition:
+                keep = (
+                    self._hold_reason is None
+                    and not self._abort
+                    and not self._shutdown
+                    and not self.clients.error
+                    and not self.zones.error
+                )
+                self._kept = keep
+        if keep:
+            self._retain_zones()
+            with self._condition:
+                self._settled = True
+            return True
         drained = self._drained()
         round_id = self._stop()
         while not self._drained():
@@ -1035,7 +1059,7 @@ class Runner:
         return self.clients.confirmed
 
     def _run(self):
-        completed = False
+        completed = keep = False
         try:
             if self._hold_reason is not None:
                 if not self._hold(self._hold_reason, interrupted=False):
@@ -1076,11 +1100,14 @@ class Runner:
                     if not self._step_started:
                         continue
                 self._position += 1
-            self._stop()
+            # Borrowed devices go back to the console page as the run left them.
+            keep = self.clients.borrowed
+            if not keep:
+                self._stop()
             if self._hold_reason is not None:
                 if not self._hold(self._hold_reason, interrupted=False):
                     return
-            if not self.clients.confirmed:
+            if not keep and not self.clients.confirmed:
                 if not self._hold("Run cleanup could not confirm every stop."):
                     return
             completed = True
@@ -1097,8 +1124,9 @@ class Runner:
                     if late_hold is None:
                         self._closing = True
                         break
+                keep = False
                 self._hold(late_hold, interrupted=False)
-            confirmed = self._final_cleanup()
+            confirmed = self._final_cleanup(keep=completed and keep)
             while (release_errors := self.clients.release()) is False:
                 time.sleep(0.05)
             self.release_errors = release_errors

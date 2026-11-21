@@ -290,6 +290,7 @@ def test_cup_pick_uses_seen_xy_tray_z_and_tray_r(tmp_path, monkeypatch):
     assert result["occupancy"] == {"source": False, "target": False}
     assert [name for name, _ in result["vision_calls"]] == ["check_calibration", "observe_slots"]
     assert result["vision_calls"][1][1]["targets"] == {"source": None}
+    assert result["vision_calls"][1][1]["axis"] is None
     moves = [params["targets"] for name, params in result["calls"] if name == "execute"]
     suck = [i for i, (name, _) in enumerate(result["calls"]) if name == "vacuum"]
     assert [params["operation"] for name, params in result["calls"] if name == "vacuum"] == ["suck"]
@@ -400,6 +401,15 @@ def test_whole_request_bound_includes_tray_and_targets(scene):
     assert validate_tray(args["tray"]) == args["tray"]
     assert len(json.dumps({"action": "observe_slots", **args}).encode()) > 16 * 1024
     with pytest.raises(ValueError, match="complete 16 KiB"):
+        _slot_arguments(args)
+
+
+def test_null_axis_is_only_for_slots_without_a_taught_station(scene):
+    _, scene = scene
+    args = {"camera": 1, "tray": scene.tray, "targets": {"source": None}, "axis": None}
+    assert _slot_arguments(args) == scene.tray
+    args["targets"] = {"source": [220, 20]}
+    with pytest.raises(ValueError, match="null chip axis"):
         _slot_arguments(args)
 
 

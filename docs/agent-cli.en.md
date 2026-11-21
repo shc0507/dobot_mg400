@@ -25,7 +25,7 @@ The CLI adds no limits and no checks. The services keep the test-stage protectio
 | --- | --- |
 | `labctl all state` | State of every device, the control holders and the current run |
 | `labctl all session` | This session's devices and the idle time left (`idle_left_s`) |
-| `labctl all events [--since ID] [--device D]` | Stored events, newest first. `ID` is the `id` of an event. `fields` holds the event details, for example `action`, `params`, `client` and `result` |
+| `labctl all events [--since ID] [--device D]` | Stored events, newest first. `ID` is the `id` of an event. With `--since`, the reply holds the oldest 500 events after `ID`. To read all new events, repeat with the largest `id` until the reply is empty. `fields` holds the event details, for example `action`, `params`, `client` and `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | Stored device state rows, newest first. `T` is a Unix time |
 | `labctl <device> state` | Full state of 1 device, its holder and `mine` |
 | `labctl <device> describe` | Described commands and their JSON Schemas |
@@ -101,6 +101,10 @@ Stops need no control and no session. They are sent once and never retried.
 
 With the default `--url`, each stop also goes straight to the service on loopback, so it works when the console is down. With another `--url`, stops go only through that console.
 
+`sudo labctl` stops also run when `/etc/mg400/mg400.env` is missing or invalid.
+
+The furnace cannot read back the flow of a write-only flow controller. A gas stop of such a channel sends the zero and closes the valve, but its result stays `unconfirmed`. Check the channel with `labctl furnace state`.
+
 A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot clear-alarm`, or with **Recover** in the console.
 
 ## Output and exit codes
@@ -135,4 +139,4 @@ A refusal:
 - No operator prompt for a held run: `do` aborts it.
 - No keyboard jog and no stage hold. They need a refresh within 0.4 s (keyboard jog) and 1 s (stage hold).
 - A motion that started before the CLI stopped continues as commanded.
-- Image files go to `/tmp/labctl/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.
+- Image files go to `/tmp/labctl-<UID>/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.

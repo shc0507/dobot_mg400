@@ -3,7 +3,7 @@
 # 炉温与气体控制
 
 炉控服务供操作员和自动化客户端控制炉温、气体流量及有终点的序列。服务没有网页。
-操作员使用 Lab Console 的 Furnace + microscope 工作区。同一工作区提供显微镜预览和录像，见[显微镜指南](microscope.md)。显微镜仍是相机的唯一控制者。
+操作员使用 Lab Console 的 Furnace 工作区。同一工作区提供显微镜预览和录像，见[显微镜指南](microscope.md)。显微镜仍是相机的唯一控制者。
 另见[主机部署](deploy.md)和[炉控生命周期决策](adr/0005-furnace-lifecycle.md)。
 
 ## 真机使用前
@@ -62,7 +62,7 @@ MG400_FURNACE_IDLE_GAS='{}'
 
 ## 在控制台取得控制权
 
-1. 在 Lab Console 中打开 Furnace + microscope 工作区。
+1. 在 Lab Console 中打开 Furnace 工作区。
 2. 在炉子卡片上点击 **Take control**。
 3. 设置输出前，查看连接和故障状态。
 

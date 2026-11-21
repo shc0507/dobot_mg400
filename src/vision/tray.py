@@ -338,6 +338,13 @@ def _fit_similarity(source_xy, target_xy, tolerance_mm):
     residuals = np.linalg.norm(predicted - target, axis=1)
     if not np.isfinite(residuals).all() or np.any(residuals > tolerance_mm):
         raise ValueError("Measured tray corner residual exceeds its allowed tolerance.")
+    # Tray and robot are both in mm, so a scale error is a tray-plane height or tray-size error.
+    reach = float(np.linalg.norm(centered[0], axis=1).max())
+    if abs(scale - 1) * reach > tolerance_mm:
+        raise ValueError(
+            f"Tray scale {scale:.4f} moves the corners more than {tolerance_mm:g} mm: "
+            "check the tray model and the calibrated tray height."
+        )
     return {
         "scale": scale,
         "rotation": rotation.tolist(),

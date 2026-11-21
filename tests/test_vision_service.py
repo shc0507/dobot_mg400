@@ -749,6 +749,13 @@ def test_only_a_failed_inference_is_an_event(make_service):
     model.predict = Mock(side_effect=RuntimeError("model broke"))
     assert_error(client.get("/api/detect?camera=1"), 503)
     assert inference_events() == [("error", "vision inference failed")]
+    # A repeated cause is one event; the event names the cause.
+    assert_error(client.get("/api/detect?camera=1"), 503)
+    events = [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+    assert [e["fields"]["error"] for e in events] == ["Vision processing failed: model broke"]
+    model.predict = Mock(side_effect=RuntimeError("model broke again"))
+    assert_error(client.get("/api/detect?camera=1"), 503)
+    assert len(inference_events()) == 2
 
 
 @pytest.mark.parametrize("invalid", [float("nan"), float("inf"), "x" * (256 * 1024)])

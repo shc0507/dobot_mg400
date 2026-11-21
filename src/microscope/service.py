@@ -211,6 +211,7 @@ class FurnaceReadings:
         self._sample = None
         self._received = None
         self._error = "Furnace readings have not arrived"
+        self._missed = False
 
     @staticmethod
     def _number(value):
@@ -291,6 +292,7 @@ class FurnaceReadings:
 
     def poll_once(self):
         """One fake-testable request. Never called by the acquisition thread."""
+        detail = {}
         try:
             value = self._validate(self.client.state())
             error = (
@@ -298,15 +300,30 @@ class FurnaceReadings:
                 if value["sequence"]["healthy"]
                 else "Furnace readings are faulted; recording metadata is blank"
             )
-        except Exception:
+        except Exception as failure:
             value, error = None, "Furnace readings unavailable; recording metadata is blank"
+            detail = {"error": str(failure) or type(failure).__name__}
         with self._lock:
             if self._closed:
                 return
+            # Keep a fresh healthy sample through one failed read. The snapshot
+            # age limit still blanks it when the next read also fails.
+            if (
+                value is None
+                and not self._missed
+                and self._error is None
+                and self._sample is not None
+                and 0 <= self.clock() - self._received <= 2.5
+            ):
+                self._missed = True
+                return
+            self._missed = False
             changed = error != self._error
             self._sample, self._received, self._error = value, self.clock(), error
         if changed:
-            self.events.add("warning" if error else "info", error or "Furnace readings available")
+            self.events.add(
+                "warning" if error else "info", error or "Furnace readings available", **detail
+            )
 
     def start(self):
         with self._lock:

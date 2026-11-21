@@ -246,6 +246,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 演示模式使用生成帧，不连接炉控。除非嵌入程序提供模拟读数，否则元数据留空。
 
 炉控读数不可用时，元数据字段留空，并添加服务事件，采集继续。
+读取失败 1 次后，服务保留上一个健康样本。连续失败 2 次后，字段留空。事件包含错误文本。
 缺少回复不代表序列结束。序列标识改变或序列不健康时，不正常完成录像。
 
 服务在 `/var/lib/mg400/recordings/` 内独占预留录像 ID。
@@ -285,7 +286,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | 根据侧视相机标记切换或对准物镜。 |
 | `microscope.objective_calibration.ObjectiveCalibrator` | 根据图像位移图谱校准物镜运动。 |
 | `microscope.light_calibration.LightObjectiveCalibrator` | 通过短行程扫描和自动调焦对准已知参考视图。 |
-| `microscope.side_capture.capture_objective_series` | 物镜移动后，采集新的侧视图像。 |
 | `microscope.motors.MotorController` | 管理显式串口连接和命令回复。 |
 | `cameras.uvc.USBCamera` | 从本机 go2rtc 相机所有者读取侧视图像。 |
 | `cameras.usb.enumerate_usb_cameras` | 列出 Linux 相机元数据和稳定设备路径，不打开采集。 |

@@ -9,6 +9,7 @@ import base64
 import binascii
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -23,6 +24,8 @@ import numpy as np
 
 from .aruco_locator import COLORS, detect_objectives, marker_center
 from .paths import calibration_path
+
+_LOG = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_PREVIEW_BYTES = 256 * 1024
@@ -390,7 +393,12 @@ class TurretProfileStore:
             for path in sorted(self.root.glob("*.json")):
                 if re.fullmatch(r"[0-9a-f]{32}", path.stem) is None:
                     continue
-                profile = self.load(path.stem)
+                try:
+                    profile = self.load(path.stem)
+                except (OSError, ValueError) as error:
+                    # One unreadable file must not hide the other profiles.
+                    _LOG.warning("Skipping turret profile %s: %s", path.name, error)
+                    continue
                 summaries.append(
                     {
                         "profile_id": profile["profile_id"],

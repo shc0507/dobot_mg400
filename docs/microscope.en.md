@@ -457,6 +457,8 @@ Run calibration commands only under the supervision rules above:
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
 `--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
 Calibration can replace an existing owned private output file. Select another output name to retain the previous result.
+A failed or stopped run keeps the existing file and writes its log to `<name>.failed.csv`.
+A run that ends with an unstable result writes the file and exits with status `1`.
 Reference capture requires terminal and device ownership checks, but does not require motion measurements or a reference confirmation.
 It accepts camera dimensions in `[focus]` and still stops and disables motors during cleanup.
 
@@ -486,6 +488,8 @@ sudo labctl calibrate light --focus-start N
 Replace `N` with the measured starting focus coordinate.
 Before the first `CLEAR`, check focus at clearance and the objective in its working position.
 The tool then moves focus to `N` and runs local autofocus once with the `[focus]` settings.
+If `N` is nearer than `local_half_range` to a limit, focus moves inward until the local window fits inside the limits.
+Light calibration runs a second local autofocus at its coarse microstep. It converts the `[focus]` pulse values from `MICRO 4` to that microstep and moves the window inside the limits in the same way.
 
 Each turret move requires a current reference, measured limits, and stationary focus.
 The tool counts commanded turret displacement from the position at the first confirmation, in `1/16` full steps.

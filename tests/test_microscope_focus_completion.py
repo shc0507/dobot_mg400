@@ -130,10 +130,19 @@ def focuser_for(camera, motor, backlash_steps=200):
 
 
 def test_landing_repeats_the_fine_scan_direction_under_backlash(curve_score):
+    # Settled moves only: no frame timing during continuous motion.
     motor = BacklashFocus(backlash=60)
     camera = CurveCamera(motor, peak(0))
     curve_score(camera)
-    result = focuser_for(camera, motor).run_local(half_range=1500, step=100, lock_exposure=False)
+    focuser = focuser_for(camera, motor)
+    focuser._move_to(400)
+    samples = focuser._adaptive_fine_scan(
+        start=200, stop=-200, predicted_peak=0, max_step=100, min_step=10, lower_limit=-1500
+    )
+    best = focuser._fine_candidate(samples)
+    result = focuser._land_and_verify(
+        best, lower_limit=-1500, upper_limit=1500, correction_radius=100, min_step=10
+    )
     assert abs(motor.lens) <= 10
     assert result.score >= 104
 
@@ -167,7 +176,8 @@ def test_flat_focus_scores_report_no_peak(curve_score):
 @pytest.mark.parametrize("recording, calls", [(False, [False, True]), (True, [])])
 def test_autofocus_keeps_stabilization_while_recording(curve_score, recording, calls):
     motor = BacklashFocus()
-    camera = CurveCamera(motor, peak(0), recording=recording)
+    # A wide, offset curve varies at every sample, whatever the frame timing.
+    camera = CurveCamera(motor, peak(500, sigma=3000), recording=recording)
     curve_score(camera)
     focuser_for(camera, motor).run_local(half_range=1500, step=100, lock_exposure=False)
     assert camera.stabilization_calls == calls

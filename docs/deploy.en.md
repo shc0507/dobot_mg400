@@ -525,7 +525,7 @@ GPU output alone does not confirm that vision selected CUDA. Check `labctl logs 
 
 Furnace `stop` and `restart` query live state before changing any selected service.
 The check includes mixed lists and `all`, including a disabled furnace selected by `stop all`.
-`stop` skips the check only when systemd reports every furnace unit as not installed and inactive. If systemd gives no clear answer, the check runs.
+The check is skipped only when systemd reports every furnace unit as inactive: then no furnace process runs. If systemd gives no clear answer, the check runs.
 An active sequence or cooling gas plan requires `--force`. Unavailable, malformed, disconnected, or locked status also requires `--force`.
 Coordinate with all clients before using `labctl stop furnace --force` or `labctl restart furnace --force`.
 Forced shutdown requests that the service stop heat and gas. Verify the stop result. The check is advisory: a sequence can start between the status read and systemd action.

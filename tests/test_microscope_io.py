@@ -458,3 +458,32 @@ def test_side_camera_refuses_reopen_until_old_reader_exits(monkeypatch):
         release.set()
         join(1)
         camera.close()
+
+
+def test_flat_or_unrelated_frames_do_not_register_with_confidence():
+    from microscope.objective_calibration import measure_image_displacement
+
+    flat = measure_image_displacement(
+        np.full((1944, 2592, 3), 120, np.uint8), np.full((1944, 2592, 3), 150, np.uint8)
+    )
+    assert flat[3] == 0.0
+    rng = np.random.default_rng(1)
+    first, second = (rng.integers(0, 255, (1944, 2592, 3), dtype=np.uint8) for _ in range(2))
+    assert measure_image_displacement(first, second)[3] < 0.2
+
+
+def test_unlocalized_release_is_signed_in_atlas_pixels():
+    from microscope.objective_calibration import ObjectiveCalibrator
+
+    calibrator = object.__new__(ObjectiveCalibrator)
+    calibrator.roi_fraction = 1.0
+    atlas_frame = calibrator._prepare_atlas_frame(np.zeros((1944, 2592, 3), np.uint8))
+    assert atlas_frame.shape == (384, 512)
+    assert calibrator.atlas_scale == pytest.approx(512 / 2592)
+    end = SimpleNamespace(position=100.0)
+    calibrator.atlas_segments = [
+        SimpleNamespace(left=SimpleNamespace(position=0.0), right=end, dx=1.0, dy=0.0)
+    ]
+    signed = calibrator._signed_image_displacement(50.0, -2592.0, 0.0, 2592.0, None)
+    assert signed == pytest.approx(-512.0)
+    assert calibrator._signed_image_displacement(50.0, 0.0, 0.0, 0.0, 53.0) == 3.0

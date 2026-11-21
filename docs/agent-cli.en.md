@@ -105,7 +105,7 @@ With the default `--url`, each stop also goes straight to the service on loopbac
 
 The furnace cannot read back the flow of a write-only flow controller. A gas stop of such a channel sends the zero and closes the valve, but its result stays `unconfirmed`. Check the channel with `labctl furnace state`.
 
-A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot clear-alarm`, or with **Recover** in the console.
+A robot service with no syncing client cannot confirm a stop. It sends `ResetRobot()` and reports `unconfirmed`, but it does not lock. A later `labctl robot take` reads the robot state again.
 
 ## Output and exit codes
 

@@ -46,6 +46,10 @@ class _StationaryTimeoutError(TimeoutError):
     """Fresh feedback did not confirm a stationary state within the allowed time."""
 
 
+class _StaleFeedbackError(RuntimeError):
+    """The newest feedback sample is too old."""
+
+
 class DashboardQueryCancelledError(ConnectionAbortedError):
     """A stop request cancelled this read-only query."""
 
@@ -96,6 +100,7 @@ class JointControl:
         self._stop_attempts = self._disable_attempts = 0
         self._stop_uncertain = False
         self._rejection = None
+        self._disabling = False
         self._child_stop_error = None
         # True from the blow-on send until the blow-off arrival. A stop then clears DO1.
         self._blowing = False
@@ -257,7 +262,7 @@ class JointControl:
         sample, received = self.feedback_snapshot()
         age = time.monotonic() - received
         if not math.isfinite(age) or not 0 <= age <= 0.25:
-            raise RuntimeError("Robot feedback is absent or stale")
+            raise _StaleFeedbackError("Robot feedback is absent or stale")
         if sample.error_status or sample.mode not in allowed_modes:
             raise RuntimeError(
                 f"Unexpected robot state: mode={sample.mode}, error={sample.error_status}"
@@ -657,10 +662,22 @@ class JointControl:
         samples = 0
         minimum = maximum = ()
         longest_stable = 0.0
+        stale = None
         while time.monotonic() < deadline:
             if self.stopped and not stopping:
                 raise RuntimeError("Control has been stopped; reopen the panel")
-            sample, received = self._fresh(modes)
+            try:
+                sample, received = self._fresh(modes)
+            except _StaleFeedbackError as error:
+                if not stopping:
+                    raise
+                # A short feedback gap is not a failed stop. Restart the rest window.
+                stale = error
+                anchor = stable_since = None
+                count = 0
+                time.sleep(poll_seconds)
+                continue
+            stale = None
             if jog_stop:
                 if getattr(sample, "speed_scaling_raw", None) != jog_speed_percent:
                     raise RuntimeError(
@@ -700,6 +717,8 @@ class JointControl:
                     if count >= 3 and received - stable_since >= stable_seconds:
                         return sample
             time.sleep(poll_seconds)
+        if stale is not None:
+            raise stale
         span = tuple(round(high - low, 6) for low, high in zip(minimum, maximum, strict=True))
         raise _StationaryTimeoutError(
             "Robot did not reach a fresh, verified stationary state "
@@ -1106,6 +1125,9 @@ class JointControl:
                 return self._disable_result
             earlier_error = self._disable_error
             self._disable_result = None
+            # The rejection describes the newest attempt only.
+            self._rejection = None
+            self._disabling = True
             try:
                 # A new disable invalidates any earlier verification of rest.
                 self._stop_result = None
@@ -1120,13 +1142,21 @@ class JointControl:
                         "Command ordering remains unknown."
                     )
                 deadline = acknowledged_at + 5.0
+                stale = None
                 while time.monotonic() < deadline:
-                    sample, received = self._fresh({4, 5, 7, 11})
+                    try:
+                        sample, received = self._fresh({4, 5, 7, 11})
+                    except _StaleFeedbackError as error:
+                        # A short feedback gap is not a failed disable.
+                        stale = error
+                        time.sleep(0.01)
+                        continue
+                    stale = None
                     if sample.mode == 4 and received > acknowledged_at:
                         break
                     time.sleep(0.01)
                 else:
-                    raise TimeoutError("Fresh disabled robot feedback was not confirmed")
+                    raise stale or TimeoutError("Fresh disabled robot feedback was not confirmed")
                 mode, _ = self._dashboard_state()
                 sample = self._fresh({4})[0]
                 if mode != 4:
@@ -1140,6 +1170,7 @@ class JointControl:
                 self._disable_error = earlier_error or error
                 raise self._disable_error
             finally:
+                self._disabling = False
                 self._disable_attempts += 1
             if earlier_error is not None:
                 raise earlier_error
@@ -1200,10 +1231,20 @@ class JointControl:
                 and pending.get("command", "").startswith("MoveJog(")
                 and pending.get("port") == 30003
             )
+        if repeat and self._disabling:
+            # A disable holds the stop lock for its mode wait of up to 5 s. Send the
+            # stop now; the attempt below sends it again and verifies rest.
+            try:
+                self._command("ResetRobot()", stopping=True)
+            except Exception:
+                pass
         with self._stop_lock:
             earlier = self._stop_result
             if earlier is not None and (not repeat or self._stop_attempts != attempts):
                 return earlier
+            if repeat:
+                # The rejection describes the newest attempt only.
+                self._rejection = None
             if self._parent is not None and self._parent.stopped:
                 normal_jog = False
             # The jog path never runs a vacuum action; only ResetRobot() clears the blow.

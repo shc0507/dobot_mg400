@@ -216,7 +216,7 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 | `execute` | `targets`（含 `x`、`y`、`z`、`r`），可选 `speed` | 直线移动到法兰坐标 |
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
-| `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
+| `clear_alarm` | 无 | 发送 `ClearError()`；报警清除后发送 `ResetRobot()`，下使能并确认静止 |
 | `keys` | `seq`、`held` | 发送一次按住的键，`command_id` 为 `null`，见 [按键](#按键) |
 
 对于 `keyboard`，`speed` 是 1–100 的整数。
@@ -233,7 +233,7 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。
-此时服务不发送 `ClearError()`，只下使能、确认静止并清除警告。
+此时服务不发送 `ClearError()`，只发送 `ResetRobot()`、下使能、确认静止并清除警告。
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
@@ -458,10 +458,12 @@ J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 
 未提供 `speed` 时，`execute` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
+服务只检查起点和目标。控制器检查路径；路径超出范围时，控制器报警，例如 23 或 72。
 复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
 `execute` 和复位不修改全局速度或工具配置。
 
 键盘点动开启时，服务发送 `SpeedFactor(<speed>)`，设置全局速度。
+键盘点动关闭后，控制器保留该值。`execute` 和复位的实际速度 = 命令速度 × 全局 `SpeedFactor` × 控制器回放设置。验证速度前，先读取状态中的 `speed_factor`。
 按住按键时，服务发送连续点动命令 `MoveJog`：
 
 | 按键 | 命令 |

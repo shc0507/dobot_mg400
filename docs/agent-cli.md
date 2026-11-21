@@ -105,7 +105,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 对只写流量控制器，炉控无法读回流量。停止这类气路时，炉控发送零流量并关闭阀门，但结果仍为 `unconfirmed`。用 `labctl furnace state` 检查该气路。
 
-没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot clear-alarm`，或控制台中的 **Recover** 恢复。
+没有同步客户端的机器人服务无法确认停止。它发送 `ResetRobot()` 并报告 `unconfirmed`，但不锁定。之后的 `labctl robot take` 重新读取机械臂状态。
 
 ## 输出和退出码
 

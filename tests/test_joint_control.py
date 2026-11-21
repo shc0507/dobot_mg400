@@ -2786,3 +2786,83 @@ def test_invalid_linear_percentages_never_read_feedback_or_send(rig, monkeypatch
         control.move_linear(LINEAR_TARGET, **{parameter: value})
     read.assert_not_called()
     assert not commands and not control.busy and not control.stopped
+
+
+def test_stop_verification_waits_through_a_short_feedback_gap(rig):
+    control, sample, now, commands = rig
+    gap = [0.3]
+    gap_end = [None]
+    snapshot = control.feedback_snapshot
+
+    def gapped():
+        current, received = snapshot()
+        if gap_end[0] is not None and now[0] < gap_end[0]:
+            return current, received - 0.3
+        return current, received
+
+    control.feedback_snapshot = gapped
+    original = control._command
+
+    def command(text, *args, **kwargs):
+        result = original(text, *args, **kwargs)
+        if text == "ResetRobot()":
+            gap_end[0] = now[0] + gap[0]
+        return result
+
+    control._command = command
+    assert control.stop()["ok"]
+    # A gap that lasts the whole window still fails.
+    gap[0] = float("inf")
+    result = control.stop()
+    assert not result["ok"] and "absent or stale" in result["error"]
+    assert commands == [("ResetRobot()", 29999)] * 2
+
+
+def test_stop_during_a_pending_disable_sends_reset_at_once(rig):
+    control, sample, now, commands = rig
+    original = control._command
+    reset_sent = threading.Event()
+
+    def command(text, *args, **kwargs):
+        if text == "DisableRobot()":
+            # Acknowledged, but feedback keeps the robot enabled.
+            commands.append((text, 29999))
+            return ""
+        if text == "ResetRobot()":
+            reset_sent.set()
+        return original(text, *args, **kwargs)
+
+    control._command = command
+    waiting, release = threading.Event(), threading.Event()
+    snapshot = control.feedback_snapshot
+
+    def blocked():
+        if threading.current_thread() is disabler:
+            waiting.set()
+            release.wait(2)
+        return snapshot()
+
+    control.feedback_snapshot = blocked
+    errors = []
+
+    def disable():
+        try:
+            control.disable()
+        except Exception as error:
+            errors.append(error)
+
+    disabler = threading.Thread(target=disable, daemon=True)
+    stopper = threading.Thread(target=control.stop, daemon=True)
+    disabler.start()
+    try:
+        assert waiting.wait(2)
+        stopper.start()
+        # The disable still holds the stop lock.
+        assert reset_sent.wait(2)
+        assert disabler.is_alive()
+    finally:
+        release.set()
+    disabler.join(2)
+    stopper.join(2)
+    assert not disabler.is_alive() and not stopper.is_alive()
+    assert commands[:2] == [("DisableRobot()", 29999), ("ResetRobot()", 29999)]

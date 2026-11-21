@@ -46,6 +46,13 @@
       </div>
       </div>
       <button type="button" class="lc-stop" id="lc-stop-all"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="3" width="12" height="12" rx="2" fill="currentColor"></rect></svg><span data-i18n="stop.all">STOP ALL MOTION</span></button>
+      <script>
+        // Until shell.js runs, STOP ALL MOTION sends the stop itself. The shell then takes the button over.
+        document.getElementById("lc-stop-all").onclick = function () {
+          fetch({{ base_path|tojson }} + "/api/dashboard/motion", { method: "POST", credentials: "omit", cache: "no-store",
+            headers: { "Content-Type": "application/json", "X-MG400-Client": "console-loading" }, body: "{}" }).catch(function () {});
+        };
+      </script>
       <div class="lc-strip" role="status" aria-label="Service status" id="lc-strip"></div>
     </header>
     <div class="lc-stopband" id="lc-stopband" role="status" aria-label="Stop result" hidden></div>

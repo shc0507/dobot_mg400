@@ -15,7 +15,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `--session NAME` 选择智能体会话。默认值为 `main`。控制台页面为 `agent-NAME`，Overview **Control** 卡片上的持有者为 `agent-NAME-<12 hex>`。
 - 每个智能体使用 1 个会话。同一会话的调用共享控制权。
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
-- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
+- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。释放位移台前，先停止位移台。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
 - 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 
@@ -25,7 +25,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | --- | --- |
 | `labctl all state` | 所有设备的状态、控制持有者和当前运行 |
 | `labctl all session` | 本会话的设备和剩余空闲时间（`idle_left_s`） |
-| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
+| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。使用 `--since` 时，结果为 `ID` 之后最早的 500 条事件。要读取全部新事件，用最大的 `id` 重复查询，直到结果为空。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | 已保存的设备状态记录，最新在前。`T` 是 Unix 时间 |
 | `labctl <device> state` | 1 台设备的完整状态、持有者和 `mine` |
 | `labctl <device> describe` | 服务列出的命令及其 JSON Schema |
@@ -99,6 +99,10 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 使用默认 `--url` 时，每次停止还直接发到回环上的服务，因此控制台停机时也有效。使用其他 `--url` 时，停止只经过该控制台。
 
+`/etc/mg400/mg400.env` 缺失或无效时，`sudo labctl` 的停止命令仍会执行。
+
+对只写流量控制器，炉控无法读回流量。停止这类气路时，炉控发送零流量并关闭阀门，但结果仍为 `unconfirmed`。用 `labctl furnace state` 检查该气路。
+
 没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot clear-alarm`，或控制台中的 **Recover** 恢复。
 
 ## 输出和退出码
@@ -133,4 +137,4 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 没有保持运行的操作员提示：`do` 终止该运行。
 - 不支持键盘点动和位移台按住运动。它们分别需要在 0.4 秒（键盘点动）和 1 秒（位移台按住）内刷新。
 - 命令行退出前已开始的运动按命令继续。
-- 未给 `--out` 时，图像文件保存到 `/tmp/labctl/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。
+- 未给 `--out` 时，图像文件保存到 `/tmp/labctl-<UID>/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

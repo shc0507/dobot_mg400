@@ -12,7 +12,7 @@
   const i18n = {
     en: {
       title: "Sample Transfer", operate: "Operate", calibrationTab: "Calibration", calibration: "Calibration profile", profiles: "Saved profiles",
-      extract: "Extract Sample", insert: "Insert Sample", stop: "STOP", stopLabel: "Stop stage motion",
+      extract: "Extract Sample", insert: "Insert Sample", stop: "STOP", stopLabel: "Stop stage motion", stopOutcome: "Stage stop is {outcome}.",
       fully_out: "Fully out", fully_in: "Fully in", motionNote: "Move Insert to 0 for extraction or to its current upper limit for insertion.",
       moveOutStage: "Move Out Stage", moveMicroscope: "Move to Microscope", stageSequence: "Bottom (Y) → Top (X)",
       endpointTitle: "Stage positions", outStagePosition: "Stage Out position", microscopePosition: "Microscope position",
@@ -42,7 +42,7 @@
     },
     zh: {
       title: "样品转移", operate: "操作", calibrationTab: "校准", calibration: "校准配置", profiles: "已存配置",
-      extract: "取出样品", insert: "插入样品", stop: "停止", stopLabel: "停止位移台",
+      extract: "取出样品", insert: "插入样品", stop: "停止", stopLabel: "停止位移台", stopOutcome: "位移台停止结果：{outcome}。",
       fully_out: "完全移出", fully_in: "完全移入", motionNote: "取出时将插入轴移到 0，插入时移到当前上限。",
       moveOutStage: "移出位移台", moveMicroscope: "移到显微镜", stageSequence: "底层 (Y) → 顶层 (X)",
       endpointTitle: "位移台位置", outStagePosition: "位移台移出位置", microscopePosition: "显微镜位置",
@@ -268,12 +268,19 @@
     }
     function renderNamed() {
       const profile = state?.active_profile, compatible = profile?.schema_version === 5 && profile?.unit === "rotations";
-      const signature = JSON.stringify([profile, available, owns(), busy(), state?.named_motion_ready]);
+      // Rebuild the rows only when the profile changes. A poll during a move must not
+      // replace the STOP buttons; the Move buttons change in place.
+      const signature = JSON.stringify(profile);
       setText(nodes.selected, profile ? profile.name + (compatible ? "" : " · " + t("legacy")) : t("noSelected"));
-      if (namedSignature === signature) return;
+      const ready = writable() && compatible && state?.named_motion_ready;
+      if (namedSignature === signature) {
+        for (const move of nodes.namedMoves || []) move.disabled = !ready;
+        return;
+      }
+      nodes.namedMoves = [];
       nodes.named.replaceChildren(...Object.entries(profile?.positions || {}).map(([name, capture], index) => {
         const move = button("movePosition", () => command("position/move", { name }), "named-move-" + index, "st-primary");
-        move.disabled = !writable() || !compatible || !state?.named_motion_ready;
+        move.disabled = !ready; nodes.namedMoves.push(move);
         const values = ["y", "x", "insert"].map(axis => h("span", { class: "st-position-value" }, h("span", { text: t(axis === "insert" ? "insertAxis" : axis) }), h("strong", { text: number((capture.position_rotations || capture.position_mm)?.[axis]) }), h("small", { text: compatible ? "rot" : "mm" })));
         return h("li", { class: "st-position-record" }, h("strong", { text: name }), h("div", { class: "st-position-values" }, values), h("div", { class: "st-row" }, move, button("stop", () => stopMotion(), "named-stop-" + index, "st-stop")));
       }));
@@ -401,6 +408,9 @@
         if (version === generation) {
           if (ownMotion === intent && !intent?.pending) ownMotion = null;
           apply(value);
+          // An unconfirmed or unknown stop must not read as Stopped.
+          const outcome = value?.stop?.outcome;
+          if (outcome !== "confirmed") issue(t("stopOutcome", { outcome: typeof outcome === "string" ? outcome : "unknown" }));
         }
       } catch (failure) { if (version === generation) issue(failure); }
       finally { stopping--; render(); }

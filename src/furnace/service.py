@@ -37,6 +37,10 @@ ORPHAN_GRACE_MIN = 15
 STOP_RETRY_S = 5.0
 # A run faults only after this many polls in a row fail to read the controller.
 POLL_READ_FAILURES = 3
+# Longest hold of 1 step: 30 days.
+MAX_HOLD_MIN = 43_200
+# The end-gas plan ends after this time even if PV stays above its threshold.
+COOLING_MAX_S = 24 * 3600
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -172,6 +176,7 @@ class FurnaceService:
         self._applied_signature = None
         self._end_gas = None
         self._end_gas_until_c = None
+        self._cooling_started_wall = None
         self._gas_targets = {}
         self._last_persist_at = self.clock()
         self._stop_retry_at = None
@@ -362,7 +367,8 @@ class FurnaceService:
                 setpoint_verified=False,
             )
         else:
-            self._number(current["actual_percent"], "Flow readback", minimum=0, maximum=100)
+            # An MFC can overshoot above 100 % for a moment: only refuse invalid numbers.
+            self._number(current["actual_percent"], "Flow readback", minimum=0)
             snapshot.update(current)
             snapshot.update(
                 gas_name=self.gas_map.get(channel, snapshot["gas_name"]),
@@ -463,10 +469,24 @@ class FurnaceService:
                 return self.flow_status()
             try:
                 self._zero_gas(channel)
+                self._drop_planned_gas([channel])
                 self._persist()
             except Exception as error:
                 self._fail(error)
         return self.flow_status()
+
+    def _drop_planned_gas(self, channels):
+        """A gas stop holds for the rest of the run: later steps and the end plan skip it.
+
+        Idle gas still applies at the end of the run.
+        """
+        if not (self._sequence_running or self._sequence_phase == "cooling"):
+            return
+        for step in self._steps:
+            for channel in channels:
+                step.get("gas", {}).pop(channel, None)
+        if self._end_gas is not None:
+            self._end_gas.update({channel: 0.0 for channel in channels})
 
     def _assert_flow_channel_kind(self, kind, unit_id):
         unit_id = MFCFlowController._unit_id(unit_id)
@@ -540,6 +560,7 @@ class FurnaceService:
                 return self.flow_status()
             try:
                 self._flow_off()
+                self._drop_planned_gas(range(3))
                 self._persist()
             except Exception as error:
                 self._fail(error)
@@ -585,7 +606,10 @@ class FurnaceService:
                     maximum=self.config.max_ramp,
                 ),
                 hold_minutes=self._number(
-                    step.get("hold_minutes", 0), f"step {index} hold time", minimum=0
+                    step.get("hold_minutes", 0),
+                    f"step {index} hold time",
+                    minimum=0,
+                    maximum=MAX_HOLD_MIN,
                 ),
             )
             if "gas" in step:
@@ -612,11 +636,15 @@ class FurnaceService:
 
     @_controlled
     def set_sequence(self, steps, *, end_gas=None, end_gas_until_c=None):
+        if self._sequence_running and end_gas is None and end_gas_until_c is None:
+            # An edit without an end plan must not drop the plan that stops the run's gas.
+            end_gas, end_gas_until_c = self._end_gas, self._end_gas_until_c
         validated, gas, until = self._validate_recipe(steps, end_gas, end_gas_until_c)
         if self._sequence_phase == "cooling":
             raise ValueError("Stop the cooling gas plan before replacing the sequence")
         if self._sequence_running:
             self._check_step_ramp(validated[min(self._sequence_index, len(validated) - 1)])
+        self._check_later_ramps(validated)
         self._steps, self._end_gas, self._end_gas_until_c = validated, gas, until
         if self._sequence_running and self._sequence_index >= len(validated):
             self._sequence_index = len(validated) - 1
@@ -637,6 +665,7 @@ class FurnaceService:
         self._connect()
         self._check_unlocked()
         self._check_step_ramp(recipe[0][0])
+        self._check_later_ramps(recipe[0])
         self._steps, self._end_gas, self._end_gas_until_c = recipe
         self._sequence_running = True
         self._sequence_index = 0
@@ -673,6 +702,18 @@ class FurnaceService:
     def _check_step_ramp(self, step):
         # Refuse before any write: a refused ramp must not lock the furnace.
         self._furnace.check_ramp_time(step["temperature_c"], step["ramp_rate_c_per_min"])
+
+    def _check_later_ramps(self, steps):
+        """Check later steps with the ramp that the controller will use after rounding.
+
+        Otherwise an accepted step can fail its check at the step change and lock the run.
+        """
+        if not self.connected:
+            return
+        _, _, scale = self._furnace.get_temperature_format()
+        for before, step in zip(steps, steps[1:]):
+            rate = self._furnace._raw_ramp_rate(step["ramp_rate_c_per_min"], scale) / scale
+            check_program_minutes(abs(step["temperature_c"] - before["temperature_c"]) / rate)
 
     def _signature(self):
         step = self._steps[self._sequence_index]
@@ -733,6 +774,7 @@ class FurnaceService:
                     self._mark_stopped()
                     self._apply_gas(self._end_gas)
 
+                self._cooling_started_wall = self.wall_clock()
                 self._transition(finish)
                 self._notifications.append("complete")
         elif (
@@ -790,6 +832,7 @@ class FurnaceService:
             gas_plan=self._gas_targets,
             end_gas=self._end_gas,
             end_gas_until_c=self._end_gas_until_c,
+            cooling_started_at=self._cooling_started_wall,
             orphan_time=self._orphan_started_wall,
             locked=self._locked,
             fault=self._fault,
@@ -806,8 +849,11 @@ class FurnaceService:
         ):
             raise StateError("Saved state requires acknowledgement")
         if state == 1:
-            # STOP never resumes a saved cooling plan or issues gas commands.
+            # STOP resumes only a saved end-gas plan. It sends no gas command: the poll
+            # applies idle gas when PV falls below the threshold or the plan times out.
             self._sequence_phase = "idle"
+            if isinstance(saved, dict) and saved.get("phase") == "cooling":
+                self._recover_cooling(saved)
             self._persist()
             return
         if state not in (0, 2) or not isinstance(saved, dict):
@@ -930,6 +976,35 @@ class FurnaceService:
         self._output_stopped = False
         self.events.add("info", "Resumed furnace state", phase=phase, target_c=target)
         self._persist()
+
+    def _recover_cooling(self, saved):
+        if (
+            saved.get("version") != 1
+            or saved.get("identity") != self._identity()
+            or saved.get("running") is not False
+        ):
+            raise StateError("Saved end-gas plan is incomplete or belongs to another configuration")
+        steps, end_gas, until = self._validate_recipe(
+            saved.get("steps"), saved.get("end_gas"), saved.get("end_gas_until_c")
+        )
+        if end_gas is None:
+            raise StateError("Saved cooling phase has no end-gas plan")
+        gas = self._gas_plan(saved.get("gas_plan"))
+        started = saved.get("cooling_started_at")
+        now = self.wall_clock()
+        if started is None or self._number(started, "Cooling start", minimum=0) > now:
+            started = now
+        self._steps, self._end_gas, self._end_gas_until_c = steps, end_gas, until
+        self._sequence_started_at = saved.get("sequence_started_at")
+        index = saved.get("index")
+        valid = type(index) is int and 0 <= index < len(steps)
+        self._sequence_index = index if valid else None
+        self._cooling_started_wall = started
+        self._gas_targets = gas
+        for channel, percent in gas.items():
+            self._flow_channels[("gas", GAS_UNIT_IDS[channel])]["target_percent"] = percent
+        self._sequence_phase = "cooling"
+        self.events.add("info", "Resumed end-gas plan", end_gas_until_c=until)
 
     def _check_unlocked(self):
         if self._locked:
@@ -1227,10 +1302,12 @@ class FurnaceService:
                 if self._sequence_running and self._snapshot["run_state_code"] == 1:
                     raise RuntimeError("Controller stopped before the planned sequence end")
                 self._advance_sequence(self._snapshot)
-                if (
-                    self._sequence_phase == "cooling"
-                    and self._snapshot["pv"] < self._end_gas_until_c
+                if self._sequence_phase == "cooling" and (
+                    self._snapshot["pv"] < self._end_gas_until_c
+                    or self.wall_clock() - self._cooling_started_wall >= COOLING_MAX_S
                 ):
+                    if self._snapshot["pv"] >= self._end_gas_until_c:
+                        self.events.add("warning", "End-gas plan timed out above its threshold")
                     self._sequence_phase = "complete"
                     self._transition(lambda: self._apply_gas(self.idle_gas))
                 if self._sequence_phase == "holding" and self.clock() - self._last_persist_at >= 60:
@@ -1271,17 +1348,20 @@ class FurnaceService:
     def _read_snapshot(self, *, track=True):
         values = self._furnace.get_current_values()
         pv = self._number(values["PV"], "Controller PV")
-        if track:
-            if (
-                self._furnace.pending_hold_target is not None
-                and self._furnace.get_program_step() == 2
-            ):
-                self._transition(
-                    lambda: self._furnace.update_temperature_change(
-                        current_pv=pv, tolerance_c=self.target_tolerance_c
-                    )
-                )
         state, name = self._furnace.get_run_state()
+        # Enter HOLD only from RUN: after a front-panel STOP, writing HOLD would restart heat.
+        if (
+            track
+            and state == 0
+            and self._furnace.pending_hold_target is not None
+            and self._furnace.get_program_step() == 2
+        ):
+            self._transition(
+                lambda: self._furnace.update_temperature_change(
+                    current_pv=pv, tolerance_c=self.target_tolerance_c
+                )
+            )
+            state, name = self._furnace.get_run_state()
         output_mode, output_name = self._furnace.get_output_mode()
         try:
             auxiliary = self._furnace.get_auxiliary_output_status()

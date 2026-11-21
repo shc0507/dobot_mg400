@@ -5,7 +5,7 @@
 [返回首页，选择操作入口](../README.md)
 
 本页说明真机控制的 TCP 协议和反馈判定。
-机器人服务和交互终端直接通过 TCP 接入控制器。
+机器人服务和模式切换工具直接通过 TCP 接入控制器。
 抓放步骤由 [配方编排](orchestrator.md) 的 `robot.pick`、`robot.transfer` 和 `vision.tray_transfer` 提供。
 日常操作请使用对应指南：
 
@@ -192,7 +192,7 @@ grep -rn -A 14 'func = geterrorid' "$MG400_LOG_DIR"
   保留原始时间，先比较同一控制器内的顺序和间隔。
   跨日志对齐前，核对时区和时钟偏差。
 
-查询当前报警码时，先在 Lab Console 下使能并释放机械臂，关闭交互终端，再独立连接 `29999` 调用 `GetErrorID()`。
+查询当前报警码时，先在 Lab Console 下使能并释放机械臂，再独立连接 `29999` 调用 `GetErrorID()`。
 服务轮询与外部查询可能互相断开连接。
 
 路径参考：[MG400 日志导出说明](https://techshare.co.jp/faq/dobot/mg400/support.html)。

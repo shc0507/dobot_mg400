@@ -26,7 +26,7 @@ This repository owns the migrated WuLab code and keeps its repository name. The 
 | `docs`, `docs/adr`, `docs/agents`, `tests` | Human guides, decisions, agent procedures, and offline tests |
 
 - Use 1 top-level package per area. Add each to the wheel's `packages` list. Add light dependency groups to `default-groups`. Keep `vision-gpu` outside default groups and CI.
-- Keep the robot core, robot panel, and `labkit.auth`, `labkit.lease`, `labkit.events`, `labkit.client` on the standard library.
+- Keep the robot core, robot panel, and `labkit.lease`, `labkit.events`, `labkit.client` on the standard library.
 - Move approved source files and their tests from the pinned source commits. Preserve behavior, use package imports, and port host paths and device access to Linux.
 - Replace desktop GUI functions with headless interfaces where specified. Exclude Windows binaries, model weights, virtual environments, and hardware scripts from tests.
 - Open no device, start no thread, and write no file at import time. Give every service `--demo`, except the robot service (it uses the simulator) and the camera preview.

@@ -54,7 +54,7 @@ bool readRegisters(uint8_t reg, uint8_t *data, uint8_t length) {
   return true;
 }
 
-void sample(Axis &axis) {
+bool sample(Axis &axis) { // True only for a fresh sample.
   Wire.beginTransmission(EncoderConfig::MuxAddress);
   Wire.write(static_cast<uint8_t>(1U << axis.channel));
   bool ok = Wire.endTransmission() == 0;
@@ -70,12 +70,14 @@ void sample(Axis &axis) {
   }
   const unsigned long now = millis();
   if (!ok) {
-    // Keep the baseline: the next good sample checks the gap (MaxGapMs) and keeps
-    // trust only when continuity is provable. One failed transaction is not lost tracking.
+    // One failed transaction neither loses tracking nor stops motion: keep the last good
+    // sample. get() reports untrusted when it is older than MaxGapMs; a later good sample
+    // keeps trust only when continuity is provable.
+    if (axis.baseline && now - axis.sampledAt <= EncoderConfig::MaxGapMs) return false;
     axis.online = false;
     axis.velocity = 0;
     if (!axis.baseline) axis.trusted = false; // Offline at start-up: clear before use.
-    return;
+    return false;
   }
   const uint16_t raw = (static_cast<uint16_t>(angle[0] & 0x0F) << 8) | angle[1];
   axis.online = true;
@@ -111,6 +113,7 @@ void sample(Axis &axis) {
   axis.raw = raw;
   axis.sampledAt = now;
   axis.baseline = axis.magnet;
+  return true;
 }
 }
 
@@ -155,8 +158,8 @@ Reading get(uint8_t index) {
 
 bool refresh(uint8_t index) {
   if (index >= 3) return false;
-  sample(axes[index]);
-  return get(index).health == Health::Ok;
+  // Retry one failed transaction; never accept the previous sample as fresh.
+  return (sample(axes[index]) || sample(axes[index])) && get(index).health == Health::Ok;
 }
 
 bool zeroFromSample(uint8_t index, long sampledCounts) {
@@ -174,8 +177,7 @@ bool resetPosition(uint8_t index) {
 bool recover(uint8_t index, bool allowRebase) {
   Axis &axis = axes[index];
   // Take a new hardware sample before accepting a clear; never trust cached health.
-  sample(axis);
-  if (!axis.online || !axis.magnet) return false;
+  if (!sample(axis) || !axis.magnet) return false;
   if (!axis.trusted && !allowRebase) return false;
   if (!axis.trusted) axis.counts = 0;
   axis.trusted = true;

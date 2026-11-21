@@ -31,6 +31,8 @@ from .sim import FurnaceSerial, MFCSerial
 from .state import StateStore
 
 STOP_RETRY_S = 0.25
+# A state read waits at most this long for the operation lock, then returns the last state.
+STATE_WAIT_S = 0.5
 
 
 class FurnaceWebService:
@@ -149,7 +151,8 @@ class FurnaceWebService:
         )
 
     def status(self):
-        value = self.lifecycle.status()
+        # A state read must not wait seconds behind a stop: return the last state then.
+        value = self.lifecycle.status(wait=STATE_WAIT_S)
         value["demo"] = self.demo
         if self._startup_error and not value["connected"]:
             value["error"] = self._startup_error

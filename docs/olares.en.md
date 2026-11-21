@@ -246,14 +246,13 @@ The bus and device numbers can change. Let libusb or the SDK find the camera.
 The installer selects `config/udev/70-mg400-<name>.rules.in` only for registered, enabled services.
 It replaces `@SERVICE_GROUP@` with the group name for GID `1000`, from the host group database.
 Each rule matches a VID:PID and grants `MODE="0660"` to that group.
-Serial rules also match the recorded device serial number. Camera rules preserve the existing port-based names.
+Serial rules also match the recorded device serial number and set `ENV{ID_MM_DEVICE_IGNORE}="1"`. Thus ModemManager does not probe these serial ports. Its AT probe bytes corrupt the next firmware command. Camera rules preserve the existing port-based names.
 The thermal rule matches the recorded P1 serial number as a prefix. The P1 adds non-printing bytes after its serial number, and udev compares the whole value.
 The templates create no new device aliases and run no reset helper.
 
 The installer writes `/etc/udev/rules.d/70-mg400-<name>.rules` as root with mode `0644`.
-It then runs `udevadm control --reload-rules` and `udevadm trigger --subsystem-match=usb`.
-The USB trigger does not reset a hub or start a service.
-TTY and video permissions apply on their next udev event. Existing service access through `dialout` and `video` remains available.
+It then runs `udevadm control --reload-rules` and `udevadm trigger --action=change --subsystem-match=usb --subsystem-match=tty --subsystem-match=video4linux`.
+The change event applies the new rules to the connected USB, TTY, and video device nodes. It does not reset a hub or start a service.
 Use the installer dry run to inspect the selected files and commands before installation.
 
 The default services select the `stage`, `camera`, `furnace`, and `microscope` templates.
@@ -378,7 +377,7 @@ Before you install it, make sure that the host has `dkms` and the `linux-headers
 Limits:
 
 - DKMS builds the module again for each new kernel of the same series. When the host starts a kernel of a different series, it uses the stock driver and ignores `mjpeg_bpp`. Then run the script again.
-- If the build fails, the script removes its DKMS package. The stock driver stays.
+- If the build fails, the script removes the new DKMS package. The installed driver stays. The script removes older patched versions only after the new version builds.
 - On 1 shared USB 2 link, 4 streams at `1920x1080@30` are near the link limit. Do not use this configuration on that link.
 
 ### Camera failures

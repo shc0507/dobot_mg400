@@ -126,6 +126,9 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 完整自动调焦扫描使用以实测行程内部为中心的窗口。
 局部扫描使用靠近当前位置的较小窗口。
 避让位置位于行程端点时，服务先把扫描中心移到限位内。
+对焦评分平坦，或最佳评分位于窗口边缘且该边缘不是对焦限位时，自动调焦失败。此失败不锁定服务，并保留零点。
+第 2 种情况下，峰值可能在局部窗口之外。此时运行完整自动调焦。
+录像期间，自动调焦不改变防抖设置。
 快照在运行根目录内新建 PNG。目标已存在时，服务在派发前以 HTTP 400 拒绝。
 返回的 `captured_at` 保留源时钟。真实和演示主相机帧都使用主机墙上时间。侧视相机帧使用单调接收时间。
 这些值不代表传感器曝光时间。
@@ -226,7 +229,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 `time_lapse` 默认每隔 30 秒采集一帧，输出帧率为每秒 1 帧。
 `live` 默认输出帧率为每秒 30 帧，没有采集间隔。
 显式 `capture_interval_seconds` 范围为 0.1 至 3600，显式 `output_fps` 范围为 0.1 至 120。
-`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 128 个分段时失败。
+`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 1024 个分段（约 170 小时）时失败。
 
 读取 `recording`、`recording_sequence`、`last_result` 和匹配的 `last_command` 回执。
 报告成功前，检查录像 ID、命令 ID、动作、客户端和预期结果。
@@ -253,7 +256,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
 服务日志记录每次录像失败的原因，用 `labctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
-每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、60 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
+每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、10 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
 设置 `MG400_FURNACE_ARCHIVE_DIR` 时，收尾把该目录复制到 `<archive>/<recording_id>/`，不替换已有副本。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。
@@ -318,7 +321,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ## 侧视相机流
 
-显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
+显微镜侧视相机为固定集线器端口 `6.1` 上的 AC410，拍摄物镜转盘。
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 `select_objective` 运行期间，`USBCamera` 保持 1 个到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。

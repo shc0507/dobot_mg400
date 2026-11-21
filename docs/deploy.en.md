@@ -35,7 +35,6 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/usr/local/lib/mg400/caddy` | Caddy 2 proxy program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
 | `/usr/local/bin/labctl` | Routine command tool, linked to `/opt/mg400/deploy/labctl` | None |
-| `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
 
 All services run as the user and group with numeric ID `1000`.
 Service definitions are in `config/systemd/` and are installed in `/etc/systemd/system/`:
@@ -135,7 +134,7 @@ The installer works in this order:
    If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions and reload systemd.
-9. Create the `labctl` link and remove an old `labctl` link.
+9. Create the `labctl` link and remove an old `mg400ctl` link.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
@@ -169,6 +168,7 @@ The script applies these update rules:
 - If only static console JavaScript/CSS changes, do not restart services.
 - If backend code or templates change, restart `mg400-twin-test`.
 - Restart `mg400-camera-preview.service` for camera code or dependency changes only when the override below is active and verified.
+  This restart also stops go2rtc and all camera streams, including the microscope side stream. Deploy such a change only when no microscope or vision work is active.
 
 The script preserves the calibration profile and run data directories.
 After deployment, the script checks service health. It does not run tests.
@@ -459,7 +459,8 @@ Their inner double quotes remain literal. Escapes, apostrophes, control characte
 See [furnace configuration](furnace.en.md#configuration) for syntax and process limits.
 Each time it runs, the installer restores this file's owner to `root:root` and permissions to `0600`.
 
-The file contains only hardware facts. Bind addresses, ports, base paths, and service URLs are fixed defaults in the code and the units.
+The file contains only hardware facts. Bind addresses, ports, and service URLs are fixed defaults in the code and the units.
+Data paths are defaults in the code. Some services still accept path overrides, for example `MG400_ORCH_TOOL_FILE`. Do not set path overrides in this file.
 All services listen on `127.0.0.1`. From the VPN, only the proxy port `8080` is open. The VPN is the access boundary, and the services do not check tokens.
 The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console uses the base path `/lab/`.
 
@@ -544,7 +545,7 @@ When the robot service stops or restarts, it can take up to approximately 60 sec
 
 ## Panel connection lock
 
-The robot service, interactive terminal, and mode-switch tool acquire a file lock before connecting to the robot.
+The robot service and the mode-switch tool acquire a file lock before connecting to the robot.
 The robot service's read-only mode also uses this lock.
 If another program holds the lock, a new connection returns `Robot controlled by another panel`, and `Disable` is refused.
 `Stop` and STOP ALL then still send 1 `ResetRobot()`, but they do not check rest, and the result is unconfirmed. The robot service locks control. When the lock is free, start sync and click Recover.
@@ -557,7 +558,6 @@ All programs must use the same robot address and the lock directory `/var/lib/mg
 This directory is fixed in code. It must support operating-system file locks.
 All programs run as UID 1000. Lock file permissions are `0600`.
 When running as root, the program refuses lock directories not owned by root.
-If an existing lock file has a different owner, the program changes its owner in place and preserves the original file.
 
 Do not remove lock files to release ownership. When a process exits, the operating system releases the locks that process holds.
 A process exit does not confirm that the robot stopped.
@@ -566,7 +566,7 @@ This lock does not restrict DobotStudio or other hosts. Close other control prog
 ## Backup
 
 `labctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
-It excludes only `/var/lib/mg400/locks`, which contains process connection locks.
+It excludes `/var/lib/mg400/locks`, which contains process connection locks, and `/var/lib/mg400/twin-test`, the test Console deploy state.
 It also preserves furnace state and `.state.json.lock` under `/var/lib/mg400/furnace`.
 
 Stop services and other data writers before a backup, as the migration steps below specify.

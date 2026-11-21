@@ -401,7 +401,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 | `camera` | 已配置的相机编号。该相机必须有稳定端口路径和已安装的校准模型。 |
 | `tray` | 通过校验的托盘模型文档，不是主机文件路径。 |
 | `targets` | 请求的槽位 ID，以及各槽位准确的示教机器人 XY 对。值为 `null` 时，该槽位没有示教工位，只检查芯片。 |
-| `axis` | 按显式吸取约定选择 `long` 或 `short`。 |
+| `axis` | 按显式吸取约定选择 `long` 或 `short`。只有所有目标都没有示教工位时（吸盘拾取），才使用 `null`。此时每个 `angle_deg` 为 `null`，方形芯片也可接受。 |
 
 完整 JSON 命令不得超过 16 KiB。托盘文件有效，不代表完整命令符合大小限制。
 每次观测使用 1 个当前帧和绑定该相机的校准模型。
@@ -410,7 +410,8 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 数据缺失或芯片归属含糊，不能证明槽位为空。
 请求的整条槽道必须位于检测区域（居中的 4:3 裁剪区域）内。机械臂遮挡或芯片掩模截断时，无法得到确证。
 请求槽道的芯片证据不得与另一条已配置槽道重叠。
-掩模边长之差不超过长边的 1% 时，轴方向含糊。
+芯片归属按槽道宽度判断，不加 `tolerance_mm`。槽道可见性和机械臂遮挡按槽道宽度加 `tolerance_mm` 判断。
+`axis` 为 `long` 或 `short` 时，如果掩模边长之差不超过长边的 1%，轴方向含糊。
 
 输出包含 `camera`、`camera_device`、`calibrated`、`image_size`、`model_created_at`、`frame_sha256`、`read_at` 和 `axis`。
 每个槽位报告 `state`、`center_xy_mm`、`angle_deg` 和 `reason`。位置和角度可以为空。
@@ -463,6 +464,8 @@ cross_check_slots(location, *, taught_stations, chips,
 
 函数先通过相机模型映射实测中心，再按配置的托盘几何拟合相似变换。
 任一角点残差超过 `tolerance_mm` 时，定位失败。
+拟合比例使距角点质心最远的角点移动超过 `tolerance_mm` 时，定位也失败。对所提供的 TOML，4 个角点均测得时，比例限制约为 1 ± 1.9%。
+比例误差说明托盘模型或校准的托盘高度有误。新托盘使托盘表面高度改变时，重新校准相机。
 它返回变换、实测标记残差，以及采用 `robot_xy_mm` 坐标的 `slots`。
 每个槽位包含 `centerline_xy_mm`、`reference_xy_mm`，以及变换后的 `width_mm`。
 输出只提供 XY 几何，不确定物理 Z 或安全机器人路径。
@@ -506,6 +509,7 @@ cross_check_slots(location, *, taught_stations, chips,
 每个槽位的 `status` 为 `ok`、`incomplete` 或 `failed`，并提供 `missing` 和 `failures` 详情。
 只有全部槽位通过时，结果的 `ok` 才为真。
 检查不完整或失败时，抛出 `TrayCheckError`。通过 `TrayCheckError.report` 查看完整的逐槽位报告。
+`observe_slots` 的错误消息列出每个未通过的槽位，以及其失败项、缺失证据和残差。
 不得把不完整证据视为运动许可。常规机器人限位、避让检查、租约和区域规则仍然适用。
 
 ## 停止与退出

@@ -433,3 +433,32 @@ def test_upper_search_timeout_starts_after_lower_search_finishes(stage_rig):
     controller.poll()
     assert axis(controller)["calibration"] == "failed" and axis(controller)["fault"] == "timeout"
     assert axis(controller)["lower_limit_set"] and not axis(controller)["upper_limit_set"]
+
+
+def test_calibration_start_warns_that_it_clears_manual_limits(stage_rig):
+    controller, transport, _ = stage_rig
+    state = transport.motors["bottom"]
+    state.lower_limit, state.upper_limit = -0.25, 0.5
+    state.lower_limit_set = state.upper_limit_set = True
+    controller.calibrate("bottom", 0.25)
+    events = controller.snapshot()["events"]
+    assert any(
+        event["level"] == "warning" and "cleared the travel limits" in event["message"]
+        for event in events
+    )
+
+
+def test_reconnect_after_an_arduino_reset_warns_that_limits_are_gone(stage_rig):
+    controller, transport, _ = stage_rig
+    state = transport.motors["bottom"]
+    state.lower_limit, state.upper_limit = -0.25, 0.5
+    state.lower_limit_set = state.upper_limit_set = True
+    controller.poll()
+    controller.disconnect()
+    # Opening the port resets the Arduino: limits and calibration are gone.
+    state.lower_limit = state.upper_limit = None
+    state.lower_limit_set = state.upper_limit_set = False
+    controller.connect("DEMO")
+    warnings = [e for e in controller.snapshot()["events"] if e["level"] == "warning"]
+    assert warnings and "Bottom" in warnings[0]["message"]
+    assert "cleared the travel limits" in warnings[0]["message"]

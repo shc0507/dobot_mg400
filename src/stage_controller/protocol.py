@@ -608,7 +608,9 @@ class SerialTransport:
     def _drain_available(self):
         try:
             count = self.serial.in_waiting
-            if count > 8192:
+            # Linux reports at most 4095 bytes for a tty; a full buffer means the
+            # USB bridge drops bytes and the queued frames are stale.
+            if count >= 4000:
                 raise LinkError("Arduino telemetry backlog is too large to trust. Reconnect.")
             if count:
                 self._feed(self.serial.read(count))

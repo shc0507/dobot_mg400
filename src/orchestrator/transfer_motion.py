@@ -41,6 +41,17 @@ def coordinates(state):
     }
 
 
+def reached(axis, target, slack_counts=0):
+    """Compare whole encoder counts with the target that the firmware rounds to.
+
+    slack_counts covers the start sample of a relative move (encoder noise)."""
+    if not finite(axis.get("tolerance")) or not finite(axis.get("position_rotations")):
+        return False
+    counts = round(axis["position_rotations"] * 4096)
+    goal = math.floor(target * 4096 + 0.5)
+    return abs(counts - goal) <= max(round(axis["tolerance"] * 4096), 1) + slack_counts
+
+
 def target_ready(state, motor, target):
     """Use board readiness and bounds; never estimate encoder distance from pulses."""
     axis = motors(state).get(motor, {})

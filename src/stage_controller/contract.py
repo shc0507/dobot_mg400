@@ -26,6 +26,18 @@ from .protocol import (
     LinkError,
 )
 
+# Firmware EncoderNoiseCounts: the spread of one encoder sample.
+ENCODER_NOISE_COUNTS = 2
+
+
+def _counts(rotations):
+    return round(rotations * ENCODER_COUNTS_PER_ROTATION)
+
+
+def _rounded_counts(rotations):
+    """Round like the firmware: floor(rotations * 4096 + 0.5)."""
+    return math.floor(rotations * ENCODER_COUNTS_PER_ROTATION + 0.5)
+
 
 class StageContract:
     def _init_contract(self):
@@ -92,7 +104,7 @@ class StageContract:
             ),
             "keepalive": spec(dict(motor=motor, hold_id=hold_id)),
             "release_hold": spec(dict(motor=motor, hold_id=hold_id)),
-            "stop_all": spec({}, any_client=True),
+            "stop_all": spec({}, any_client=True, recovery=True),
             "set_microstep": spec(stepping),
             "set_microstep_guarded": spec({**stepping, "stop_epoch": epoch}),
         }
@@ -154,12 +166,8 @@ class StageContract:
             reached = healthy and (
                 state.calibration == "done"
                 if entry["action"] == "calibrate"
-                else math.isclose(
-                    state.position,
-                    entry["target"],
-                    rel_tol=0,
-                    abs_tol=max(state.tolerance, 1 / ENCODER_COUNTS_PER_ROTATION),
-                )
+                else abs(_counts(state.position) - entry["target_counts"])
+                <= max(_counts(state.tolerance), 1) + entry["slack_counts"]
             )
             self._finish_command(
                 entry,
@@ -245,11 +253,21 @@ class StageContract:
                 raise
             if operation in ("move", "move_to_position", "calibrate"):
                 state = self._motors[args["motor"]]
-                target = args.get("position", state.position + state.remaining)
+                # Compare whole counts with the target that the firmware computes:
+                # it rounds the request to the nearest count. A relative move
+                # starts from the firmware's own encoder sample, which can differ
+                # from the host's last reading by the encoder noise.
+                if operation == "move_to_position":
+                    target, slack = _rounded_counts(args["position"]), 0
+                else:
+                    step = _rounded_counts(abs(state.remaining))
+                    target = _counts(state.position) + (step if state.remaining >= 0 else -step)
+                    slack = ENCODER_NOISE_COUNTS
                 self._pending_commands[entry["id"]] = {
                     **entry,
                     "motor": args["motor"],
-                    "target": target,
+                    "target_counts": target,
+                    "slack_counts": slack,
                 }
                 self._last_command = {
                     **entry,
@@ -268,6 +286,7 @@ class StageContract:
         deadline = time.monotonic() + wait_s
         with self._lock:
             self._stop_epoch += 1
+            self._stopped_at = self.clock()
             if self._transport is None:
                 if any(self._motor_busy(motor) for motor in self._motors.values()):
                     self._lock_unconfirmed_stop()

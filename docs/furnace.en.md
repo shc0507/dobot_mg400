@@ -120,6 +120,8 @@ The gas area shows the measured percent of each gas. Without readback, it shows 
 `set_gas_valve` with `open: true` sends full-scale flow (`100` %). `open: false` is the same as a stop of that channel.
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
 A transport or invalid-reply failure locks control. **Stop all gas** and `POST /api/stop` remain available.
+A failed controller read in the 1 s poll locks control only when `3` polls in a row fail. While the furnace is locked, the poll still reads PV, SV, and run state.
+After a gas channel gives no flow reply, the service does not read it again after each write. `inspect_gas_flow` reads it again.
 Check physical flow and use independent isolation when required.
 
 ## Microscope recording
@@ -166,6 +168,8 @@ Without a gas controller, or without gas readback, a stop remains unconfirmed.
 If a stop command fails on an open port, the service closes the port, opens it again, and sends the stop 1 more time. This covers a USB adapter reset. Automatic stops after a fault also do this.
 If the stop still fails, the furnace stays locked and the service repeats the stop every 5 s until heat and gas stop, for example when a removed adapter returns. Acknowledgement ends the repeats.
 A gas channel shows a target of 0 % only after the controller accepts the zero setpoint.
+A stop that arrives while another stop runs waits for it and returns its result. It does not send the commands again.
+If a stop arrives while a command waits for the lease or the operation lock, the service refuses the command with `409`. Send it again after the stop.
 Stop is available regardless of lease ownership or expiry failure. The JSON, `X-MG400-Client`, and body-format checks still apply.
 
 Before host maintenance, coordinate shutdown with all clients.

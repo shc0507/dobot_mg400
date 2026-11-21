@@ -110,7 +110,7 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 - If the browser or the host cannot play H.264, camera1 to camera4 load MJPEG from `/camera/<view>.mjpeg`. The camera preview sends each viewer only the newest frame. Wall and rail views get at most 3 frames a second, and the large view at most 6.
 - **Snapshot** on camera1 to camera4 downloads a `4000x3000` JPEG from `/camera/<view>.full.jpg`. A camera with a mode above `1280x720` uses its own mode. This mode change temporarily pauses other camera streams and restores them afterward. Only 1 still runs at a time.
 - The console relays the thermal frame. If the microscope view cannot play H.264, it uses `/camera/microscope.mjpeg`. Its **Snapshot** downloads a lossless `2592x1944` PNG from `/camera/microscope.png`. It needs no control.
-- While a microscope job runs, **Snapshot** on camera3 returns `409`, because an objective switch reads the side stream.
+- While a microscope job runs, **Snapshot** on camera1 to camera4 returns `409`. Each still pauses the side stream, and an objective switch reads the side stream.
 - The microscope proxy sends only the newest complete frame. Wall and rail views get at most 10 frames a second, and the large view at most 30.
 - Browser previews stop when you leave the workspace, hide the browser tab or close the page. Preloaded camera capture continues.
 - You can switch each overlay on or off: the chip detection boxes on camera 4, and the thermal minimum, maximum and center markers with the colour bar.

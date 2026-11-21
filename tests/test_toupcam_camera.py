@@ -375,6 +375,34 @@ def test_live_recording_and_disk_limit_stop_recording_without_stopping_feed(tmp_
         assert camera.get_frame_packet(after_id=2)[0] == 3
 
 
+def test_failed_recording_close_after_a_write_error_keeps_the_feed(tmp_path, monkeypatch):
+    writer = Writer()
+    monkeypatch.setattr("toupcam_camera.camera.cv2.VideoWriter", lambda *args: writer)
+    sdk = FakeSDK()
+    with MicroscopeCamera(0, (2, 2), stabilization=False, capture_factory=sdk.capture) as camera:
+        sdk.handles[-1].emit(1)
+        camera.get_frame_packet()
+        camera.start_recording(tmp_path / "video.mp4", minimum_free_gb=None)
+        session = camera._recording
+        close = session.close
+        close_error = OSError(28, "No space left on device")
+
+        def failed_write(*args):
+            raise OSError(28, "No space left on device")
+
+        def failed_close():
+            close()
+            raise close_error
+
+        monkeypatch.setattr(session, "write", failed_write)
+        monkeypatch.setattr(session, "close", failed_close)
+        sdk.handles[-1].emit(2)
+        wait_until(lambda: camera.recording_error is close_error)
+        assert not camera.is_recording and camera.last_error is None
+        sdk.handles[-1].emit(3)
+        assert camera.get_frame_packet(after_id=2)[0] == 3
+
+
 def test_duplicate_recording_request_does_not_truncate_active_metadata(tmp_path, monkeypatch):
     writers = []
 

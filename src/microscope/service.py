@@ -65,6 +65,9 @@ NUDGE_SPEED = 40
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.
 PREVIEW_SIZE = (1296, 972)
+# A crash before VideoWriter.release() loses the open segment: keep segments short.
+RECORDING_SEGMENT_MINUTES = 10
+MAX_RECORDING_SEGMENTS = 1024
 # Camera-only commands. Motor faults and motor stops do not cancel them.
 RECORDING_ACTIONS = (
     "start_recording",
@@ -951,7 +954,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 video,
                 fps=recording.options["output_fps"],
                 timestamps_path=video.with_suffix(".timestamps.csv"),
-                segment_minutes=60,
+                segment_minutes=RECORDING_SEGMENT_MINUTES,
                 minimum_free_gb=recording.options["minimum_free_gb"],
                 metadata_provider=lambda: self._recording_metadata(recording),
                 metadata_fields=FRAME_METADATA_FIELDS,
@@ -978,7 +981,7 @@ class MicroscopeService(TurretCalibrationMixin):
                     or not self._camera.is_recording
                 ):
                     raise RuntimeError("Camera recording stopped unexpectedly")
-                if len(self._camera.recording_segments) > 128:
+                if len(self._camera.recording_segments) > MAX_RECORDING_SEGMENTS:
                     raise RuntimeError("Recording segment limit reached")
                 if recording.sequence:
                     sequence = self._readings.snapshot().get("sequence")
@@ -1004,7 +1007,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._camera.recording_error
                 or getattr(self._camera, "last_error", None)
                 or not recording.data["frame_count"]
-                or not 1 <= len(segments) <= 128
+                or not 1 <= len(segments) <= MAX_RECORDING_SEGMENTS
                 or len(set(segments)) != len(segments)
                 or any(not re.fullmatch(r"video_[0-9]{4}\.mp4", name) for name in segments)
             ):

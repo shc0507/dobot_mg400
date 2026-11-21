@@ -17,7 +17,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
 - 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
-- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。
+- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 
 ## 命令
 
@@ -79,7 +79,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
-- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。
+- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。用 `POST /lab/api/runs/<run_id>/abort` 终止该运行。HTTP 路由见 [配方编排器](orchestrator.md)。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
@@ -99,7 +99,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 使用默认 `--url` 时，每次停止还直接发到回环上的服务，因此控制台停机时也有效。使用其他 `--url` 时，停止只经过该控制台。
 
-没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot disable`，或控制台中的 **Recover** 恢复。
+没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot clear-alarm`，或控制台中的 **Recover** 恢复。
 
 ## 输出和退出码
 

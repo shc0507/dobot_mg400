@@ -39,19 +39,14 @@ On the robot card of the Motion workspace, use this sequence:
 
 Each jog adds 1 step on one axis to the measured pose. The step unit is mm for X/Y/Z and degrees for R.
 Coordinates use the base frame and flange origin (`User=0,Tool=0`).
-The console checks that the fingertip target is in the workspace. Then it sends 1 `execute` command and does not retry.
-See [Lab Console](dashboard.en.md) for the workspace bounds and tool offset.
-The service then checks the target with the controller's inverse kinematics and the existing joint range checks.
+The console sends 1 `execute` command with no bounds check and does not retry.
+The service checks the target with the controller's inverse kinematics and the existing joint range checks.
 
 Clients can supply an integer `speed` with the `execute` command. The console speed input sets this value.
 The speed cap is fixed at `20`. The service rejects values above the cap with 400.
 The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
 The acceleration cap is fixed at `20`.
-Without `speed`, the command remains `SpeedL=1,AccL=1`, even with higher caps.
-
-Both settings default to 1 and accept integers from 1–100. Empty settings also use 1.
-Set them in `/etc/mg400/mg400.env`. Restart the service after a change.
-Invalid settings prevent startup.
+Without `speed`, the command remains `SpeedL=1,AccL=1`.
 
 The `home` command moves J1–J4 to 0° with `SpeedJ=5,AccJ=5`.
 The speed caps do not change `home` or the global `SpeedFactor`.

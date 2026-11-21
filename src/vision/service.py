@@ -721,17 +721,23 @@ class VisionService:
             "cancel": threading.Event(),
         }
         result, image, outcome, error = self._infer(job)
-        if outcome == "failed":
-            # A detection preview polls every second, so only a failure is an event.
-            self.events.add(
-                "error", "vision inference failed", action=action, camera=camera, result=outcome
-            )
-        if error is not None:
-            raise error
         with self._lock:
-            if self._connected is not True or self._fault is not None:
+            # A detection preview polls every second, so only a new failure cause is an event.
+            if outcome == "failed" and error.message != self._failure_message:
+                self.events.add(
+                    "error",
+                    "vision inference failed",
+                    action=action,
+                    camera=camera,
+                    result=outcome,
+                    error=error.message,
+                )
+            self._failure_message = error.message if outcome == "failed" else None
+            if outcome == "ok" and (self._connected is not True or self._fault is not None):
                 self._connected, self._fault = True, None
                 self._seq += 1
+        if error is not None:
+            raise error
         if annotated:
             encoded = io.BytesIO()
             image.save(encoded, format="JPEG")

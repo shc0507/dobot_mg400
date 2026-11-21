@@ -109,6 +109,30 @@ def test_constructor_failure_is_reported_as_error(monkeypatch):
         service.disconnect()
 
 
+def test_connect_command_reports_the_open_result(monkeypatch):
+    def missing():
+        raise RuntimeError("P1 not found")
+
+    monkeypatch.setattr("thermal_cam.service.diagnose", lambda: {"device_found": False})
+    service = CameraService(camera_factory=missing)
+    try:
+        ident = service.contract_command("connect", {}, "lab-console")
+        wait_until(lambda: service.snapshot()["last_command"]["result"] != "running")
+        last = service.snapshot()["last_command"]
+        assert (last["id"], last["result"]) == (ident, "failed")
+        assert "P1 not found" in last["message"]
+    finally:
+        service.disconnect()
+    demo = CameraService(demo=True)
+    try:
+        ident = demo.contract_command("connect", {}, "lab-console")
+        wait_until(lambda: demo.snapshot()["last_command"]["result"] != "running")
+        assert demo.snapshot()["last_command"]["result"] == "ok"
+        assert demo.status()["state"] == "streaming"
+    finally:
+        demo.disconnect()
+
+
 def test_disconnect_failure_invalidates_frame_and_rejects_queued_command():
     reading = threading.Event()
     unplug = threading.Event()

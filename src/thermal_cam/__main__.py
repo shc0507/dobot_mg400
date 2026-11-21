@@ -80,7 +80,10 @@ def main():
             base_path=prefix or "/",
             regions=regions,
         )
-        server = uvicorn.Server(uvicorn.Config(app, host=host, port=args.port, workers=1))
+        # The console cache polls 5 times per second: log errors only, not each request.
+        server = uvicorn.Server(
+            uvicorn.Config(app, host=host, port=args.port, workers=1, access_log=False)
+        )
         try:
             server.run(sockets=[listener])
         except KeyboardInterrupt:

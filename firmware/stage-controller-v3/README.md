@@ -61,6 +61,6 @@ arduino-cli compile --fqbn arduino:avr:uno firmware/stage-controller-v3
 python firmware/stage-controller-v3/tests/run.py --library /path/to/AccelStepper
 ```
 
-原生检查使用模拟电机、编码器和开关编译实际草图，不会刷写硬件。它需要 `long` 为 32 位的 C++ 编译器（与 AVR 相同），例如 g++ 加 `--compiler-arg=-m32`。CI 每次运行都用 AccelStepper 1.64.0 执行原生检查。Uno 的剩余闪存与 RAM 很少，每次修改后须检查两者大小。原生检查不能验证电气行为、机械间隙或负载下的精度。
+原生检查使用模拟电机、编码器和开关编译实际草图，不会刷写硬件。它需要 `long` 为 32 位、`float` 运算为 32 位的 C++ 编译器（与 AVR 相同）。例如，通过 `--compiler-arg` 给 g++ 传入 `-m32 -msse2 -mfpmath=sse`。CI 每次运行都用 AccelStepper 1.64.0 执行原生检查。Uno 的剩余闪存与 RAM 很少，每次修改后须检查两者大小。原生检查不能验证电气行为、机械间隙或负载下的精度。
 
 刷写前停止位移台服务并关闭所有串口监视器。确认目标板和端口后再刷写。连接与操作见[位移台指南](../../docs/stage-panel.md)。

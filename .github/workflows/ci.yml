@@ -63,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install a 32-bit compiler
-        # The checks need a 32-bit long, as on the AVR.
+        # The checks need a 32-bit long and 32-bit float math, as on the AVR.
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends g++-multilib
       - name: Download AccelStepper
         run: |
@@ -71,4 +71,4 @@ jobs:
           echo "45d152991271f8480bc939a7f325e006bfa3695a865eda383770bb68f0140e05  $RUNNER_TEMP/accel.zip" | sha256sum -c
           unzip -q "$RUNNER_TEMP/accel.zip" -d "$RUNNER_TEMP"
       - name: Run the checks
-        run: python3 firmware/stage-controller-v3/tests/run.py --library "$RUNNER_TEMP/AccelStepper-1.64.0" --compiler-arg=-m32
+        run: python3 firmware/stage-controller-v3/tests/run.py --library "$RUNNER_TEMP/AccelStepper-1.64.0" --compiler-arg=-m32 --compiler-arg=-msse2 --compiler-arg=-mfpmath=sse

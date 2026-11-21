@@ -230,8 +230,8 @@ The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
 The acceleration cap is `20`.
 Both caps are fixed in `apps/control_panel/server.py`.
 
-Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
-These settings do not change `home`, `SpeedFactor`, or keyboard jogging.
+Without `speed`, the wire command remains `SpeedL=1,AccL=1`.
+The caps do not change `home`, `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: a stop or disable is unconfirmed, the controller reports no alarm, and feedback is fresh.

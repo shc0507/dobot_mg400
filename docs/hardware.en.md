@@ -155,7 +155,7 @@ import os
 from pathlib import Path
 from smb.SMBConnection import SMBConnection
 
-robot_ip = "192.168.1.6"  # 与 config/robot.toml 保持一致
+robot_ip = "192.168.1.6"  # keep the same as config/robot.toml
 output = Path(os.environ["MG400_LOG_DIR"])
 connection = SMBConnection(
     "", "", "mg400logreader", "MG400",

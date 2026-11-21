@@ -53,6 +53,7 @@ bool noisy[3] = {};
 bool checkPhysicalBounds[3] = {};
 double testLower[3] = {}, testUpper[3] = {};
 bool shortRaw[3] = {}, shortStatus[3] = {};
+int failRaw[3] = {}, failRawEvery[3] = {}; // Next N, or every Nth, RAW read is short.
 uint8_t statusOverride[3] = {255,255,255};
 uint8_t registerPointer[3] = {};
 unsigned int rawRequests[3] = {}, statusRequests[3] = {};
@@ -173,7 +174,10 @@ uint8_t FakeWire::requestFrom(uint8_t address,uint8_t length) {
   if(first==0x0B && length==1) ++statusRequests[axis];
   if(first==0x0C && length==2) ++rawRequests[axis];
   readLength=length;
-  if((first==0x0B && shortStatus[axis]) || (first==0x0C && shortRaw[axis]))
+  const bool failRead=first==0x0C && length==2 &&
+      (failRaw[axis]>0 || (failRawEvery[axis] && rawRequests[axis]%failRawEvery[axis]==0));
+  if(failRead && failRaw[axis]>0) --failRaw[axis];
+  if((first==0x0B && shortStatus[axis]) || (first==0x0C && shortRaw[axis]) || failRead)
     --readLength;
   // Real register-pointer behavior instead of manufacturing STATUS+angle bytes
   // for every request. Starting a RAW word at 0x0C loops that two-byte word.
@@ -217,7 +221,7 @@ void reset() {
     online[i]=magnet[i]=true; inverted[i]=(i!=0); jammed[i]=false; dropEvery[i]=0;
     wallSide[i]=0; translator[i]=0; homeOnWake[i]=false; snapAtUs[i]=snapAtPulse[i]=0; pendingSnap[i]=0;
     noisy[i]=false; checkPhysicalBounds[i]=false;
-    shortRaw[i]=shortStatus[i]=false; registerPointer[i]=0;
+    shortRaw[i]=shortStatus[i]=false; registerPointer[i]=0; failRaw[i]=failRawEvery[i]=0;
     rawRequests[i]=statusRequests[i]=0;
     statusOverride[i]=255;
   }
@@ -306,13 +310,14 @@ void testFaultsAndRecovery() {
   reset(); inverted[0]=true; // Rebaseline the changed physical sign while idle.
   MotorControl::begin(); assert(MotorControl::rotateRevolutions(1)); advance(2000);
   assert(!state().rotating && state().fault==Fault::Direction);
+  // A short dropout (< MaxGapMs between good samples) neither stops motion nor loses trust.
   reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(20);
-  assert(!state().rotating && state().fault==Fault::Encoder);
-  // A short dropout (< MaxGapMs between good samples) keeps trust and the position.
-  float kept=state().position; assert(kept<0);
-  assert(!MotorControl::clearFault()); online[0]=true; advance(20);
+  assert(state().rotating && state().fault==Fault::None);
   assert(state().encoder==Encoders::Health::Ok);
-  assert(MotorControl::clearFault()); assert(state().position==kept); assert(!state().rotating);
+  const float kept=state().position; assert(kept<0);
+  online[0]=true; advance(40);
+  assert(state().rotating && state().fault==Fault::None && state().position<kept);
+  MotorControl::stopRotation(); advance(20); assert(!state().rotating);
   finite(.1f);
   // A longer dropout cannot prove continuity: untrusted, and clear rebases to 0.
   reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(80);
@@ -421,14 +426,18 @@ void testRegisterReadsAndLiveDiagnostics() {
     reset(); assert(MotorControl::rotateRevolutions(1)); advance(200);
     if(rawFailure) shortRaw[0]=true; else shortStatus[0]=true;
     advance(20);
+    // Failed reads within MaxGapMs of the last good sample: the move continues.
+    assert(state().fault==Fault::None && state().rotating);
+    assert(Encoders::get(0).health==Encoders::Health::Ok);
+    assert(Encoders::get(0).magnetStatus==(rawFailure ? 0x20 : 255));
+    advance(60);
     assert(state().fault==Fault::Encoder && !state().rotating);
     assert(Encoders::get(0).health==Encoders::Health::Offline);
-    assert(Encoders::get(0).magnetStatus==(rawFailure ? 0x20 : 255));
     assert(!MotorControl::clearFault());
     shortRaw[0]=shortStatus[0]=false; advance(20);
-    // Good samples within MaxGapMs of each other: continuity holds, trust is kept.
-    assert(Encoders::get(0).health==Encoders::Health::Ok);
-    assert(MotorControl::clearFault());
+    // The gap between good samples exceeded MaxGapMs: continuity is not provable.
+    assert(Encoders::get(0).health==Encoders::Health::Untrusted);
+    assert(MotorControl::clearFault() && state().position==0);
   }
   reset(); magnet[0]=false; advance(20);
   assert(Encoders::get(0).health==Encoders::Health::Magnet);
@@ -800,13 +809,14 @@ void testLimitEnforcementAndRecoveryDirection() {
   assert(pulseCount[0]==0); // Outward correction remains forbidden.
 }
 void testLimitTrackingLossAndSerialContract() {
-  // One failed transaction on a bounded axis: trust, bounds and position remain.
+  // One failed transaction on a bounded axis: the move continues; trust and bounds remain.
   reset(); captureTestBounds(-500,500);
   assert(MotorControl::rotateRevolutions(.1f)); advance(100);
-  online[0]=false; advance(13); assert(state().fault==Fault::Encoder);
+  online[0]=false; advance(13); assert(state().fault==Fault::None && state().rotating);
   online[0]=true; advance(20);
-  assert(state().encoder==Encoders::Health::Ok && state().bounds==3);
-  assert(MotorControl::clearFault() && state().bounds==3 && state().fault==Fault::None);
+  assert(state().encoder==Encoders::Health::Ok && state().bounds==3 && state().rotating);
+  MotorControl::stopRotation(); advance(20);
+  assert(state().bounds==3 && state().fault==Fault::None);
   assert(MotorControl::rotateRevolutions(.01f));
   // A gap longer than MaxGapMs loses tracking.
   reset(); captureTestBounds(-500,500);
@@ -946,7 +956,7 @@ void testSwitchContactsPreserveCoordinatesAndFaults() {
   manualPosition(0,200); analogInputs[0]=0; advance(25);
   assert(state().fault==Fault::None && state().bounds==1 && state().lowerCounts==-100);
   assert(state().upperCounts==1000000000);
-  reset(); manualPosition(0,100); online[0]=false; analogInputs[0]=250; advance(25);
+  reset(); manualPosition(0,100); online[0]=false; analogInputs[0]=250; advance(80);
   assert(state().fault==Fault::None && state().encoder==Encoders::Health::Offline && state().bounds==0);
   assert(state().switchMask==1 && pulseCount[0]==0);
 }
@@ -1051,7 +1061,7 @@ void testExplicitZeroAndOrdinaryContactFaultPreservation() {
   assert(state().fault==Fault::Stall && state().positionCounts==-200 && state().upperCounts==100);
   // An idle contact does not invent a fault or a new coordinate from unusable feedback.
   reset(); captureTestBounds(-300,800); manualPosition(0,500);
-  online[0]=false; analogInputs[0]=250; advance(25);
+  online[0]=false; analogInputs[0]=250; advance(80);
   assert(state().fault==Fault::None && state().encoder==Encoders::Health::Offline && state().positionCounts==-500);
   assert(state().lowerCounts==-800 && state().upperCounts==300 && state().bounds==3);
   // Contacts beyond saved limits cannot cause a capture conflict or rebase overflow.
@@ -1417,8 +1427,8 @@ void testCalibrationCancellationTimeoutAndFaults() {
     assert(!state().rotating && state().calibration==Calibration::Failed && state().fault!=Fault::None);
     const long pulses=pulseCount[0]; advance(100); assert(pulseCount[0]==pulses);
   }
-  // Feedback loss while internally idle at a candidate contact must fail promptly.
-  reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); online[0]=false; advance(15);
+  // Feedback loss while internally idle at a candidate contact fails within MaxGapMs.
+  reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().calibration==Calibration::Failed && state().fault==Fault::Encoder);
   // A confirmed upper at the same measured position as lower is not a valid travel span.
   reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); advance(25);
@@ -1461,7 +1471,7 @@ void testAbsoluteEligibilityAndSignedSerialParsing() {
   assert(!MotorControl::goToPosition(.1f)); // Manually saved bounds are not successful calibration.
   assert(MotorControl::calibrate() && !MotorControl::goToPosition(0));
   MotorControl::stopRotation(); assert(state().calibration==Calibration::Cancelled && !MotorControl::goToPosition(0));
-  assert(MotorControl::calibrate()); online[0]=false; advance(20);
+  assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().calibration==Calibration::Failed && !MotorControl::goToPosition(0));
   for(int command=0;command<4;++command) {
     reset(); plantForCalibration(0); assert(MotorControl::calibrate()); finishCalibration(Bottom);
@@ -1670,7 +1680,7 @@ void testHeldDirectionHistoryAndCalibrationReset() {
   assert(state().directionWarnings>5 && state().calibration==Calibration::None);
   plantForCalibration(0); assert(MotorControl::calibrate()); advance(30); MotorControl::stopRotation();
   assert(state().directionWarnings==6 && state().calibration==Calibration::Cancelled);
-  assert(MotorControl::calibrate()); online[0]=false; advance(15);
+  assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().directionWarnings==6 && state().calibration==Calibration::Failed);
   online[0]=true; advance(20); assert(MotorControl::clearFault());
   assert(MotorControl::calibrate()); finishCalibration(Bottom);
@@ -1883,6 +1893,22 @@ void testDriverWakeSnap() {
     assert(!state().rotating && state().fault==Fault::Direction);
   }
 }
+void testIsolatedReadFailures() {
+  // Isolated failed transactions (a noisy encoder bus) neither stop motion nor lose tracking.
+  reset(); failRawEvery[0]=7; finite(1.0f); finite(1.0f,Direction::Counterclockwise);
+  assert(rawRequests[0]>100 && state().encoder==Encoders::Health::Ok);
+  reset(); assert(MotorControl::rotateRevolutions(1)); advance(200);
+  failRaw[0]=3; advance(60); assert(state().rotating && state().fault==Fault::None);
+  finish(); assert(std::fabs(state().position+1)<=state().tolerance+1.0/4096);
+  reset(); plantForCalibration(0); failRawEvery[0]=7; assert(MotorControl::calibrate());
+  finishCalibration(Bottom);
+  // refresh() retries one failed read; two failures reject the command without a fault.
+  reset(); manualPosition(0,100); failRaw[0]=1; assert(MotorControl::resetPosition());
+  assert(state().positionCounts==0 && failRaw[0]==0);
+  manualPosition(0,200); failRaw[0]=2; assert(!MotorControl::resetPosition());
+  assert(state().positionCounts==-200 && state().fault==Fault::None);
+  assert(MotorControl::rotateRevolutions(.01f) && state().rotating);
+}
 int main(int argc, char **argv) {
   if(argc==2 && std::strcmp(argv[1],"--trace")==0) { emitTelemetryTrace(); return 0; }
   if(argc==2 && std::strcmp(argv[1],"--calibration-trace")==0) { emitCalibrationTrace(); return 0; }
@@ -1899,6 +1925,8 @@ int main(int argc, char **argv) {
   testDriverWakeSnap(); std::cout<<"driver wake snap before the first pulse: moves, holds, calibration and repeated sleeps passed\n";
   testProtocolAndBounds(); std::cout<<"serial protocol and numerical bounds passed\n";
   testTimerRollover(); std::cout<<"millis/micros rollover passed\n";
+  testIsolatedReadFailures();
+  std::cout<<"isolated failed encoder reads in moves, calibration and refresh retry passed\n";
   testRegisterReadsAndLiveDiagnostics();
   std::cout<<"explicit register reads, per-channel raw feedback, idle/fault diagnostics and short-read faults passed\n";
   testAutonomousTelemetryAndCommands();

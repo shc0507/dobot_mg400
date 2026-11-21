@@ -16,6 +16,9 @@ from orchestrator.runner import Runner
 from orchestrator.skills import default_registry
 from orchestrator.store import RunStore
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 # One-step agent recipes wrap 1 skill. They need taught stations, tray data or the
 # microscope, so they are checked by loading only.
 ONE_STEP = {

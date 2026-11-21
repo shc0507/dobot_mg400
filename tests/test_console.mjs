@@ -323,6 +323,17 @@ test("page close releases this page's leases with a keepalive request", async ()
   assert.equal(calls[0].init.keepalive, true);
 });
 
+test("the header STOP ALL button sends the motion stop", async () => {
+  const { LabConsole, calls } = load();
+  const view = page();
+  LabConsole.start(view.doc);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  calls.length = 0;
+  view.nodes.get("lc-stop-all").click();
+  assert.equal(calls[0].url, "/lab/api/dashboard/motion");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {});
+});
+
 class FakeSocket {
   constructor(url) { this.url = url; this.sent = []; FakeSocket.made.push(this); }
   send(text) { this.sent.push(JSON.parse(text)); }

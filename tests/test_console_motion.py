@@ -14,6 +14,9 @@ from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover, motion
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 PRIVATE = "private-robot-service-token-0123456789"
 
 

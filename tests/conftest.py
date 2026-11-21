@@ -46,6 +46,14 @@ def isolated_controller_locks(monkeypatch, tmp_path):
 
 
 @pytest.fixture
+def short_rest(monkeypatch):
+    """Shorten the robot arrival window for the MG400 simulator, which arrives at once."""
+    from mg400 import joint_control
+
+    monkeypatch.setattr(joint_control, "STABLE_SECONDS", 0.05)
+
+
+@pytest.fixture
 def make_sim_rig(monkeypatch, tmp_path):
     """Return a factory of panel rigs that control the simulated MG400 of sim_mg400."""
     from sim_mg400 import rig_factory

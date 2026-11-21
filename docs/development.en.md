@@ -218,7 +218,7 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 | `execute` | `targets` (with `x`, `y`, `z`, `r`), optional `speed` | Move linearly to the flange coordinates |
 | `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
-| `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
+| `clear_alarm` | None | Send `ClearError()`. After the alarm clears, send `ResetRobot()`, disable the robot and confirm that it is stationary |
 | `keys` | `seq`, `held` | Send 1 held-key set. `command_id` is `null`. See [Keys](#keys) |
 
 For `keyboard`, `speed` is an integer from 1–100.
@@ -235,7 +235,7 @@ The caps do not change `home`, `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: a stop or disable is unconfirmed, the controller reports no alarm, and feedback is fresh.
-In this case, the service does not send `ClearError()`. It only disables the robot, confirms that it is stationary, and clears the warning.
+In this case, the service does not send `ClearError()`. It only sends `ResetRobot()`, disables the robot, confirms that it is stationary, and clears the warning.
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
 The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
@@ -460,10 +460,12 @@ A disabled robot with no alarm also does not prove that its current pose permits
 
 Without `speed`, `execute` uses `MovL` with `SpeedL=1,AccL=1`.
 Controller inverse kinematics validates the target joint limits. The controller plans the straight path.
+The service checks only the start and the target. The controller checks the path and raises an alarm, for example 23 or 72, if the path leaves the range.
 Reset uses `JointMovJ` with `SpeedJ=5,AccJ=5`.
 `execute` and reset do not change global speed or tool configuration.
 
 When keyboard jog turns on, the service sends `SpeedFactor(<speed>)`. This sets the global speed.
+The controller keeps this value after keyboard jog turns off. The real speed of `execute` and reset is the command speed × the global `SpeedFactor` × the controller playback setting. Read `speed_factor` in the state before you validate a speed.
 While a key is held, the service sends the continuous jog command `MoveJog`:
 
 | Key | Command |

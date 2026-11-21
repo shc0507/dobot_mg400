@@ -142,6 +142,7 @@ class RobotPanelState:
         self._pending_stop_results = []
         self._cancel_generation = 0
         self._completed_stop_number = 0
+        self._unwatched_stop_number = 0
         self._wake = threading.Event()
         self._reader_stop = threading.Event()
         self._reader = None
@@ -252,7 +253,7 @@ class RobotPanelState:
                     sample.digital_outputs if sample else None,
                     sample.digital_inputs if sample else None,
                 ),
-                "payload_kg": sample.load_kg if sample else None,
+                "payload_kg": self._finite(getattr(sample, "load_kg", None)),
                 "controller_id": self._owner,
                 "keyboard_enabled": self._kb_on,
                 "keyboard_arming": self._kb_arming,
@@ -293,6 +294,9 @@ class RobotPanelState:
             if self._owner is None:
                 self.command({"action": "start_sync"}, client_id)
                 self._lease_disconnects = True
+            elif self._disconnect_requested:
+                # The holder takes control again during its release: keep the lease.
+                self._disconnect_requested = False
             self._heartbeat = time.monotonic()
             return self._lease()
 
@@ -418,11 +422,12 @@ class RobotPanelState:
         if not 0 <= wait_s <= 15 or not math.isfinite(wait_s):
             raise ValueError("wait_s must be a finite number from 0 to 15")
         deadline = time.monotonic() + wait_s
-        self.command({"action": "stop"}, client_id)
         with self._stop_changed:
+            self.command({"action": "stop"}, client_id)
+            number = self._command_number
             while True:
                 self._finish_stop_results()
-                if self._fault:
+                if self._fault or self._unwatched_stop_number == number:
                     outcome = "unconfirmed"
                     break
                 if not self._safety_workers:
@@ -472,10 +477,13 @@ class RobotPanelState:
             self._finish_command(record, result, message)
 
     @staticmethod
-    def _speed_factor(sample):
-        value = getattr(sample, "speed_scaling_raw", None)
+    def _finite(value):
         # A non-finite raw value would make the JSON response invalid.
         return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+    @classmethod
+    def _speed_factor(cls, sample):
+        return cls._finite(getattr(sample, "speed_scaling_raw", None))
 
     @staticmethod
     def _client(client_id):
@@ -624,7 +632,14 @@ class RobotPanelState:
                     if self._owner != client_id:
                         raise PermissionError("Start sync in this browser before issuing commands")
                     self._heartbeat = time.monotonic()
-                    if action == "stop_sync":
+                    if action == "stop_sync" and self._unconnected_idle():
+                        # This session sent no controller command: nothing to stop.
+                        self._syncing = False
+                        self._reader_stop.set()
+                        self._owner = None
+                        self._message = "Sync stopped before robot feedback connected."
+                        self._finish_commands("sync", "stopped", self._message)
+                    elif action == "stop_sync":
                         self._request_stop(
                             disabling=self._fresh() and self._sample.mode == 4,
                             disconnect=True,
@@ -725,20 +740,34 @@ class RobotPanelState:
             self._fresh()
             and self._sample.mode == 5
             and not self._sample.error_status
-            and not (
-                self._locked
-                or self._fault
-                or self._busy
-                or self._working
-                or self._job
-                or self._safety_workers
-                or self._clearing
-                or self._kb_on
-                or self._kb_arming
-                or self._kb_thread is not None
-                or self._kb_session is not None
-            )
+            and self._no_work()
         )
+
+    def _no_work(self):
+        return not (
+            self._locked
+            or self._fault
+            or self._busy
+            or self._working
+            or self._job
+            or self._safety_workers
+            or self._clearing
+            or self._kb_on
+            or self._kb_arming
+            or self._kb_thread is not None
+            or self._kb_session is not None
+        )
+
+    def _unconnected_idle(self):
+        """Whether no feedback ever arrived in this sync and no work runs.
+
+        Every controller command needs fresh feedback, so this session sent none.
+        """
+        return self._sample is None and self._no_work()
+
+    def _unwatched_idle(self):
+        """Whether no client syncs feedback and no work runs. Then no motion can run here."""
+        return (not self._syncing or self._sample is None) and self._no_work()
 
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""
@@ -817,6 +846,9 @@ class RobotPanelState:
                 raise
             self._stop_without_ownership(record, error)
             return
+        if record is not None and record["action"] == "stop" and self._unwatched_idle():
+            self._send_unwatched_stop(record)
+            return
         # A user stop of an idle robot that needs no recovery confirms without the lock.
         unlock = record is not None and not (disabling or disconnect) and self._idle_at_rest()
         self._cancel_generation += 1
@@ -874,6 +906,34 @@ class RobotPanelState:
             return
         self._safety_threads.append(thread)
 
+    def _send_unwatched_stop(self, record):
+        """Send one ResetRobot() for a stop while no client syncs feedback.
+
+        The service cannot watch the robot, so the stop is unconfirmed. Nothing here
+        can move the arm without a new sync, so the stop does not lock control.
+        """
+        self._unwatched_stop_number = record["number"]
+        self._message = "Sending ResetRobot(). No client syncs robot feedback."
+        record["deferred"] = True
+        self._safety_workers += 1
+        thread = threading.Thread(
+            target=self._send_unowned_stop,
+            args=(record, False),
+            daemon=True,
+        )
+        self._safety_threads = [worker for worker in self._safety_threads if worker.is_alive()]
+        try:
+            thread.start()
+        except Exception as start_error:
+            self._safety_workers -= 1
+            self._message = (
+                f"Robot stop could not start: {start_error} Use the physical emergency stop."
+            )
+            self._finish_command(record, "failed", self._message)
+            self._stop_changed.notify_all()
+            return
+        self._safety_threads.append(thread)
+
     def _stop_without_ownership(self, record, error):
         """Send one ResetRobot() although another program can hold the controller lock.
 
@@ -903,20 +963,22 @@ class RobotPanelState:
             return
         self._safety_threads.append(thread)
 
-    def _send_unowned_stop(self, record):
+    def _send_unowned_stop(self, record, locked=True):
+        what = "without the robot lock" if locked else "without robot feedback"
         try:
             with self._unowned_stop_lock:
                 self._new_control().send_stop()
         except Exception as error:
-            message = (
-                f"ResetRobot() without the robot lock failed: {error}. "
-                "Use the physical emergency stop."
-            )
+            message = f"ResetRobot() {what} failed: {error}. Use the physical emergency stop."
         else:
             message = (
-                "ResetRobot() is sent without the robot lock, so the stop is unconfirmed. "
+                f"ResetRobot() is sent {what}, so the stop is unconfirmed. "
                 "Use the physical emergency stop if the arm moves. "
-                "When the lock is free, start sync and click Recover."
+                + (
+                    "When the lock is free, start sync and click Recover."
+                    if locked
+                    else "Start sync to see the robot state."
+                )
             )
         with self._lock:
             self._safety_workers -= 1
@@ -1086,7 +1148,9 @@ class RobotPanelState:
         self._safety_threads.append(thread)
 
     def _clear_alarm(self, control, clear):
-        """Clear the alarm, then confirm a disable and rest on a new control instance.
+        """Clear the alarm, clear the motion queue, then confirm a disable and rest.
+
+        The queue clear, disable and rest check use a new control instance.
 
         In an alarm the controller refuses DisableRobot() and has already halted motion.
         A verified disable and rest after the alarm clears replace the stop that the
@@ -1110,6 +1174,9 @@ class RobotPanelState:
                     return
                 recovery = self._control = self._new_control()
                 faults = self._faults
+            # An alarm halts the motion queue, and ClearError() keeps it for Continue().
+            # ResetRobot() clears the queue, so no halted motion can resume later.
+            recovery.send_stop()
             recovery.disable()
             recovery.verify_stationary()
             with self._lock:

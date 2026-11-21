@@ -130,7 +130,8 @@ The robot card shows the button only when the service accepts it:
 Both buttons send `clear_alarm`.
 `clear_alarm` sends only `ClearError()`. It does not send `Continue()`.
 Motion paused before the alarm does not resume.
-After the alarm clears, the service disables the robot through a new control instance and confirms that it is stationary.
+After the alarm clears, the service sends `ResetRobot()` to clear the motion queue. Then it disables the robot through a new control instance and confirms that it is stationary.
+`Recover` does the same steps.
 Control unlocks only after both are confirmed.
 
 If the cause remains, the alarm immediately returns and control stays locked.
@@ -156,7 +157,7 @@ After you connect, the first coordinate query `GetPose(0,0)` fails. The service 
 The controller also rejects the stop and disable commands.
 A `-1` reply does not confirm a stop. Control stays locked.
 
-When the controller returns `-1`, the service reads the feedback.
+When the controller returns `-1` to the newest stop or disable, the service reads the feedback.
 If the robot is disabled and stationary without an alarm, the service message tells you that the controller is probably not in TCP/IP mode.
 In all other conditions, the service message shows the original error.
 In that case, use the physical emergency stop as described in [Stop and recover](#stop-and-recover).

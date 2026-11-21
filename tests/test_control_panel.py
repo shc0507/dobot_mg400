@@ -1076,3 +1076,47 @@ def test_contract_posts_check_type_and_client_before_the_state(headers, status):
         assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == status
         assert request(server, "POST", "/api/keys", "{}", headers)[0] == 404
     assert state.calls == []
+
+
+def test_a_bad_robot_host_setting_exits_with_status_2(monkeypatch, capsys):
+    main = PANEL["main"]
+    error = ValueError("Robot host must be a nonempty string without whitespace")
+    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(side_effect=error))
+    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock())
+    with pytest.raises(SystemExit) as exit_info:
+        main([])
+    # The unit does not restart after exit status 2.
+    assert exit_info.value.code == 2
+    assert "without whitespace" in capsys.readouterr().err
+    main.__globals__["RobotPanelState"].assert_not_called()
+
+
+def test_a_blocked_stderr_delays_replies_and_errors_only_briefly(monkeypatch):
+    unblock = threading.Event()
+
+    class BlockedStderr:
+        def write(self, text):
+            unblock.wait(5)
+            return len(text)
+
+        def flush(self):
+            pass
+
+    class FailingState(RecordingState):
+        def snapshot(self):
+            raise KeyError("snapshot failed")
+
+    command = json.dumps({"action": "stop"})
+    try:
+        with running(RecordingState()) as server:
+            monkeypatch.setattr(sys, "stderr", BlockedStderr())
+            started = time.monotonic()
+            assert request(server, "POST", "/api/command", command, ROBOT_HEADERS)[0] == 202
+            assert time.monotonic() - started < 1.0
+        with running(FailingState()) as server:
+            started = time.monotonic()
+            with pytest.raises((http.client.HTTPException, OSError)):
+                request(server, "GET", "/api/state")
+            assert time.monotonic() - started < 1.0
+    finally:
+        unblock.set()

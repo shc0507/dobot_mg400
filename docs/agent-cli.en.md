@@ -99,7 +99,7 @@ Stops need no control and no session. They are sent once and never retried.
 
 With the default `--url`, each stop also goes straight to the service on loopback, so it works when the console is down. With another `--url`, stops go only through that console.
 
-A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot clear-alarm`, or with **Recover** in the console.
+A robot service with no syncing client cannot confirm a stop. It sends `ResetRobot()` and reports `unconfirmed`, but it does not lock. A later `labctl robot take` reads the robot state again.
 
 ## Output and exit codes
 

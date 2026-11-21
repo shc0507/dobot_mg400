@@ -233,6 +233,20 @@ def test_finite_limits_enforce_the_same_physical_direction_with_reversed_signs(
     assert not transport.commands
 
 
+@pytest.mark.parametrize(
+    "position,direction", [(0.5, "ccw"), (0.6, "ccw"), (-0.25, "cw"), (-0.5, "cw")]
+)
+def test_outward_hold_at_or_beyond_a_ccw_positive_limit_is_rejected(stage_rig, position, direction):
+    controller, transport, clock = stage_rig
+    state = transport.motors["bottom"]
+    state.position = position
+    state.lower_limit, state.upper_limit = -0.25, 0.5
+    state.lower_limit_set = state.upper_limit_set = True
+    with pytest.raises(ControllerError, match="limit"):
+        controller.hold("bottom", direction, 0.25, "ccw-coord-hold-02", clock())
+    assert not transport.commands
+
+
 @pytest.mark.parametrize("direction,position", [("cw", -0.1), ("ccw", 0.1)])
 def test_held_motion_stops_at_reversed_coordinate_bound_without_software_rezero(
     stage_rig, direction, position

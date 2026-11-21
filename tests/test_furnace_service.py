@@ -409,11 +409,31 @@ def test_restart_does_not_reset_manual_orphan_deadline(lab):
 
 @pytest.mark.parametrize(
     "bad",
-    ["missing", "corrupt", "target", "bank", "caps", "identity", "incomplete", "intent", "future"],
+    [
+        "missing",
+        "corrupt",
+        "target",
+        "bank",
+        "caps",
+        "manual_caps",
+        "ramp",
+        "identity",
+        "incomplete",
+        "intent",
+        "future",
+    ],
 )
 def test_bad_recovery_stops_locks_and_requires_acknowledgement(lab, bad):
-    lab.service.start_sequence(recipe(hold=5), client="operator")
-    if bad == "missing":
+    if bad == "manual_caps":
+        lab.service.apply_setpoint(30, 60, client="operator")
+    else:
+        lab.service.start_sequence(recipe(hold=5), client="operator")
+    if bad in ("caps", "manual_caps"):
+        pass
+    elif bad == "ramp":
+        # 101 C/min at 1 decimal place, above the 100 C/min cap.
+        p.write_register(lab.instrument, p.SPR_REGISTER, 1010)
+    elif bad == "missing":
         lab.store.path.unlink()
     elif bad == "corrupt":
         lab.store.path.write_text('{"invalid"')
@@ -434,7 +454,7 @@ def test_bad_recovery_stops_locks_and_requires_acknowledgement(lab, bad):
         lab.store.save(saved)
     kwargs = (
         {}
-        if bad != "caps"
+        if bad not in ("caps", "manual_caps")
         else dict(config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=29))
     )
     resumed = lab.make(**kwargs)

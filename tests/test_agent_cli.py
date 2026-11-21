@@ -1,9 +1,12 @@
 """labctl agent groups with a fake console transport: parsing, JSON, exit codes, waits, stops."""
 
+import contextlib
 import io
 import json
+import threading
 
 import pytest
+from werkzeug.serving import make_server
 
 from orchestrator import agent as agent_module
 from orchestrator import agent_cli
@@ -41,11 +44,17 @@ class Clock:
         self.value += seconds
 
 
-def make(routes, *, direct=False, **kwargs):
+def make(routes, *, direct=False, settings=None, **kwargs):
     clock = Clock()
     http = FakeHttp(routes)
     agent = Agent(
-        session="t", http=http, settings={}, direct=direct, clock=clock, sleep=clock.sleep, **kwargs
+        session="t",
+        http=http,
+        settings=settings or {},
+        direct=direct,
+        clock=clock,
+        sleep=clock.sleep,
+        **kwargs,
     )
     return agent, http
 
@@ -486,24 +495,92 @@ def test_stops_never_take_control_and_never_beat():
     assert not any("heartbeat" in path or "control" in path for path in paths)
 
 
-def test_direct_stops_work_when_the_console_is_down(monkeypatch):
-    sent = []
-    monkeypatch.setattr(
-        Agent, "_direct_stop", lambda self, device: sent.append(device) or "confirmed"
-    )
+@contextlib.contextmanager
+def served(service, create_app):
+    """Serve a real service app on loopback and record the params of each api/stop."""
+    stops = []
+    stop = service.stop
+
+    def recorded(client, wait_s, **params):
+        stops.append(params)
+        return stop(client, wait_s, **params)
+
+    service.stop = recorded
+    server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02})
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/", stops
+    finally:
+        server.shutdown()
+        thread.join(2)
+
+
+@pytest.fixture
+def stage_service():
+    from stage_controller.app import create_app
+    from stage_controller.controller import MotorController
+
+    controller = MotorController(demo=True)
+    controller.connect("DEMO")
+    with served(controller, create_app) as value:
+        yield value
+    controller.close()
+
+
+@pytest.fixture
+def furnace_service():
+    from furnace.app import create_app, make_service
+
+    service = make_service(demo=True)
+    service.start(background=False)
+    with served(service, create_app) as value:
+        yield value
+    service.close()
+
+
+def test_direct_stops_work_when_the_console_is_down(stage_service):
+    url, stops = stage_service
     down = Unreachable("refused")
-    agent, _ = make(
-        {
-            "api/dashboard/motion": down,
-            "api/console/stop/robot": down,
-            "api/console/stop/stage": down,
-            "api/console/stop/microscope": down,
-        },
-        direct=True,
-    )
+    # Nothing listens on port 9, so the robot and microscope direct stops are unreachable.
+    closed = "http://127.0.0.1:9/"
+    settings = {
+        "MG400_ORCH_STAGE_URL": url,
+        "MG400_ORCH_ROBOT_URL": closed,
+        "MG400_ORCH_MICROSCOPE_URL": closed,
+    }
+    routes = {
+        "api/dashboard/motion": down,
+        "api/console/stop/robot": down,
+        "api/console/stop/stage": down,
+        "api/console/stop/microscope": down,
+    }
+    agent, _ = make(routes, direct=True, settings=settings)
     code, result = run_cli(["all", "stop"], agent)
-    assert code == 0 and sorted(sent) == ["microscope", "robot", "stage"]
+    assert result["results"] == {
+        "robot": "unreachable",
+        "stage": "confirmed",
+        "microscope": "unreachable",
+    }
+    assert code != 0 and stops == [{}]
     assert result["dashboard"] == {"result": "unreachable"}
+
+
+def test_direct_furnace_stop_and_gas_off_reach_the_service(furnace_service):
+    url, stops = furnace_service
+    down = Unreachable("refused")
+    routes = {
+        "api/dashboard/heat": down,
+        "api/console/stop/furnace": down,
+        "api/console/ws/process/gas-stop": down,
+    }
+    agent, _ = make(routes, direct=True, settings={"MG400_ORCH_FURNACE_URL": url})
+    code, result = run_cli(["furnace", "stop"], agent)
+    assert code == 0 and result["results"] == {"furnace": "confirmed"}
+    assert stops == [{}]
+    code, result = run_cli(["furnace", "gas-off", "1"], agent)
+    assert result["paths"]["direct:1"] == "sent"
+    assert stops == [{}, {"gas_channel": 1}]
 
 
 def test_a_demo_console_url_sends_no_direct_stops():

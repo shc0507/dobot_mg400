@@ -47,7 +47,7 @@ from .aruco_switch import (
     full_steps_to_pulses,
     select_objective,
 )
-from .autofocus import AutofocusCancelled, AutoFocuser
+from .autofocus import AutofocusCancelled, AutoFocuser, NoFocusPeak
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
@@ -1852,6 +1852,13 @@ class MicroscopeService(TurretCalibrationMixin):
                 lock_exposure=not self.demo,
             )
         self._check_job(job)
+        # A best score on a window edge that is not a focus limit is a rising curve.
+        edge = center + result.position
+        if abs(result.position) >= half_range and status.minimum < edge < status.maximum - 1:
+            raise NoFocusPeak(
+                "The best focus score is at the edge of the autofocus window; "
+                "the focus peak may be outside it. Run full autofocus."
+            )
         status = self._guard_reference(job)
         return {"measurement": asdict(result), "focus_position_pulses": status.focus.position}
 
@@ -1894,8 +1901,9 @@ class MicroscopeService(TurretCalibrationMixin):
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0, keep_recording=True)
-        except _Unidentified as error:
-            # No turret turn started. Keep the confirmed focus reference.
+        except (_Unidentified, NoFocusPeak) as error:
+            # No turret turn started, or autofocus ended its motion normally.
+            # Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except Exception as error:
             if job.action in CAMERA_ACTIONS:

@@ -320,6 +320,12 @@ class TransferProfileStore:
                 os.fsync(stream.fileno())
             temporary.chmod(0o640)
             os.replace(temporary, path)
+            # Sync the directory too, so the rename survives a power loss.
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

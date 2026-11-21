@@ -78,9 +78,11 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 - Take every device of the recipe first. Otherwise the call fails, and `hint` names the `take` commands.
 - The run borrows the session's devices. The console keeps the leases, so the arm stays enabled and the microscope keeps focus zero. During the run, the session cannot command these devices. Stops still work.
 - The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
+- Every run ends with a stop of each device that it used. A microscope stop disables the motors and clears the focus zero. After a run that used the microscope, set the focus zero again before a focus move.
 - Run 1 `do` at a time in a session. During a run, `do` and `chip locate` of the same session fail with `busy`. The run continues.
 - If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort it with `POST /lab/api/runs/<run_id>/abort`. See the HTTP routes in [Recipe orchestrator](orchestrator.en.md).
 - The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
+- `microscope-record` needs time to finalize after the capture. Set `seconds` to at most 3000, and set `--timeout` to at least `seconds` plus 600.
 - The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.
 - One-step catalog recipes: `slot-state`, `station-transfer`, `crucible-load`, `crucible-unload`, `microscope-record`, `check-calibration`. `chip-pick` and `tray-transfer` are also in the catalog.
 

@@ -121,7 +121,8 @@ def serve(
             port=args.port,
             **SERVER_OPTIONS,
         )
-        if socket_factory is not None:
+        # A demo never takes the fixed socket port of the lab service.
+        if socket_factory is not None and not args.demo:
             try:
                 control = socket_factory(
                     app, host=args.bind, port=SOCKET_PORT, base_path=args.base_path
@@ -147,10 +148,12 @@ def serve(
                     control.close()
             finally:
                 try:
-                    service.close()
-                finally:
+                    # Close the listener first: while the service drains, console
+                    # requests fail at once instead of waiting for an answer.
                     if server is not None:
                         server.close()
+                finally:
+                    service.close()
         finally:
             for number, handler in previous.items():
                 signal.signal(number, handler)

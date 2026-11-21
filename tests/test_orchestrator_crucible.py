@@ -1873,3 +1873,12 @@ def test_initial_station_zone_preflight_precedes_any_crucible_command(crucible_g
     with pytest.raises(ValueError, match="robot"):
         load(ctx, "slot")
     assert not ctx.clients["stage"].calls and not ctx.clients["robot"].calls
+
+
+def test_catalog_crucible_recipes_fit_the_60_s_awake_limit():
+    import tomllib
+    from pathlib import Path
+
+    for name in ("crucible-load", "crucible-unload"):
+        data = tomllib.loads((Path("recipes") / f"{name}.toml").read_text())
+        assert all(0 < step["timeout_s"] <= 60 for step in data["steps"])

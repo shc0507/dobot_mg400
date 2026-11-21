@@ -842,6 +842,24 @@ def test_history_skips_read_noise_and_writes_a_heartbeat(monkeypatch):
     assert store.rows[-1][0] - store.rows[-2][0] == devices_module.HEARTBEAT_S
 
 
+def test_history_rows_leave_out_the_last_command_output():
+    from types import SimpleNamespace
+
+    from orchestrator import devices as devices_module
+
+    rows = []
+    store = SimpleNamespace(
+        add_device_state=lambda device, ts, phase, row, state: rows.append(state),
+        prune_devices=lambda before: None,
+    )
+    devices = devices_module.Devices(SimpleNamespace(store=store))
+    last = {"id": "7", "action": "detect", "client": "c", "result": "ok", "output": {"big": 1}}
+    state = {"connected": True, "busy": False, "fault": None, "last_command": last}
+    devices._record("vision", devices._entry("ready", state=state, describe={}))
+    assert rows == [{**state, "last_command": {k: v for k, v in last.items() if k != "output"}}]
+    assert state["last_command"]["output"] == {"big": 1}
+
+
 def test_history_route_keeps_state_changes_and_samples_values(rig, monkeypatch):
     from orchestrator import devices as devices_module
 

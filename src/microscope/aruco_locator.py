@@ -5,12 +5,10 @@ Coordinates and offsets are ORIGINAL image pixels. A reference defines zero;
 this is not a measurement of the optical axis or a guarantee of mechanical seating.
 """
 
-from pathlib import Path
-
 import cv2
 import numpy as np
 
-from .paths import calibration_path, private_open
+from .paths import calibration_path
 
 REFERENCES = {
     0: "side_20261020_222952_249760200.png",
@@ -280,27 +278,3 @@ class Locator:
             if not present and result["status"] == "ok":
                 result["status"] = "target_not_visible"
         return result
-
-
-def annotate(path, result, references, output):
-    im = cv2.imread(str(path))
-    scale = 1280 / im.shape[1]
-    im = cv2.resize(im, (1280, round(im.shape[0] * scale)))
-    for m in result["markers"]:
-        c = np.round(np.array(m["corners"]) * scale).astype(np.int32)
-        cv2.polylines(im, [c], True, (0, 255, 0), 2)
-        x, y = np.round(np.array(m["center"]) * scale).astype(int)
-        rx = round(references[m["id"]]["center"][0] * scale)
-        cv2.line(im, (rx, max(0, y - 100)), (rx, min(im.shape[0] - 1, y + 100)), (255, 255, 0), 2)
-        cv2.drawMarker(im, (x, y), (0, 0, 255), cv2.MARKER_CROSS, 20, 2)
-        label = f"{m['color']} {m['range']} {m['direction']}"
-        if m["range"] == "near":
-            label += f" {abs(m['dx_px']):.2f}px"
-        cv2.putText(im, label, (max(5, x - 130), max(35, y - 65)), 0, 0.65, (0, 255, 255), 2)
-    if not result["markers"]:
-        cv2.putText(im, result["status"], (25, 45), 0, 1, (0, 0, 255), 2)
-    ok, encoded = cv2.imencode(Path(output).suffix, im)
-    if not ok:
-        raise RuntimeError("Cannot encode annotated image")
-    with private_open(output, "wb") as image_file:
-        image_file.write(encoded.tobytes())

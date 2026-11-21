@@ -154,7 +154,9 @@ def test_stop_during_the_blow_pulse_clears_only_the_blow_output(make_sim_rig, lo
     assert rig.snapshot()["last_command"]["result"] in {"ok", "stopped"}
     assert rig.snapshot()["vacuum"] == {"suck": False, "blow": False, "held": False}
     sent = rig.controller.sent(mark)
-    assert [text for text in sent if text.startswith("DO")] == ["DOExecute(1,0)"]
+    # The stop and the interrupted vacuum worker can both clear DO1; nothing touches DO2.
+    outputs = [text for text in sent if text.startswith("DO")]
+    assert outputs and set(outputs) == {"DOExecute(1,0)"}
     first = "ResetRobot()" if action == "stop" else "DisableRobot()"
     assert sent.index(first) < sent.index("DOExecute(1,0)")
 

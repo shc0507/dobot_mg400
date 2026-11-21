@@ -35,6 +35,8 @@ from .state import StateError, StateStore
 ORPHAN_GRACE_MIN = 15
 # While locked after a failed stop, the poll loop repeats the stop at this interval.
 STOP_RETRY_S = 5.0
+# A run faults only after this many polls in a row fail to read the controller.
+POLL_READ_FAILURES = 3
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -55,8 +57,12 @@ def _controlled(method):
     def call(self, *args, client=None, **kwargs):
         if client is None:
             raise ServiceError(409, "Acquire the control lease before sending a command.")
+        stops = self._stop_requests
         with self.lease.control(client):
             with self._operation_lock:
+                # A stop that arrived while this command waited must not be undone by it.
+                if self._stop_requests != stops:
+                    raise ServiceError(409, "A stop arrived before this command ran. Send again.")
                 if self._locked and method.__name__ != "connect":
                     raise ServiceError(409, "Acknowledge the furnace fault before control.")
                 if self._closed:
@@ -141,6 +147,11 @@ class FurnaceService:
         self._furnace_factory = furnace_factory or (lambda **kw: Furnace.attach(**kw))
         self._flow_factory = flow_factory or MFCFlowController
         self._operation_lock = threading.RLock()
+        self._stop_ticket_lock = threading.Lock()
+        # Stop requests received, and per stop key the request count when a stop began.
+        self._stop_requests = 0
+        self._stops_begun = {}
+        self._transports_closed = False
         self._state_lock = self._io_lock = self._flow_io_lock = self._operation_lock
         self._furnace = self._flow_controller = None
         self._stop_event = threading.Event()
@@ -164,6 +175,8 @@ class FurnaceService:
         self._gas_targets = {}
         self._last_persist_at = self.clock()
         self._stop_retry_at = None
+        self._read_failures = 0
+        self._last_status = None
         self._notifications = []
         self.on_sequence_end = None
         self.events = EventLog(clock=wall_clock)
@@ -364,6 +377,7 @@ class FurnaceService:
         unit = controller.gas_unit_id(channel)
         errors = []
         snapshot = self._flow_channels[("gas", unit)]
+        silent = snapshot.get("readback") == "unverified"
         snapshot.update(
             actual_percent=None, available=False, setpoint_verified=False, readback="unverified"
         )
@@ -383,7 +397,8 @@ class FurnaceService:
             errors.append(error)
         if errors:
             raise RuntimeError("; ".join(str(error) for error in errors))
-        self._read_flow(channel)
+        if not silent:
+            self._read_flow(channel)
 
     def _set_gas_flow(self, channel, percent):
         if percent == 0:
@@ -391,6 +406,7 @@ class FurnaceService:
             return
         controller = self._ensure_flow_controller()
         unit = controller.gas_unit_id(channel)
+        silent = self._flow_channels[("gas", unit)].get("readback") == "unverified"
         # Every stop sends SVC, and a restarted process does not remember it: always send SVN.
         # Prime the new target first so SVN cannot restore an older setpoint.
         controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
@@ -400,7 +416,10 @@ class FurnaceService:
         self._gas_valves[channel] = controller.set_gas_solenoid(channel, True)
         self._gas_targets[channel] = percent
         self._flow_channels[("gas", unit)].update(target_percent=percent, setpoint_verified=False)
-        self._read_flow(channel)
+        # A write-only MFC never answers RFR, and each read costs 4 timeouts under the lock.
+        # inspect_gas_flow still reads a silent channel.
+        if not silent:
+            self._read_flow(channel)
 
     def _apply_gas(self, plan):
         if plan is None:
@@ -436,7 +455,10 @@ class FurnaceService:
 
     def stop_gas_flow(self, channel):
         channel = MFCFlowController._gas_channel(channel)
+        ticket = self._stop_ticket()
         with self._operation_lock:
+            if not self._stop_needed(ticket, f"gas{channel}"):
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -476,7 +498,10 @@ class FurnaceService:
 
     def stop_water_flow(self, unit_id):
         unit = self._assert_flow_channel_kind("water", unit_id)
+        self._stop_ticket()
         with self._operation_lock:
+            if self._transports_closed:
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -507,7 +532,10 @@ class FurnaceService:
             raise RuntimeError("; ".join(str(error) for error in errors))
 
     def stop_all_flow(self):
+        ticket = self._stop_ticket()
         with self._operation_lock:
+            if not self._stop_needed(ticket, "gas0", "gas1", "gas2", "water"):
+                return self.flow_status()
             if not self._prepare_stop():
                 return self.flow_status()
             try:
@@ -1019,6 +1047,25 @@ class FurnaceService:
                 )
             return []
 
+    def _stop_ticket(self):
+        with self._stop_ticket_lock:
+            self._stop_requests += 1
+            return self._stop_requests
+
+    def _stop_needed(self, ticket, *keys):
+        """Call under the operation lock. Return False when an equal stop ran after this request.
+
+        Parallel stops (labctl sends up to 6) then run their I/O 1 time, not 1 time each.
+        Key "all" (heat and gas) covers every key. A stop after close() sends nothing.
+        """
+        if self._transports_closed:
+            return False
+        if any(self._stops_begun.get(key, 0) >= ticket for key in ("all", *keys)):
+            return False
+        for key in keys:
+            self._stops_begun[key] = self._stop_requests
+        return True
+
     @staticmethod
     def _close_quietly(handle):
         try:
@@ -1056,25 +1103,30 @@ class FurnaceService:
     def stop_sequence(self, stop_furnace=True):
         if not stop_furnace:
             raise ValueError("Stopping sequence tracking must also stop output")
+        ticket = self._stop_ticket()
         with self._operation_lock:
-            was_running = self._sequence_running
-            self._sequence_running = False
-            self._sequence_phase = "fault" if self._locked else "stopped"
-            self._hold_started_at = self._hold_started_wall = None
-            self._orphan_started_at = self._orphan_started_wall = None
-            if self._prepare_stop():
-                errors = self._stop_outputs()
-                if errors:
-                    self._fail(RuntimeError("; ".join(str(error) for error in errors)))
-                else:
-                    try:
-                        self._persist()
-                    except Exception as error:
-                        self._fail(error)
-            if was_running:
-                self._notifications.append("stopped")
+            if self._stop_needed(ticket, "all"):
+                self._stop_all()
         self._notify_pending()
         return self.status()
+
+    def _stop_all(self):
+        was_running = self._sequence_running
+        self._sequence_running = False
+        self._sequence_phase = "fault" if self._locked else "stopped"
+        self._hold_started_at = self._hold_started_wall = None
+        self._orphan_started_at = self._orphan_started_wall = None
+        if self._prepare_stop():
+            errors = self._stop_outputs()
+            if errors:
+                self._fail(RuntimeError("; ".join(str(error) for error in errors)))
+            else:
+                try:
+                    self._persist()
+                except Exception as error:
+                    self._fail(error)
+        if was_running:
+            self._notifications.append("stopped")
 
     def acknowledge(self, *, client):
         with self.lease.control(client):
@@ -1086,6 +1138,7 @@ class FurnaceService:
                 self._locked = False
                 self._fault = self._error = None
                 self._stop_retry_at = None
+                self._read_failures = 0
                 self._sequence_phase = "idle"
                 self._sequence_running = False
                 try:
@@ -1127,7 +1180,14 @@ class FurnaceService:
                 and self.clock() >= self._stop_retry_at
             ):
                 self._retry_stop()
-            if self._closed or not self.connected or self._locked:
+            if self._closed or not self.connected:
+                return self._status_locked(lease)
+            if self._locked:
+                # Keep PV, SV and run state current while locked. Read only; ignore errors.
+                try:
+                    self._snapshot = self._read_snapshot(track=False)
+                except Exception:
+                    pass
                 return self._status_locked(lease)
             try:
                 if self._sequence_phase == "manual" and not self._output_stopped:
@@ -1152,7 +1212,18 @@ class FurnaceService:
                                 raise RuntimeError("; ".join(str(error) for error in errors))
 
                         self._transition(grace_stop)
-                self._snapshot = self._read_snapshot(track=True)
+                try:
+                    snapshot = self._read_snapshot(track=True)
+                except Exception as error:
+                    # A failed write in the read has already faulted. A read can fail once
+                    # on line noise: fault only after several polls in a row fail.
+                    self._read_failures += 1
+                    if self._locked or self._read_failures >= POLL_READ_FAILURES:
+                        raise
+                    self.events.add("warning", "Furnace poll read failed", error=str(error))
+                    return self._status_locked(lease)
+                self._read_failures = 0
+                self._snapshot = snapshot
                 if self._sequence_running and self._snapshot["run_state_code"] == 1:
                     raise RuntimeError("Controller stopped before the planned sequence end")
                 self._advance_sequence(self._snapshot)
@@ -1191,6 +1262,8 @@ class FurnaceService:
                         device.close(stop_output=False)
                     except Exception as error:
                         self._error = error
+            # A stop that a server thread serves after this point must not reopen the ports.
+            self._transports_closed = True
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=max(2, self.poll_interval + 1))
         return self.status()
@@ -1243,10 +1316,20 @@ class FurnaceService:
                 except Exception as error:
                     self.events.add("error", "Sequence callback failed", error=str(error))
 
-    def status(self):
+    def status(self, *, wait=None):
+        """Return the state. With wait (s), return the last state if an operation holds the lock.
+
+        Reads then do not queue behind a stop or a gas write that holds the lock for seconds.
+        """
         lease = self.lease.snapshot()
-        with self._operation_lock:
+        if not self._operation_lock.acquire(timeout=-1 if wait is None else wait):
+            if self._last_status is not None:
+                return copy.deepcopy(dict(self._last_status, lease=lease))
+            self._operation_lock.acquire()
+        try:
             return self._status_locked(lease)
+        finally:
+            self._operation_lock.release()
 
     def _status_locked(self, lease):
         remaining = None
@@ -1256,7 +1339,7 @@ class FurnaceService:
                 self._steps[self._sequence_index]["hold_minutes"] * 60
                 - (self.clock() - self._hold_started_at),
             )
-        return copy.deepcopy(
+        value = copy.deepcopy(
             dict(
                 connected=self.connected,
                 locked=self._locked,
@@ -1292,6 +1375,8 @@ class FurnaceService:
                 ),
             )
         )
+        self._last_status = value
+        return copy.deepcopy(value)
 
     def _control_mode(self):
         if not self.connected:

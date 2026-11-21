@@ -713,14 +713,15 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
     proxy_config, caddy_binary = prepare_proxy(args, host, settings)
-    # Without a library, the microscope service installs and runs without its camera.
+    # Without a library, the microscope service installs, but its startup fails.
     toupcam_missing = args.toupcam is None and not os.path.lexists(host.toupcam)
     toupcam_binary = prepare_toupcam(
         args.toupcam, host, required="microscope" in selected and not toupcam_missing
     )
     if "microscope" in selected and toupcam_missing:
         print(
-            "The Toupcam library is not installed. Pass it with --toupcam PATH.",
+            "The Toupcam library is not installed. The microscope service does not start "
+            "without it. Pass it with --toupcam PATH.",
             file=out,
             flush=True,
         )

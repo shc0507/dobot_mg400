@@ -149,7 +149,11 @@ def console_blueprints(service, prefix):
         if set(data) - {"action", "params"} or "action" not in data:
             raise ValueError("Send action and optional params only.")
         result = console().command(_device(name), _page(), data["action"], data.get("params", {}))
-        status = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
+        # A refusal relays the service status, so labctl tells invalid params from a conflict.
+        status = (
+            result.pop("status", None)
+            or {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
+        )
         return jsonify(result), status
 
     @blueprint.post("/api/console/stop/<name>")

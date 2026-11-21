@@ -350,6 +350,10 @@ def test_unknown_command_outcome_is_reported_and_never_retried(rig):
     stage.fail["command"] = ServiceError(409, "The service is locked.")
     refused = post(rig, "command/stage", {"action": "move"})
     assert refused.status_code == 409 and refused.get_json()["outcome"] == "refused"
+    stage.fail["command"] = ServiceError(400, "Distance must be a number.")
+    invalid = post(rig, "command/stage", {"action": "move"})
+    assert invalid.status_code == 400
+    assert invalid.get_json() == {"outcome": "refused", "error": "Distance must be a number."}
 
 
 def test_stop_needs_no_control_and_is_sent_once(rig):

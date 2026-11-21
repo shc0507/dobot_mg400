@@ -5,7 +5,7 @@
 [Return to the home page to choose an interface](../README.en.md)
 
 This page describes the TCP protocol and feedback checks for hardware control.
-The robot service and the interactive terminal connect directly to the controller through TCP.
+The robot service and the mode-switch tool connect directly to the controller through TCP.
 The [recipe orchestrator](orchestrator.en.md) provides the pick-and-place steps `robot.pick`, `robot.transfer`, and `vision.tray_transfer`.
 For routine operation, use the relevant guide:
 
@@ -194,7 +194,7 @@ Keep these distinctions when interpreting the logs:
   Keep the original timestamps. First compare order and intervals within the same controller.
   Before aligning different logs, check time zones and clock offsets.
 
-To query current alarm codes, first disable and release the robot in the Lab Console, and close the interactive terminal.
+To query current alarm codes, first disable and release the robot in the Lab Console.
 Then connect separately to `29999` and call `GetErrorID()`.
 Service polling and external queries may disconnect each other's connections.
 

@@ -14,10 +14,10 @@ The recipe runner, command-line tools, and the `labkit` client use the same inte
 The service uses real-robot control mode by default.
 Starting the service does not connect to the robot or send motion commands.
 The service connects to the robot only after a client takes the control lease (`api/heartbeat`).
-Before use, close the interactive terminal and other control programs.
+Before use, close other control programs.
 Connections can interrupt each other when multiple programs query the controller.
 
-The robot service and interactive terminal use a file lock to limit real-robot connections to one program per robot.
+The robot service and the mode-switch tool use a file lock to limit real-robot connections to one program per robot.
 Read-only mode also uses this lock.
 See [Panel connection lock](deploy.en.md#panel-connection-lock) for the lock directory and permission requirements.
 This lock coordinates only this project's programs. It cannot prevent DobotStudio or another host from connecting.
@@ -71,7 +71,7 @@ Stop and disable end the blow. They keep the suck output.
 
 ## Stop and recover
 
-`STOP ALL MOTION` at the top of the console sends a stop to all devices. It does not need control.
+`STOP ALL MOTION` at the top of the console sends a stop to the robot, the stage and the microscope. It does not need control. It does not stop the furnace heat or gas.
 It requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
@@ -86,7 +86,7 @@ If the feedback connection fails, the service records an unconfirmed stop and ke
 The service connects again every 1 second. `Recover` and `Clear alarm` both need fresh feedback.
 When fresh feedback returns, check the robot state, then click `Recover`.
 
-When a client that connects directly to the service releases the lease, such as a `labkit` client or the interactive terminal, the service does not disable the robot.
+When a client that connects directly to the service releases the lease, such as a `labkit` client, the service does not disable the robot.
 If the robot is enabled, `api/release` stops it and releases control, but keeps feedback connected and control locked.
 The client can take the lease again to cancel the pending disconnect. Then it sends `disable`, then releases the lease.
 If the robot is already disabled, `api/release` confirms disable, then disconnects.

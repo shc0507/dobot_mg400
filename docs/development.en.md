@@ -34,7 +34,7 @@ uv run ruff format --check .
 By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, and `microscope`.
 `vision-gpu` and `notebook` are not default groups.
 The `stage` group contains Flask, waitress, pySerial, NumPy, and OpenCV for the stage service.
-The robot service and interactive terminal use only the standard library and do not require the `stage` group.
+The robot service uses only the standard library and do not require the `stage` group.
 
 Tests do not connect to a robot or Arduino.
 For pull requests and pushes to `main`, GitHub Actions (`.github/workflows/ci.yml`) runs these checks on Python 3.12.
@@ -45,7 +45,7 @@ Offline checks cannot replace physical robot verification.
 Shared test fixtures are in `tests/conftest.py`.
 The stage test fixtures `stage_rig`, `stage_ports`, and `stage_usb` are also in this file. Tests use them by name.
 Test doubles are objects that replace real devices in tests.
-Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_ws.py`.
+Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_http.py`.
 Shared checks for the service contract tests are in `tests/contract_helpers.py`.
 Stage clock, serial port, and serial port list doubles are in `tests/stage_helpers.py`.
 Reuse these modules in new tests. Do not duplicate them in test files.

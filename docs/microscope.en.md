@@ -318,7 +318,7 @@ Do not substitute repository paths or shared public directories for the configur
 
 ## Side-camera stream
 
-The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
+The microscope side camera is the AC410 on fixed hub port `6.1`. It watches the objective turret.
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 For the service and preview, go2rtc owns its V4L2 capture.
 During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.

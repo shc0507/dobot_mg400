@@ -3,7 +3,7 @@
 # Furnace and gas control
 
 The furnace service controls temperature, gas flow, and bounded sequences for operators and automation clients. The service has no web page.
-Operators use the Furnace + microscope workspace of the Lab Console. The same workspace shows microscope previews and recording. See the [microscope guide](microscope.en.md). The microscope remains the camera's only owner.
+Operators use the Furnace workspace of the Lab Console. The same workspace shows microscope previews and recording. See the [microscope guide](microscope.en.md). The microscope remains the camera's only owner.
 See [Host deployment](deploy.en.md) and the [furnace lifecycle decision](adr/0005-furnace-lifecycle.en.md).
 
 ## Before hardware use
@@ -62,7 +62,7 @@ The service checks no token, `Host`, or `Origin`. The VPN is the access boundary
 
 ## Take control in the console
 
-1. In the Lab Console, open the Furnace + microscope workspace.
+1. In the Lab Console, open the Furnace workspace.
 2. On the furnace card, select **Take control**.
 3. Read the connection and fault status before setting outputs.
 

@@ -5,7 +5,7 @@
 The thermal package provides a Python controller and acquisition service for the Thermal Master P1, USB `3474:45C2`.
 The native temperature array is 160 × 120 pixels.
 FastAPI and uvicorn serve the HTTP API. The service has no web page.
-The Cameras workspace of the Lab Console shows the thermal view. The Furnace + microscope workspace shows the crucible region reading.
+The Cameras workspace of the Lab Console shows the thermal view. The Furnace workspace shows the crucible region reading.
 
 ## Managed host service
 
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 ```
 
 Use `create_app(demo=True)` for synthetic data or `create_app(auto_connect=False)` to wait for the `connect` command.
-Bind and port environment settings belong to the CLI. An embedded server supplies its own settings.
+The CLI takes the bind address and port from `--bind` and `--port`. An embedded server supplies its own.
 For a mounted ASGI application, the parent must manage the acquisition lifespan.
 [FastAPI does not run mounted application lifespan hooks automatically](https://fastapi.tiangolo.com/advanced/events/#sub-applications).
 

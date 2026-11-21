@@ -26,6 +26,10 @@ class AutofocusCancelled(RuntimeError):
     """Raised when the operator stops an autofocus run."""
 
 
+class NoFocusPeak(RuntimeError):
+    """Raised when a completed scan shows no focus peak."""
+
+
 @dataclass(frozen=True)
 class FocusMeasurement:
     """One focus score at a commanded position relative to the start."""
@@ -298,13 +302,15 @@ class AutoFocuser:
         lower_limit: int,
         stage: str | None = None,
         stage_prefix: str = "",
+        coarse_score: float | None = None,
     ) -> list[FocusMeasurement]:
         """Scan from right to left once, reducing step size near the peak.
 
         The scan shrinks its step without reversing direction. Three settled
         samples must fall below the peak by more than measured frame noise
         before it ends early. A rising peak at the window edge can extend the
-        scan within the caller's original travel limits.
+        scan within the caller's original travel limits. With ``coarse_score``,
+        a plateau stops the scan only near that score, not on a flat baseline.
         """
         results = []
         target = int(start)
@@ -344,7 +350,12 @@ class AutoFocuser:
             # Broad, statistically flat peaks need no long minimum-step sweep.
             # Once the dense zone has been crossed, five agreeing samples near
             # the best measured score are sufficient to stop on a plateau.
-            if step == min_step and len(results) >= 5 and target <= predicted_peak - max_step:
+            if (
+                step == min_step
+                and len(results) >= 5
+                and target <= predicted_peak - max_step
+                and (coarse_score is None or best.score >= 0.5 * coarse_score)
+            ):
                 tail = results[-5:]
                 tolerance = max(
                     abs(best.score) * 0.015,
@@ -424,15 +435,29 @@ class AutoFocuser:
         score does not trigger a correction scan or a score-matching error.
         Camera acquisition and motion failures still propagate normally.
         """
-        self._return_to_best(best.position, lower_limit)
+        self._return_to_best(best.position, upper_limit)
         return self._measure(stage_prefix + "final", precision=True)
 
-    def _return_to_best(self, target: int, lower_limit: int) -> None:
-        """Approach the final position in the positive direction when possible."""
-        approach = max(lower_limit, target - self.backlash_steps)
-        if approach < target and self.position > approach:
+    def _return_to_best(self, target: int, upper_limit: int) -> None:
+        """Approach the final position downward, like the fine scan, to repeat its backlash."""
+        approach = min(upper_limit, target + self.backlash_steps)
+        if approach > target and self.position < approach:
             self._move_to(approach, precision=True)
         self._move_to(target, precision=True)
+
+    @staticmethod
+    def _require_peak(samples: list[FocusMeasurement], best: FocusMeasurement) -> None:
+        """Refuse a scan whose scores do not change by more than frame noise."""
+        scores = [item.score for item in samples]
+        tolerance = max(
+            abs(best.score) * 0.015,
+            3.0 * max(item.score_noise for item in samples),
+            1e-9,
+        )
+        if max(scores) - min(scores) <= tolerance:
+            raise NoFocusPeak(
+                "Focus scores are flat across the scan; check the light and the sample"
+            )
 
     def _disable_objective_for_focus(self) -> None:
         """Release the objective turret before collecting focus scores."""
@@ -497,10 +522,13 @@ class AutoFocuser:
         self._stationary_since = time.time()
         self.measurements.clear()
         stabilization_before = self.camera.stabilization_enabled
+        # Scores use raw frames. A stabilization reset would re-anchor a recording.
+        toggle_stabilization = not getattr(self.camera, "is_recording", False)
         auto_exposure_before = None
 
         try:
-            self.camera.set_stabilization(False)
+            if toggle_stabilization:
+                self.camera.set_stabilization(False)
             if lock_exposure:
                 # Let automatic exposure settle before freezing it for the scan.
                 time.sleep(0.7)
@@ -534,8 +562,10 @@ class AutoFocuser:
                 min_step=ultrafine_step,
                 lower_limit=-half_range,
                 stage_prefix=stage_prefix,
+                coarse_score=coarse_best.score,
             )
             best = self._fine_candidate(fine)
+            self._require_peak(coarse + fine, best)
             return self._land_and_verify(
                 best,
                 lower_limit=-half_range,
@@ -548,7 +578,8 @@ class AutoFocuser:
             self.motor.focus_stop()
             raise
         finally:
-            self.camera.set_stabilization(stabilization_before)
+            if toggle_stabilization:
+                self.camera.set_stabilization(stabilization_before)
             if lock_exposure and auto_exposure_before is not None:
                 self.camera.set_auto_exposure(auto_exposure_before)
 

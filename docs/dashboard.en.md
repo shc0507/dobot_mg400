@@ -32,7 +32,7 @@ The console is the only operator web page.
 - The page sends a heartbeat every 500 ms. Each heartbeat renews the lease 1 time.
 - The console releases the lease when no heartbeat arrives for 3 seconds, or when the page closes. If a renewal fails, the control ends and the console does not request it again.
 - Before the console releases the robot, it disables the arm. This applies to **Release**, **Release all**, a page close and a missing heartbeat. The disable also stops motion. The robot service then stays unlocked.
-- **Release all** releases only the console's own leases.
+- **Release all** releases only the console's own leases. It skips devices lent to a run. Stop or abort the run first.
 - Agent pages: `labctl` uses the page identity `agent-<session>`. The holder on the **Control** card is `agent-<session>-<12 hex>`. The console renews an agent page's leases every 1 second. It releases them after 10 minutes without a request from that page. Any request from the page counts. While a `labctl do` run borrows a device, the page cannot command or release it, and the idle timeout does not apply.
 - `GET /lab/api/console/state/<device>` returns the full state of 1 device and its console holder. It needs no control.
 
@@ -185,11 +185,11 @@ Every device command goes through the console relay. Use **Take control** for th
 - When a fault locks the furnace, **Acknowledge fault…** shows. It needs furnace control and a confirmation in the page. Before you acknowledge, make sure that the controller shows STOP.
 - The microscope card shows 1 large preview. The **Microscope** and **Side camera** switch in the preview selects the Toupcam view or the camera3 side view. Only the shown view streams. The preview uses `window.LabCameras.tile` from the Cameras workspace when it exists. Otherwise it shows OFFLINE.
 - Each objective button shows the objective name that the service describes, for example 10x. Without a name, it shows the objective ID.
-- The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service raises the focus to clearance before it switches the objective. The focus bar shows the position on the measured limits.
+- The objective buttons, nudges, jog and autofocus are available only when the focus zero is known. The service moves the focus to the clearance position (0, the 50x focus) before it switches the objective. The focus bar shows the position on the measured limits.
 - The objective buttons and focus controls are below the preview. Focus controls include the focus bar, **−**, **+**, **Autofocus** (local), **Full autofocus** and **Set focus zero**. The jog pulses appear between **−** and **+**.
 - **Lens calibration** is beside the objective buttons. Use it to choose a saved complete profile. The 5x, 10x, 20x and 50x buttons use that profile. The selection persists after a service restart.
 - **Turret**, **Recording** and **Sequence** are closed groups. Open a group to use its controls.
-- The **−10**, **−1**, **+1** and **+10** buttons in **Turret** turn the turret in full steps at the current focus. They do not raise the focus to clearance first. The text beside them shows the turret offset and its limit. A button is unavailable when the offset is unknown, or when the nudge would move the offset outside the limit.
+- The **−10**, **−1**, **+1** and **+10** buttons in **Turret** turn the turret in full steps at the current focus. They do not move the focus to the clearance position first. The text beside them shows the turret offset and its limit. A button is unavailable when the offset is unknown, or when the nudge would move the offset outside the limit.
 - **Set focus zero** needs microscope control and no confirmation. The console sends it 1 time. The focus gears can slip. Re-zero at the 50x focus before each use.
 - **Save snapshot** in **Recording** saves 1 PNG. Leave **Snapshot path** empty for the service default, or enter a relative path without `.` or `..` parts.
 - **Start recording** and **Record next furnace sequence** send the recording commands with **Run name**, **Mode**, **Interval s** and **Output fps**. **Live** uses no interval. A failed recording shows its error.

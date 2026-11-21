@@ -164,6 +164,7 @@ class RobotPanelState:
         self._faults = 0
         self._disable_verified = False
         self._safety_workers = 0
+        self._unwatched_workers = 0
         self._safety_actions = set()
         self._disconnect_requested = False
         self._safety_threads = []
@@ -743,14 +744,16 @@ class RobotPanelState:
             and self._no_work()
         )
 
-    def _no_work(self):
+    def _no_work(self, unwatched_stops=False):
+        # Stops sent without feedback do not count when unwatched_stops is true.
+        workers = self._safety_workers - (self._unwatched_workers if unwatched_stops else 0)
         return not (
             self._locked
             or self._fault
             or self._busy
             or self._working
             or self._job
-            or self._safety_workers
+            or workers
             or self._clearing
             or self._kb_on
             or self._kb_arming
@@ -767,7 +770,8 @@ class RobotPanelState:
 
     def _unwatched_idle(self):
         """Whether no client syncs feedback and no work runs. Then no motion can run here."""
-        return (not self._syncing or self._sample is None) and self._no_work()
+        # The direct and console paths of one labctl stop arrive together.
+        return (not self._syncing or self._sample is None) and self._no_work(unwatched_stops=True)
 
     def _release_ownership_if_idle(self):
         """Keep ownership until feedback and all controller work have ended."""
@@ -916,6 +920,7 @@ class RobotPanelState:
         self._message = "Sending ResetRobot(). No client syncs robot feedback."
         record["deferred"] = True
         self._safety_workers += 1
+        self._unwatched_workers += 1
         thread = threading.Thread(
             target=self._send_unowned_stop,
             args=(record, False),
@@ -926,6 +931,7 @@ class RobotPanelState:
             thread.start()
         except Exception as start_error:
             self._safety_workers -= 1
+            self._unwatched_workers -= 1
             self._message = (
                 f"Robot stop could not start: {start_error} Use the physical emergency stop."
             )
@@ -982,6 +988,8 @@ class RobotPanelState:
             )
         with self._lock:
             self._safety_workers -= 1
+            if not locked:
+                self._unwatched_workers -= 1
             self._message = message
             self._finish_command(record, "failed", message)
             self._stop_changed.notify_all()

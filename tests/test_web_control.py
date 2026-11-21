@@ -200,9 +200,26 @@ def test_initial_feedback_failure_releases_ownership_for_another_panel(rig):
 
 def test_stop_without_sync_sends_reset_and_reports_unconfirmed_without_a_lock(rig):
     state, feed, controls = rig
-    for _ in range(2):
-        # STOP ALL and labctl all stop reach an idle service like this.
-        assert state.stop("browser-a", wait_s=1)["stop"] == "unconfirmed"
+    gate = threading.Event()
+
+    class GatedControl(PanelControl):
+        def send_stop(self):
+            gate.wait(2)
+            super().send_stop()
+
+    def factory(*args, **kwargs):
+        control = GatedControl(*args, **kwargs)
+        controls.append(control)
+        return control
+
+    state._control_factory = factory
+    try:
+        # The direct and console paths of one labctl stop arrive together.
+        for _ in range(2):
+            assert state.stop("browser-a", wait_s=0)["stop"] == "unconfirmed"
+            assert not state.snapshot()["locked"]
+    finally:
+        gate.set()
     wait_for(lambda: not state.snapshot()["busy"])
     assert [control.calls for control in controls] == [[], ["send_stop"], ["send_stop"]]
     snapshot = state.snapshot()

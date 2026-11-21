@@ -87,6 +87,15 @@ SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "assets"}
 SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
 UNIT_NAME = re.compile(r"mg400-[a-z0-9-]+\.service")
+# Repeated subsystem matches are ORed. A change event applies new rules to present nodes.
+UDEV_TRIGGER = [
+    "udevadm",
+    "trigger",
+    "--action=change",
+    "--subsystem-match=usb",
+    "--subsystem-match=tty",
+    "--subsystem-match=video4linux",
+]
 
 
 def load_services(path):
@@ -649,6 +658,7 @@ def write_file(path, content, mode, owner, chown):
             out.flush()
             os.fchmod(out.fileno(), mode)
             chown(out.fileno(), *owner)
+            os.fsync(out.fileno())
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
@@ -912,7 +922,7 @@ def install(args, host, run, chown, out):
             if not args.dry_run:
                 write_file(host.udev / name, text, 0o644, (0, 0), chown)
         system(["udevadm", "control", "--reload-rules"])
-        system(["udevadm", "trigger", "--subsystem-match=usb"])
+        system(UDEV_TRIGGER)
     for name, content in unit_contents.items():
         step(f"install {host.units / name}")
         if not args.dry_run:

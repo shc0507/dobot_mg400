@@ -98,12 +98,11 @@ def test_connect_command_after_disconnect_restarts_frames():
         assert set(body) == {"command_id", "state"}
         last = body["state"]["last_command"]
         assert last["id"] == body["command_id"]
-        assert (last["action"], last["client"], last["result"]) == (
-            "connect",
-            "lab-console",
-            "ok",
-        )
+        assert (last["action"], last["client"]) == ("connect", "lab-console")
+        assert last["result"] in ("running", "ok")
         assert wait_for_frame(client)["sequence"] > first["sequence"]
+        last = wait_until(lambda: client.get("/api/state").json()["last_command"])
+        assert (last["id"], last["result"]) == (body["command_id"], "ok")
         assert client.get("/api/state").json()["connected"] is True
     assert not service._thread.is_alive()
 

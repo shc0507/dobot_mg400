@@ -209,9 +209,7 @@ class MFCFlowControllerTests(unittest.TestCase):
         controller = MFCFlowController(serial_connection=serial)
         controller.set_valve_override(7, False)
         controller.stop_flow_unconfirmed(7)
-        self.assertEqual(
-            serial.writes, [b"\x0207SVC\r", b"\x0207SFR$0\r", b"\x0207SVN\r"]
-        )
+        self.assertEqual(serial.writes, [b"\x0207SVC\r", b"\x0207SFR$0\r", b"\x0207SVN\r"])
 
     def test_stop_uses_cap_zero_setpoint_packet(self):
         serial = FakeSerial([b"OK\r"])

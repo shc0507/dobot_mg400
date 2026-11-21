@@ -84,7 +84,7 @@ HOLD continues temperature regulation while it pauses the controller program. ST
 
 Enter a target and ramp rate, select **Apply and run…**, then confirm in the page.
 Targets must be at least `0` °C and within the configured temperature cap. Ramp rates must be positive and within the configured ramp cap.
-The ramp duration (the difference between target and current PV, divided by the ramp rate) must be at most `3200` min. If it is longer, the service refuses the command before it writes to the controller. The furnace does not lock. A sequence checks each step in the same way: the first step from the current PV, and each later step from the previous target.
+The ramp duration (the difference between target and current PV, divided by the ramp rate) must be at most `3200` min. If it is longer, the service refuses the command before it writes to the controller. The furnace does not lock. A sequence checks each step in the same way: the first step from the current PV, and each later step from the previous target. Each check uses the ramp rate that the controller stores after rounding.
 The driver writes the target to both `SP1` and `SP2` before RUN. It uses current PV to calculate ramp duration.
 When controller step `2` begins, the service requests and verifies HOLD.
 Do not infer HOLD from a target match alone.
@@ -92,7 +92,7 @@ Do not infer HOLD from a target match alone.
 ## Sequences and gas
 
 1. Use **+ Add step** to add a row. Use the button at the end of a row to remove it.
-2. Enter each target, ramp rate, and hold duration in minutes.
+2. Enter each target, ramp rate, and hold duration in minutes. A hold is at most `43200` min (30 days).
 3. Enter optional gas percentages for each step. A blank gas field leaves that channel unchanged.
 4. If any step sets gas, enter the end-gas percentages and the temperature below which end gas stops.
 5. Select **Start sequence…**, then confirm in the page. It uses the displayed table without a separate save action.
@@ -100,7 +100,9 @@ Do not infer HOLD from a target match alone.
 The hold timer starts only after verified HOLD and PV within `1` °C of the target.
 The service advances after the hold duration. Ramp and settling time make total duration longer than the sum of holds.
 It does not repeatedly send temperature setters during a hold.
-After the final hold, heating stops. The end-gas plan continues until PV falls below its threshold. The service then applies idle gas, which defaults to all off.
+After the final hold, heating stops. The end-gas plan continues until PV falls below its threshold, or for at most `24` h. The service then applies idle gas, which defaults to all off.
+A gas stop during a sequence holds until the sequence ends: later steps and the end-gas plan keep that channel off. Idle gas still applies at the end.
+A sequence edit during a run without `end_gas` and `end_gas_until_c` keeps the current end-gas plan.
 If the controller enters STOP during a sequence, for example from its front panel, the service locks the furnace until a fault acknowledgement.
 
 The `set_sequence` command applies edits during a run. During end-gas cooling, the service refuses `set_sequence` and `start_sequence`.
@@ -146,7 +148,8 @@ See the [recording instructions](microscope.en.md#recording-and-furnace-sequence
 | Startup reads matching RUN or HOLD | Resume valid saved intent only when the target matches within `2` °C and live settings satisfy the caps |
 | Startup reads unmatched RUN or HOLD | Attempt heat stop and idle gas, then lock until acknowledgement |
 | Saved state has a fault or an interrupted command | Lock until acknowledgement, also when the controller shows STOP |
-| Startup reads STOP | Remain idle, including when saved state contains a cooling plan |
+| Startup reads STOP and saved state is in end-gas cooling | Resume the end-gas plan without a gas command. The poll applies idle gas below the threshold or after the time limit |
+| Startup reads STOP otherwise | Remain idle |
 | SIGINT, SIGTERM, or SIGHUP | Attempt heat and gas stop independently, close transports, and exit |
 
 Matching state requires the same furnace serial path, slave address, gas serial path, and gas map as when the state was saved. If you change these settings during heating, the next startup stops the outputs and locks.

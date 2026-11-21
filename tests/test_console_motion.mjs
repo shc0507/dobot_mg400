@@ -174,7 +174,7 @@ test("Confirm sends one target once and shows backend motion and completion", as
     const position = pickTarget(page);
     position.targetConfirm.click(); position.targetConfirm.click();
     assert.equal(pointRequests(page).length, 1);
-    assert.deepEqual(pointRequests(page)[0][2], { target: { x: 30, y: 0 } });
+    assert.deepEqual(pointRequests(page)[0][2], { target: { x: 30, y: 0 }, stop_epoch: 0 });
     assert.equal(position.targetStatus.textContent, "Sending move…");
     assert.equal(position.targetConfirm.hidden, true);
     accept({ operation }); await page.settle();
@@ -192,7 +192,7 @@ test("Insert confirmation sends only Insert and shows a rejected move", async ()
   try {
     const position = pickTarget(page, "insert", 210);
     position.targetConfirm.click(); await page.settle();
-    assert.deepEqual(pointRequests(page)[0][2], { target: { insert: 6.5 } });
+    assert.deepEqual(pointRequests(page)[0][2], { target: { insert: 6.5 }, stop_epoch: 0 });
     assert.equal(position.targetStatus.textContent, "Move failed: Encoder feedback is stale.");
     assert.equal(position.insertTarget.hidden, false);
     assert.equal(position.targetConfirm.hidden, true);
@@ -265,6 +265,25 @@ test("Stop clears the target and a late acceptance cannot restore it", async () 
   accept({ operation: { id: "point-1", status: "moving" } }); await page.settle();
   assert.equal(page.ws._test.model.stageTarget, null);
   assert.equal(position.xyTarget.hidden, true);
+  // The move was accepted after the Stop: the page stops the stage once more.
+  assert.equal(page.calls.filter(call => call[0] === "stop" && call[1] === "stage").length, 2);
+});
+
+test("a robot move accepted after a Stop pressed while it was in flight is stopped again", async () => {
+  let accept;
+  const page = await mounted({ replies: { jog: () => new Promise(resolve => { accept = resolve; }) } });
+  try {
+    page.ws._test.model.speed = 5;
+    page.ws._test.send("robot", "jog X+", { axis: "x", direction: 1, step: 2, speed: 5 }, "move", "jog");
+    page.find("Stop arm").click();
+    await page.settle();
+    accept({ outcome: "accepted" }); await page.settle();
+    assert.equal(page.calls.filter(call => call[0] === "stop" && call[1] === "robot").length, 2);
+    // Without a Stop in flight, a move sends no stop.
+    page.ws._test.send("robot", "jog X+", { axis: "x", direction: 1, step: 2, speed: 5 }, "move", "jog");
+    accept({ outcome: "accepted" }); await page.settle();
+    assert.equal(page.calls.filter(call => call[0] === "stop" && call[1] === "robot").length, 2);
+  } finally { page.ws.hide(); }
 });
 
 test("jog targets add one bounded step to one axis", () => {
@@ -960,6 +979,28 @@ test("keyboard jog disarms when the tab is hidden and when the Motion tab is lef
     page.ws.show();
     page.key("keydown", "KeyW");
     assert.equal(page.keyCalls().some(call => call[1] === "keys"), false);
+  } finally { page.restore(); }
+});
+
+test("the switch turns off when the service disarms before the page saw it on, and on Stop arm", async () => {
+  const robot = { ...ROBOT, keyboard_enabled: false, keyboard_disarm_reason: "old reason." };
+  const page = await keyboardPage({ robot });
+  try {
+    page.find("Keyboard jog").click();
+    await page.settle();
+    // The old reason from before the arm keeps the switch on.
+    await page.ws._test.refresh();
+    assert.equal(page.ws._test.kb.on, true);
+    Object.assign(robot, { keyboard_disarm_reason: "the arm stopped." });
+    await page.ws._test.refresh();
+    assert.equal(page.ws._test.kb.on, false);
+    assert.equal(page.ws._test.refs().kbOff.textContent, "Off: the arm stopped.");
+    Object.assign(robot, { keyboard_enabled: true, keyboard_disarm_reason: null });
+    page.find("Keyboard jog").click();
+    await page.settle();
+    assert.equal(page.ws._test.kb.on, true);
+    page.find("Stop arm").click();
+    assert.equal(page.ws._test.kb.on, false);
   } finally { page.restore(); }
 });
 

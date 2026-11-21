@@ -57,6 +57,8 @@ def dashboard_blueprint(service, prefix):
             operation, fresh = service.dashboard.reserve(action)
         if fresh:
             service.dashboard.dispatch(operation)
+        else:
+            service.dashboard.repeat(operation)
         key = "command_id" if action == "hold" else "operation_id"
         return jsonify({key: operation["id"]}), 202
 

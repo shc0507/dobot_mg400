@@ -272,3 +272,16 @@ def test_store_migrates_device_events_and_drops_gateway_calls(tmp_path):
         ]
         tables = {row[0] for row in store._db.execute("SELECT name FROM sqlite_master")}
         assert "gateway_calls" not in tables
+
+
+def test_events_after_a_cursor_start_with_the_oldest_so_pollers_skip_none(tmp_path):
+    folder = tmp_path / "runs"
+    with RunStore(folder) as store:
+        store.add_device_events(
+            [("robot", seq, float(seq), "info", f"e{seq}", {}) for seq in range(10)]
+        )
+        first = store.device_events(since=2, limit=3)
+        assert [row["message"] for row in first] == ["e4", "e3", "e2"]
+        after = store.device_events(since=max(row["id"] for row in first), limit=3)
+        assert [row["message"] for row in after] == ["e7", "e6", "e5"]
+        assert [row["message"] for row in store.device_events(limit=2)] == ["e9", "e8"]

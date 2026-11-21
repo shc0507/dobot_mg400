@@ -507,6 +507,19 @@ class SupervisedSession:
         self.move_focus_to(self.reference.clearance)
         self._guard(clearance=True)
 
+    def center_focus_window(self, half_range):
+        """Move focus inward so that a local autofocus window of +/-half_range fits."""
+        status = self._guard()
+        if type(half_range) is not int or not 0 < 2 * half_range <= status.maximum - status.minimum:
+            raise ValueError("The local autofocus window does not fit inside the focus limits")
+        center = max(
+            status.minimum + half_range,
+            min(status.focus.position, status.maximum - half_range),
+        )
+        if center != status.focus.position:
+            self.motor.focus_move(center - status.focus.position)
+        self._guard()
+
     def before_turret_move(self):
         if not self._nudge_window:
             self.move_to_clearance()
@@ -536,17 +549,25 @@ class SupervisedSession:
             or self._nudge_window
         ):
             raise ValueError("At-focus calibration needs a fresh session and a safe --focus-start")
+        half_range = focus["local_half_range"]
+        if 2 * half_range > self.reference.maximum - self.reference.minimum:
+            raise ValueError("The local autofocus window does not fit inside the focus limits")
+        # The local autofocus scans +/-half_range around its start; keep it inside the limits.
+        start = max(
+            self.reference.minimum + half_range,
+            min(focus_start, self.reference.maximum - half_range),
+        )
         try:
             self._raw_motor.stop_all()
             self._status()
             self._raw_motor.set_microstep(4, cancel_event=self.cancel_event)
             self.confirm_reference(
                 "Initial at-focus calibration: check the objective is in its working position. "
-                f"After confirmation focus will move to {focus_start} MICRO 4 pulses "
+                f"After confirmation focus will move to {start} MICRO 4 pulses "
                 "and run local autofocus."
             )
             self._nudge_window, self._turret_units = window, 0
-            self.move_focus_to(focus_start)
+            self.move_focus_to(start)
             focuser = AutoFocuser(
                 self.camera,
                 self.motor,
@@ -562,7 +583,7 @@ class SupervisedSession:
                 cancel_event=self.cancel_event,
             )
             focuser.run_local(
-                half_range=focus["local_half_range"],
+                half_range=half_range,
                 step=focus["local_step"],
                 fine_radius=focus["local_fine_radius"],
                 min_step=focus["local_min_step"],
@@ -649,7 +670,7 @@ class GuardedCamera:
         try:
             value = getattr(self._owner, method)(*args, **kwargs)
             self._session.check()
-            if method in {"get_frame", "get_frame_packet"} and value is None:
+            if method == "get_frame" and value is None:
                 raise RuntimeError("The admitted camera did not provide a fresh frame")
             return value
         except BaseException as error:
@@ -657,14 +678,24 @@ class GuardedCamera:
             raise
 
     def get_frame(self, **kwargs):
-        return self.get_frame_packet(**kwargs)[2]
+        packet = self.get_frame_packet(**kwargs)
+        if packet is None:
+            self._session.abort("The admitted camera did not provide a fresh frame")
+            raise RuntimeError("The admitted camera did not provide a fresh frame")
+        return packet[2]
 
     def get_frame_packet(self, **kwargs):
+        """Return a validated packet, or None when a wait times out.
+
+        The algorithms retry a timed-out wait. The session watcher ends a stale stream.
+        """
         after = kwargs.pop("after_id", None)
         if after is not None and (type(after) is not int or after < 0):
             raise ValueError("Frame cursor must be a nonnegative integer")
         kwargs["after_id"] = max(self._last_frame_id, after or 0)
         packet = self._call("get_frame_packet", **kwargs)
+        if packet is None:
+            return None
         try:
             identity, _, _ = validate_packet(packet, after_id=kwargs["after_id"])
             self._last_frame_id = identity
@@ -1675,6 +1706,8 @@ def run_calibration(
         cancel_event=session.cancel_event,
     )
     parameters["focus_progress" if kind == "light" else "position_progress"] = progress
+    if kind == "light":
+        parameters["before_focus"] = session.center_focus_window
     calibrator = algorithm(session.camera, session.motor, **parameters)
     if kind == "light":
         scan.update(
@@ -1694,11 +1727,18 @@ def run_calibration(
         session.check()  # Source cleanup must not swallow a refused reference handoff.
     except BaseException as error:
         session.abort(error)
+        # Keep an earlier result: a failed or stopped run writes its log beside it.
+        failed = destination.with_name(destination.stem + ".failed" + destination.suffix)
+        try:
+            writer(failed, calibrator.measurements)
+        except Exception as write_error:
+            progress(f"Could not write {failed}: {write_error}")
         raise
-    finally:
-        writer(destination, calibrator.measurements)
+    writer(destination, calibrator.measurements)
     session.check()
     progress(str(result))
+    if not result.stable:
+        raise RuntimeError(f"The calibration result is not stable; the log is {destination}")
     return destination
 
 

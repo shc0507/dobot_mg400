@@ -16,6 +16,7 @@ every ``AGENT_RENEW_S`` and names each agent identity after the session.
 """
 
 import copy
+import logging
 import re
 import threading
 import time
@@ -26,6 +27,8 @@ from pathlib import Path
 from labkit.errors import ServiceError
 
 from ..clients import SERVICES, Borrowed
+
+LOG = logging.getLogger(__name__)
 
 BEAT_TIMEOUT_S = 3.0
 AGENT_PREFIX = "agent-"
@@ -95,6 +98,9 @@ class Session:
         self.adapter, self.commands = adapter, commands
         self.beat = self.started = self.renewed = now
         self.agent = is_agent(page)
+        if self.agent:
+            # The take can end late in the lease (a slow acquire): renew at the next watcher pass.
+            self.renewed = now - AGENT_RENEW_S
         self.state = "held"
         self.renewing = False
         # A run borrows held devices: the console keeps the lease, the page cannot command.
@@ -156,35 +162,47 @@ class Console:
             with self.lock:
                 if self.closing:
                     return
-                now = self.clock()
-                late = [
-                    item
-                    for item in self.sessions.values()
-                    if item.state == "held" and not item.lent and now - item.beat > self._idle(item)
-                ]
-                for item in late:
-                    item.state = "releasing"
-                    item.message = (
-                        "No agent request for 10 min."
-                        if item.agent
-                        else "No browser heartbeat for 3 s."
-                    )
-                # The console renews agent leases itself; agents call only now and then.
-                due = [
-                    item
-                    for item in self.sessions.values()
-                    if item.agent
-                    and item.state == "held"
-                    and not item.renewing
-                    and now - item.renewed >= AGENT_RENEW_S
-                ]
-                for item in due:
-                    item.renewing, item.renewed = True, now
-            for item in late:
-                self._end(item, release=True)
-            for item in due:
-                self._spawn(lambda item=item: self._renew(item), "renew-" + item.device)
+            try:
+                self._watch_once()
+            except Exception:
+                # One bad pass must not end the watcher: leases would then never expire.
+                LOG.exception("Console watcher pass failed.")
             time.sleep(WATCH_INTERVAL_S)
+
+    def _watch_once(self):
+        """End late sessions and renew due agent leases, each in its own thread."""
+        with self.lock:
+            if self.closing:
+                return
+            now = self.clock()
+            late = [
+                item
+                for item in self.sessions.values()
+                if item.state == "held" and not item.lent and now - item.beat > self._idle(item)
+            ]
+            for item in late:
+                item.state = "releasing"
+                item.message = (
+                    "No agent request for 10 min."
+                    if item.agent
+                    else "No browser heartbeat for 3 s."
+                )
+            # The console renews agent leases itself; agents call only now and then.
+            due = [
+                item
+                for item in self.sessions.values()
+                if item.agent
+                and item.state == "held"
+                and not item.renewing
+                and now - item.renewed >= AGENT_RENEW_S
+            ]
+            for item in due:
+                item.renewing, item.renewed = True, now
+        # A robot end can wait ROBOT_DISABLE_S for its disable; renewals must not wait.
+        for item in late:
+            self._spawn(lambda item=item: self._end(item, release=True), "end-" + item.device)
+        for item in due:
+            self._spawn(lambda item=item: self._renew(item), "renew-" + item.device)
 
     @staticmethod
     def _idle(item):
@@ -192,7 +210,7 @@ class Console:
 
     def _ensure_watcher(self):
         with self.lock:
-            if self.watcher is None and not self.closing:
+            if (self.watcher is None or not self.watcher.is_alive()) and not self.closing:
                 self.watcher = self._spawn(self._watch, "watch")
 
     # Clients ---------------------------------------------------------------
@@ -222,7 +240,10 @@ class Console:
     def _end(self, item, *, release):
         """Release once, close the transport and forget the session. Never reacquire."""
         transfer = getattr(self.service, "sample_transfer", None)
-        if item.device == "stage" and transfer is not None and transfer.cancel(item.page):
+        cancelled = item.device == "stage" and transfer is not None and transfer.cancel(item.page)
+        # A stage move sent through the relay runs on without a holder: stop it first,
+        # as the robot path disables the arm.
+        if cancelled or (release and item.device == "stage"):
             try:
                 self.stop("stage")
             except Exception:
@@ -569,6 +590,8 @@ class Console:
                 item = self.sessions.get("stage")
                 if item is None or item.page != page or item.state != "held":
                     raise ServiceError(409, "Take control of this device first.")
+                if item.lent:
+                    raise ServiceError(409, LENT)
                 current = item.hold
                 if current is not None and current.id == hold_id:
                     if current.ended or current.released:
@@ -670,6 +693,8 @@ class Console:
 
     def device_state(self, device, page=None, fresh=False):
         """Return one device's full state from the device cache."""
+        # An agent that only reads or waits is still active.
+        self.touch(page)
         value = self._cached(device, fresh)["state"]
         with self.lock:
             item = self.sessions.get(device)

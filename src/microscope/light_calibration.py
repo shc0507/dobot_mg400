@@ -296,6 +296,7 @@ class LightObjectiveCalibrator:
         progress=None,
         focus_progress=None,
         before_move=None,
+        before_focus=None,
         cancel_event: threading.Event | None = None,
     ):
         if reference_frame is None or reference_frame.size == 0:
@@ -344,6 +345,7 @@ class LightObjectiveCalibrator:
         self.progress = progress
         self.focus_progress = focus_progress
         self.before_move = before_move
+        self.before_focus = before_focus
         self.cancel_event = cancel_event or threading.Event()
         self.current_microstep: int | None = None
         self.position_units = 0
@@ -1110,35 +1112,46 @@ class LightObjectiveCalibrator:
                 upper_position_units=half_range_units,
                 stage="coarse_visual_return",
             )
+
+            # The focus values are MICRO 4 pulses. MICRO is shared by both axes.
+            def focus_pulses(value, least=1):
+                if value is None:
+                    return None
+                return max(least, round(value * self.current_microstep / 4))
+
+            local_half_range = focus_pulses(focus_half_range)
+            local_step = focus_pulses(focus_step)
             self._publish_diagnostic(
                 "autofocus",
                 f"At the visually recovered coarse peak "
                 f"{coarse_peak.position_units}/16 step. Autofocus will stop "
                 "and disable the objective turret before running LOCAL "
-                f"autofocus: continuous ±{focus_half_range} focus steps, then "
-                f"one adaptive fine pass with maximum step {focus_step}; "
-                "the landing score is verified.",
+                f"autofocus: continuous ±{local_half_range} focus pulses at "
+                f"MICRO {self.current_microstep}, then one adaptive fine pass "
+                f"with maximum step {local_step}; the landing score is verified.",
             )
+            if self.before_focus is not None:
+                self.before_focus(local_half_range)
             focuser = AutoFocuser(
                 self.camera,
                 self.motor,
-                speed=focus_speed,
+                speed=focus_pulses(focus_speed),
                 settle_seconds=focus_settle_seconds,
                 frames_per_position=focus_frames,
                 precision_settle_seconds=focus_settle_seconds,
                 precision_frames_per_position=focus_frames,
                 frame_interval=focus_frame_interval,
                 roi_fraction=focus_roi_fraction,
-                backlash_steps=focus_backlash_steps,
+                backlash_steps=focus_pulses(focus_backlash_steps, least=0),
                 progress=self.focus_progress,
                 cancel_event=self.cancel_event,
             )
             try:
                 autofocus_result = focuser.run_local(
-                    half_range=focus_half_range,
-                    step=focus_step,
-                    fine_radius=focus_fine_radius,
-                    min_step=focus_min_step,
+                    half_range=local_half_range,
+                    step=local_step,
+                    fine_radius=focus_pulses(focus_fine_radius),
+                    min_step=focus_pulses(focus_min_step),
                     lock_exposure=False,
                 )
             except AutofocusCancelled as exc:

@@ -263,6 +263,39 @@ test("relay sends one request with the page identity and reports an unknown outc
   assert.match(view.nodes.get("lc-notice").textContent, /unknown/);
 });
 
+test("relay reports a server error or an unreadable reply as unknown, and a refusal as refused", async () => {
+  for (const [reply, outcome] of [[{ status: 500, body: null }, "unknown"], [{ status: 200, body: null }, "unknown"],
+    [{ status: 503, body: { error: "Down." } }, "unknown"], [{ status: 400, body: { error: "Bad params." } }, "refused"]]) {
+    const { LabConsole } = load({ responses: [reply] });
+    const view = page();
+    Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+    assert.equal((await LabConsole._internal.relay("stage", "move", {})).outcome, outcome, JSON.stringify(reply));
+  }
+});
+
+test("the page's own Release does not report control as lost, also when a heartbeat lands first", async () => {
+  let finish;
+  const { LabConsole } = load();
+  const view = page();
+  Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+  LabConsole.shell.snapshot = { control: [] };
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "held" }]);
+  globalThis.fetch = async url => {
+    if (url.endsWith("/release")) await new Promise(resolve => { finish = resolve; });
+    return { status: 200, ok: true, json: async () => ({ control: [], services: [], cameras: [], result: "released" }) };
+  };
+  const releasing = LabConsole._internal.release("robot");
+  // A heartbeat reply that still lists the robot, then one without it.
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "releasing" }]);
+  LabConsole._internal.applyControl([]);
+  finish(); await releasing;
+  assert.doesNotMatch(view.nodes.get("lc-notice")?.textContent || "", /ended/);
+  // A later loss is reported again.
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "held" }]);
+  LabConsole._internal.applyControl([]);
+  assert.match(view.nodes.get("lc-notice").textContent, /lease ended/);
+});
+
 test("a heartbeat is sent only while this page holds control", async () => {
   const { LabConsole, calls } = load({ responses: [{ status: 200, body: { control: [{ device: "stage", mine: true, state: "held" }] } }] });
   const view = page();

@@ -501,8 +501,9 @@ class MFCFlowController:
         """Send CAP's zero setpoint without requiring an acknowledgement."""
         unit_id = self._unit_id(unit_id)
         self._controlled_unit_ids.add(unit_id)
-        self._restore_normal_valve(unit_id)
+        # Zero first: SVN before SFR 0 would restore the old flow if SFR 0 is lost.
         self._send_without_response(unit_id, "SFR", "0")
+        self._restore_normal_valve(unit_id)
         return 0.0
 
     def gas_channel_status(self, channel):
@@ -537,8 +538,9 @@ class MFCFlowController:
         """Command a zero setpoint using CAP's normal SFR command."""
         unit_id = self._unit_id(unit_id)
         self._controlled_unit_ids.add(unit_id)
-        self._restore_normal_valve(unit_id)
+        # Zero first: SVN before SFR 0 would restore the old flow if SFR 0 is lost.
         self._write_command(unit_id, "SFR", "0")
+        self._restore_normal_valve(unit_id)
         return 0.0
 
     def channel_status(self, unit_id):

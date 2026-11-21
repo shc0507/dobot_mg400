@@ -218,8 +218,24 @@
   }
 
   async function loadEvents() {
+    // One read at a time; a slow reply does not stack more reads.
+    if (view.loading) return;
+    view.loading = true;
     try { view.events = await view.api.consoleRequest("/api/console/events"); update(); }
     catch { /* The status strip shows the console state. */ }
+    finally { view.loading = false; }
+  }
+
+  // The events poll runs only while the Overview shows.
+  function show() {
+    if (!view.api || view.timer) return;
+    loadEvents();
+    view.timer = setInterval(loadEvents, 2000);
+  }
+
+  function hide() {
+    if (view.timer) clearInterval(view.timer);
+    view.timer = null;
   }
 
   LabConsole.register({
@@ -231,8 +247,9 @@
       api.onState(() => update());
       api.onLanguage(() => build());
       build();
-      loadEvents();
-      view.timer = setInterval(loadEvents, 2000);
+      show();
     },
+    show,
+    hide,
   });
 })();

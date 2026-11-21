@@ -420,6 +420,57 @@ def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig
     assert state["focus_position_pulses"] == 0 and state["focus_zero_known"]
 
 
+def displace_focus(rig):
+    with rig.port.lock:
+        rig.port.sim.focus.position += 1
+
+
+def refused_off_clearance(rig, before):
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert "clearance" in state["last_command"]["message"]
+    assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
+
+
+def test_turret_turn_is_refused_when_the_clearance_move_ends_off_clearance(demo_rig, monkeypatch):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    assert dispatch(rig, "focus_move", steps=60)["last_command"]["result"] == "ok"
+    wait_focus_done = rig.service._motor.wait_focus_done
+
+    def one_pulse_short(*args, **kwargs):
+        result = wait_focus_done(*args, **kwargs)
+        displace_focus(rig)
+        return result
+
+    monkeypatch.setattr(rig.service._motor, "wait_focus_done", one_pulse_short)
+    refused_off_clearance(rig, len(rig.port.commands))
+
+
+def test_turret_move_is_refused_when_focus_leaves_clearance_during_the_switch(
+    demo_rig, monkeypatch
+):
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    factory = rig.service._switcher_factory
+
+    def displaced_switcher(*args, **kwargs):
+        switcher = factory(*args, **kwargs)
+        run = switcher.run
+
+        def displaced_run(*run_args, **run_kwargs):
+            displace_focus(rig)
+            return run(*run_args, **run_kwargs)
+
+        switcher.run = displaced_run
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", displaced_switcher)
+    refused_off_clearance(rig, len(rig.port.commands))
+
+
 def test_turret_turns_never_cross_the_gap_between_the_last_and_first_objective(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)

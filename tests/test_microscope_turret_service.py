@@ -378,6 +378,36 @@ def test_unknown_recorded_focus_still_requires_live_clearance_before_turret_move
     assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
 
 
+def test_profile_turret_move_is_refused_when_focus_leaves_clearance_during_the_switch(
+    demo_rig, monkeypatch
+):
+    rig = demo_rig()
+    begin(rig, reference=False)
+    profile = teach_all(rig)
+    assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
+    establish_manual_reference(rig)
+    factory = rig.service._switcher_factory
+
+    def displaced_switcher(*args, **kwargs):
+        switcher = factory(*args, **kwargs)
+        run = switcher.run
+
+        def displaced_run(*run_args, **run_kwargs):
+            with rig.port.lock:
+                rig.port.sim.focus.position += 1
+            return run(*run_args, **run_kwargs)
+
+        switcher.run = displaced_run
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", displaced_switcher)
+    before = len(rig.port.commands)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert "clearance" in state["last_command"]["message"]
+    assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
+
+
 def test_profile_identification_occurs_only_at_configured_clearance(demo_rig, monkeypatch):
     rig = demo_rig()
     begin(rig, reference=False)

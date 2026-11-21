@@ -120,6 +120,8 @@ The gas area shows the measured percent of each gas. Without readback, it shows 
 `set_gas_valve` with `open: true` sends full-scale flow (`100` %). `open: false` is the same as a stop of that channel.
 A missing optional reply means unverified. It does not prove zero flow or a closed valve.
 A transport or invalid-reply failure locks control. **Stop all gas** and `POST /api/stop` remain available.
+A failed controller read in the 1 s poll locks control only when `3` polls in a row fail. While the furnace is locked, the poll still reads PV, SV, and run state.
+After a gas channel gives no flow reply, the service does not read it again after each write. `inspect_gas_flow` reads it again.
 Check physical flow and use independent isolation when required.
 
 ## Microscope recording

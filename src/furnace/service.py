@@ -35,6 +35,8 @@ from .state import StateError, StateStore
 ORPHAN_GRACE_MIN = 15
 # While locked after a failed stop, the poll loop repeats the stop at this interval.
 STOP_RETRY_S = 5.0
+# A run faults only after this many polls in a row fail to read the controller.
+POLL_READ_FAILURES = 3
 FRAME_METADATA_FIELDS = (
     "temperature_sample_time",
     "temperature_c",
@@ -164,6 +166,8 @@ class FurnaceService:
         self._gas_targets = {}
         self._last_persist_at = self.clock()
         self._stop_retry_at = None
+        self._read_failures = 0
+        self._last_status = None
         self._notifications = []
         self.on_sequence_end = None
         self.events = EventLog(clock=wall_clock)
@@ -364,6 +368,7 @@ class FurnaceService:
         unit = controller.gas_unit_id(channel)
         errors = []
         snapshot = self._flow_channels[("gas", unit)]
+        silent = snapshot.get("readback") == "unverified"
         snapshot.update(
             actual_percent=None, available=False, setpoint_verified=False, readback="unverified"
         )
@@ -383,7 +388,8 @@ class FurnaceService:
             errors.append(error)
         if errors:
             raise RuntimeError("; ".join(str(error) for error in errors))
-        self._read_flow(channel)
+        if not silent:
+            self._read_flow(channel)
 
     def _set_gas_flow(self, channel, percent):
         if percent == 0:
@@ -391,6 +397,7 @@ class FurnaceService:
             return
         controller = self._ensure_flow_controller()
         unit = controller.gas_unit_id(channel)
+        silent = self._flow_channels[("gas", unit)].get("readback") == "unverified"
         # Every stop sends SVC, and a restarted process does not remember it: always send SVN.
         # Prime the new target first so SVN cannot restore an older setpoint.
         controller._send_without_response(unit, "SFR", f"{round(percent * 100):X}")
@@ -400,7 +407,10 @@ class FurnaceService:
         self._gas_valves[channel] = controller.set_gas_solenoid(channel, True)
         self._gas_targets[channel] = percent
         self._flow_channels[("gas", unit)].update(target_percent=percent, setpoint_verified=False)
-        self._read_flow(channel)
+        # A write-only MFC never answers RFR, and each read costs 4 timeouts under the lock.
+        # inspect_gas_flow still reads a silent channel.
+        if not silent:
+            self._read_flow(channel)
 
     def _apply_gas(self, plan):
         if plan is None:
@@ -1086,6 +1096,7 @@ class FurnaceService:
                 self._locked = False
                 self._fault = self._error = None
                 self._stop_retry_at = None
+                self._read_failures = 0
                 self._sequence_phase = "idle"
                 self._sequence_running = False
                 try:
@@ -1127,7 +1138,14 @@ class FurnaceService:
                 and self.clock() >= self._stop_retry_at
             ):
                 self._retry_stop()
-            if self._closed or not self.connected or self._locked:
+            if self._closed or not self.connected:
+                return self._status_locked(lease)
+            if self._locked:
+                # Keep PV, SV and run state current while locked. Read only; ignore errors.
+                try:
+                    self._snapshot = self._read_snapshot(track=False)
+                except Exception:
+                    pass
                 return self._status_locked(lease)
             try:
                 if self._sequence_phase == "manual" and not self._output_stopped:
@@ -1152,7 +1170,18 @@ class FurnaceService:
                                 raise RuntimeError("; ".join(str(error) for error in errors))
 
                         self._transition(grace_stop)
-                self._snapshot = self._read_snapshot(track=True)
+                try:
+                    snapshot = self._read_snapshot(track=True)
+                except Exception as error:
+                    # A failed write in the read has already faulted. A read can fail once
+                    # on line noise: fault only after several polls in a row fail.
+                    self._read_failures += 1
+                    if self._locked or self._read_failures >= POLL_READ_FAILURES:
+                        raise
+                    self.events.add("warning", "Furnace poll read failed", error=str(error))
+                    return self._status_locked(lease)
+                self._read_failures = 0
+                self._snapshot = snapshot
                 if self._sequence_running and self._snapshot["run_state_code"] == 1:
                     raise RuntimeError("Controller stopped before the planned sequence end")
                 self._advance_sequence(self._snapshot)
@@ -1243,10 +1272,20 @@ class FurnaceService:
                 except Exception as error:
                     self.events.add("error", "Sequence callback failed", error=str(error))
 
-    def status(self):
+    def status(self, *, wait=None):
+        """Return the state. With wait (s), return the last state if an operation holds the lock.
+
+        Reads then do not queue behind a stop or a gas write that holds the lock for seconds.
+        """
         lease = self.lease.snapshot()
-        with self._operation_lock:
+        if not self._operation_lock.acquire(timeout=-1 if wait is None else wait):
+            if self._last_status is not None:
+                return copy.deepcopy(dict(self._last_status, lease=lease))
+            self._operation_lock.acquire()
+        try:
             return self._status_locked(lease)
+        finally:
+            self._operation_lock.release()
 
     def _status_locked(self, lease):
         remaining = None
@@ -1256,7 +1295,7 @@ class FurnaceService:
                 self._steps[self._sequence_index]["hold_minutes"] * 60
                 - (self.clock() - self._hold_started_at),
             )
-        return copy.deepcopy(
+        value = copy.deepcopy(
             dict(
                 connected=self.connected,
                 locked=self._locked,
@@ -1292,6 +1331,8 @@ class FurnaceService:
                 ),
             )
         )
+        self._last_status = value
+        return copy.deepcopy(value)
 
     def _control_mode(self):
         if not self.connected:

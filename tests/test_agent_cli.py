@@ -580,7 +580,8 @@ def test_direct_furnace_stop_and_gas_off_reach_the_service(furnace_service):
     assert code == 0 and result["results"] == {"furnace": "confirmed"}
     assert stops == [{}]
     code, result = run_cli(["furnace", "gas-off", "1"], agent)
-    assert result["paths"]["direct:1"] == "sent"
+    assert code == 0 and result["results"] == {"1": "confirmed"}
+    assert result["paths"]["direct:1"] == "confirmed"
     assert stops == [{}, {"gas_channel": 1}]
 
 

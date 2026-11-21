@@ -507,8 +507,8 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `labctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `labctl status` | Show the status of the enabled services |
 | `labctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
-| `labctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
-| `labctl restart web` | Restart services. Add `--force` to restart the furnace service |
+| `labctl stop all` | Stop services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
+| `labctl restart web` | Restart services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
 | `labctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `labctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
 | `labctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |

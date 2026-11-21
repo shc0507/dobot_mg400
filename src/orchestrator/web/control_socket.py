@@ -259,8 +259,12 @@ class ControlSocket:
         self._thread = None
 
     def start(self):
+        # A short poll lets close() return without the default 0.5 s wait.
         self._thread = threading.Thread(
-            target=self._server.serve_forever, name="console-socket", daemon=True
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.05},
+            name="console-socket",
+            daemon=True,
         )
         self._thread.start()
         return self

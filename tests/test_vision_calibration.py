@@ -57,6 +57,9 @@ from vision.calibration import (
 from vision.frames import FrameError
 from vision.service import VisionService, create_app
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 DEVICE = "/dev/v4l/by-path/platform-offline-usb-0:1.0-video-index0"
 
 

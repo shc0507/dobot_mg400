@@ -126,6 +126,9 @@ Focus moves and autofocus stay within the configured limits and require a known 
 A full autofocus scan uses a window centered inside the measured range.
 A local scan uses a smaller window near the current position.
 The service first moves the scan center inside the limits when clearance is at a range endpoint.
+Autofocus fails without a fault, and keeps zero, when the focus scores are flat or the best score is at a window edge that is not a focus limit.
+In the second case the peak can be outside a local window. Run full autofocus.
+During a recording, autofocus does not change stabilization.
 Snapshot creates a new PNG under the run root. It refuses an existing destination with HTTP 400 before dispatch.
 Its returned `captured_at` preserves the source clock. Real and demo main-camera frames use host wall time. Side-camera frames use monotonic receive time.
 These values do not measure sensor exposure time.
@@ -226,7 +229,7 @@ An optional run name contains at most 80 printable characters. It does not selec
 The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
 The `live` default is 30 output frames per second, with no capture interval.
 Explicit `capture_interval_seconds` values range from 0.1 to 3600. Explicit `output_fps` values range from 0.1 to 120.
-`live` refuses `capture_interval_seconds`. A `live` recording stops when free disk space falls below 2 GB. A recording fails after 128 segments.
+`live` refuses `capture_interval_seconds`. A `live` recording stops when free disk space falls below 2 GB. A recording fails after 1024 segments (about 170 hours).
 
 Read `recording`, `recording_sequence`, and `last_result` with the matching `last_command` receipt.
 Check the recording ID, command ID, action, client, and expected result before claiming success.
@@ -253,7 +256,7 @@ Finalization requires recorded frames and valid media. It requires FFmpeg and ff
 If `ffmpeg` or `ffprobe` is missing, the recording fails, and its error names the missing program.
 The service log records the cause of each failed recording. Use `labctl logs microscope` to read it.
 Finalization keeps the recordings in `/var/lib/mg400/recordings`.
-Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 60-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
+Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 10-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
 When `MG400_FURNACE_ARCHIVE_DIR` is set, finalization copies the directory to `<archive>/<recording_id>/` and never replaces an existing copy.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.

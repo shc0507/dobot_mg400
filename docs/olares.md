@@ -192,7 +192,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    labctl status
    ```
 
-   `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
+   `is-enabled` 对 3 个服务都显示 `static`，表示服务不会开机自启。
 
 8. 启用[实验室控制台](dashboard.md#实验室控制台)后，核对以下各项：
    - Cameras 工作区显示所有已配置的画面。
@@ -245,14 +245,13 @@ go2rtc 独占侧视摄像头，显微镜读取共享的 `camera3` 视频流。
 安装程序只为已注册且启用的服务选择 `config/udev/70-mg400-<name>.rules.in`。
 它从主机用户组数据库获取 GID `1000` 的组名，替换 `@SERVICE_GROUP@`。
 每条规则匹配 VID:PID，并以 `MODE="0660"` 授予该组访问权限。
-串口规则还匹配表中的设备序列号。摄像头规则保留现有端口路径名称。
+串口规则还匹配表中的设备序列号，并设置 `ENV{ID_MM_DEVICE_IGNORE}="1"`。ModemManager 因此不探测这些串口。它的 AT 探测字节会破坏下一条固件命令。摄像头规则保留现有端口路径名称。
 热像仪规则按前缀匹配表中的 P1 序列号。P1 在序列号后附加不可打印字节，而 udev 比较完整的值。
 模板不创建设备别名，也不执行复位程序。
 
 安装程序以 root 身份写入 `/etc/udev/rules.d/70-mg400-<name>.rules`，权限为 `0644`。
-随后执行 `udevadm control --reload-rules` 和 `udevadm trigger --subsystem-match=usb`。
-USB trigger 不会复位集线器或启动服务。
-TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 `dialout` 和 `video` 组访问设备。
+随后执行 `udevadm control --reload-rules` 和 `udevadm trigger --action=change --subsystem-match=usb --subsystem-match=tty --subsystem-match=video4linux`。
+change 事件把新规则应用到已连接的 USB、TTY 和视频设备节点。它不会复位集线器或启动服务。
 安装前，用安装程序的 dry run 检查所选文件和命令。
 
 默认服务选择 `stage`、`camera`、`furnace` 和 `microscope` 模板。
@@ -377,7 +376,7 @@ labctl start camera
 限制：
 
 - DKMS 为同一内核系列的每个新内核重建模块。启动其他内核系列时，主机使用原版驱动，并忽略 `mjpeg_bpp`。此时再次运行脚本。
-- 构建失败时，脚本删除它的 DKMS 包，原版驱动保持不变。
+- 构建失败时，脚本删除新的 DKMS 包，已安装的驱动保持不变。新版本构建成功后，脚本才删除旧的补丁版本。
 - 在 1 条共享 USB 2 链路上，4 路 `1920x1080@30` 接近链路上限。不要在该链路上使用此配置。
 
 ### 摄像头故障

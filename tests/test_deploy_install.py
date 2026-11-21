@@ -15,6 +15,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "deploy/install.py"
+UDEV_TRIGGER = [
+    "udevadm",
+    "trigger",
+    "--action=change",
+    "--subsystem-match=usb",
+    "--subsystem-match=tty",
+    "--subsystem-match=video4linux",
+]
 DEVICES = [
     f"/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.{port}:1.0-video-index0" for port in (2, 3, 4)
 ]
@@ -1052,7 +1060,7 @@ def test_only_enabled_udev_rules_are_rendered_with_root_permissions(host, option
     assert mode(target) == 0o644 and host.owner(target) == (0, 0)
     assert [command for command, _ in host.commands if command[0] == "udevadm"] == [
         ["udevadm", "control", "--reload-rules"],
-        ["udevadm", "trigger", "--subsystem-match=usb"],
+        UDEV_TRIGGER,
     ]
 
 
@@ -1061,7 +1069,7 @@ def test_optional_udev_dry_run_only_lists_actions(host, optional_udev):
     assert not host.settings.exists() and not (host.root / "etc/udev").exists()
     assert not [command for command, _ in host.commands if command[0] == "udevadm"]
     assert "Would run: udevadm control --reload-rules" in host.out.getvalue()
-    assert "Would run: udevadm trigger --subsystem-match=usb" in host.out.getvalue()
+    assert "Would run: " + " ".join(UDEV_TRIGGER) in host.out.getvalue()
 
 
 @pytest.mark.parametrize("where", ["source", "destination", "ancestor"])
@@ -1501,7 +1509,7 @@ def test_inventory_udev_install_selects_only_registered_enabled_services(host, i
         assert mode(target) == 0o644 and host.owner(target) == (0, 0)
     assert [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"] == [
         ["udevadm", "control", "--reload-rules"],
-        ["udevadm", "trigger", "--subsystem-match=usb"],
+        UDEV_TRIGGER,
     ]
 
 
@@ -1515,7 +1523,7 @@ def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, invent
         assert f"70-mg400-{name}.rules" in output
     assert "70-mg400-thermal.rules" not in output
     assert "Would run: udevadm control --reload-rules" in output
-    assert "Would run: udevadm trigger --subsystem-match=usb" in output
+    assert "Would run: " + " ".join(UDEV_TRIGGER) in output
 
 
 @pytest.mark.parametrize(

@@ -228,8 +228,8 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 加速度上限为 `20`。
 两个上限固定在 `apps/control_panel/server.py` 中。
 
-未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
-这些配置不改变 `home`、`SpeedFactor` 或键盘点动。
+未提供 `speed` 时，协议命令仍为 `SpeedL=1,AccL=1`。
+这些上限不改变 `home`、`SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。

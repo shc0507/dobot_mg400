@@ -47,7 +47,7 @@ from .aruco_switch import (
     full_steps_to_pulses,
     select_objective,
 )
-from .autofocus import AutofocusCancelled, AutoFocuser
+from .autofocus import AutofocusCancelled, AutoFocuser, NoFocusPeak
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
@@ -65,6 +65,9 @@ NUDGE_SPEED = 40
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.
 PREVIEW_SIZE = (1296, 972)
+# A crash before VideoWriter.release() loses the open segment: keep segments short.
+RECORDING_SEGMENT_MINUTES = 10
+MAX_RECORDING_SEGMENTS = 1024
 # Camera-only commands. Motor faults and motor stops do not cancel them.
 RECORDING_ACTIONS = (
     "start_recording",
@@ -951,7 +954,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 video,
                 fps=recording.options["output_fps"],
                 timestamps_path=video.with_suffix(".timestamps.csv"),
-                segment_minutes=60,
+                segment_minutes=RECORDING_SEGMENT_MINUTES,
                 minimum_free_gb=recording.options["minimum_free_gb"],
                 metadata_provider=lambda: self._recording_metadata(recording),
                 metadata_fields=FRAME_METADATA_FIELDS,
@@ -978,7 +981,7 @@ class MicroscopeService(TurretCalibrationMixin):
                     or not self._camera.is_recording
                 ):
                     raise RuntimeError("Camera recording stopped unexpectedly")
-                if len(self._camera.recording_segments) > 128:
+                if len(self._camera.recording_segments) > MAX_RECORDING_SEGMENTS:
                     raise RuntimeError("Recording segment limit reached")
                 if recording.sequence:
                     sequence = self._readings.snapshot().get("sequence")
@@ -1004,7 +1007,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._camera.recording_error
                 or getattr(self._camera, "last_error", None)
                 or not recording.data["frame_count"]
-                or not 1 <= len(segments) <= 128
+                or not 1 <= len(segments) <= MAX_RECORDING_SEGMENTS
                 or len(set(segments)) != len(segments)
                 or any(not re.fullmatch(r"video_[0-9]{4}\.mp4", name) for name in segments)
             ):
@@ -1852,6 +1855,13 @@ class MicroscopeService(TurretCalibrationMixin):
                 lock_exposure=not self.demo,
             )
         self._check_job(job)
+        # A best score on a window edge that is not a focus limit is a rising curve.
+        edge = center + result.position
+        if abs(result.position) >= half_range and status.minimum < edge < status.maximum - 1:
+            raise NoFocusPeak(
+                "The best focus score is at the edge of the autofocus window; "
+                "the focus peak may be outside it. Run full autofocus."
+            )
         status = self._guard_reference(job)
         return {"measurement": asdict(result), "focus_position_pulses": status.focus.position}
 
@@ -1894,8 +1904,9 @@ class MicroscopeService(TurretCalibrationMixin):
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0, keep_recording=True)
-        except _Unidentified as error:
-            # No turret turn started. Keep the confirmed focus reference.
+        except (_Unidentified, NoFocusPeak) as error:
+            # No turret turn started, or autofocus ended its motion normally.
+            # Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except Exception as error:
             if job.action in CAMERA_ACTIONS:

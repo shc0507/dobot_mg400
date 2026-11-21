@@ -14,6 +14,8 @@ from urllib.request import HTTPRedirectHandler, build_opener
 
 OWNER = (1000, 1000)
 DIRECTORY_MODE = 0o750
+# Data directories that install.py keeps at 0700.
+PRIVATE = (("locks",), ("camera",), ("stage",), ("calibration", "cameras"))
 FIELDS = {"url", "sha256", "bytes", "install", "mode", "service", "source", "license"}
 NAME = re.compile(r"[a-z][a-z0-9-]*")
 CHUNK = 1024 * 1024
@@ -83,9 +85,16 @@ def load_manifest(path):
             or any(ord(character) < 32 for character in str(path))
         ):
             raise ValueError(f"Asset {name}: install must be a canonical absolute file path.")
-        # The installer gives the parent directory to the service account, so stay in host data.
-        if path.parts[:4] != ("/", "var", "lib", "mg400") or len(path.parts) < 5:
-            raise ValueError(f"Asset {name}: install must be a file under /var/lib/mg400.")
+        # The installer gives the parent directory to the service account with mode 0750.
+        # Keep it below the root-owned data directory and out of the private 0700 directories.
+        if (
+            path.parts[:4] != ("/", "var", "lib", "mg400")
+            or len(path.parts) < 6
+            or any(path.parts[4 : 4 + len(private)] == private for private in PRIVATE)
+        ):
+            raise ValueError(
+                f"Asset {name}: install must be a file in a data subdirectory of /var/lib/mg400."
+            )
         if path in destinations:
             raise ValueError(f"Asset {name}: duplicate install path.")
         destinations.add(path)

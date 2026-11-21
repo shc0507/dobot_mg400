@@ -169,6 +169,7 @@ The script applies these update rules:
 - If only static console JavaScript/CSS changes, do not restart services.
 - If backend code or templates change, restart `mg400-twin-test`.
 - Restart `mg400-camera-preview.service` for camera code or dependency changes only when the override below is active and verified.
+  This restart also stops go2rtc and all camera streams, including the microscope side stream. Deploy such a change only when no microscope or vision work is active.
 
 The script preserves the calibration profile and run data directories.
 After deployment, the script checks service health. It does not run tests.
@@ -459,7 +460,8 @@ Their inner double quotes remain literal. Escapes, apostrophes, control characte
 See [furnace configuration](furnace.en.md#configuration) for syntax and process limits.
 Each time it runs, the installer restores this file's owner to `root:root` and permissions to `0600`.
 
-The file contains only hardware facts. Bind addresses, ports, base paths, and service URLs are fixed defaults in the code and the units.
+The file contains only hardware facts. Bind addresses, ports, and service URLs are fixed defaults in the code and the units.
+Data paths are defaults in the code. Some services still accept path overrides, for example `MG400_ORCH_TOOL_FILE`. Do not set path overrides in this file.
 All services listen on `127.0.0.1`. From the VPN, only the proxy port `8080` is open. The VPN is the access boundary, and the services do not check tokens.
 The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console uses the base path `/lab/`.
 
@@ -505,8 +507,8 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `labctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `labctl status` | Show the status of the enabled services |
 | `labctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
-| `labctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
-| `labctl restart web` | Restart services. Add `--force` to restart the furnace service |
+| `labctl stop all` | Stop services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
+| `labctl restart web` | Restart services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
 | `labctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `labctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
 | `labctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
@@ -566,7 +568,7 @@ This lock does not restrict DobotStudio or other hosts. Close other control prog
 ## Backup
 
 `labctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
-It excludes only `/var/lib/mg400/locks`, which contains process connection locks.
+It excludes `/var/lib/mg400/locks`, which contains process connection locks, and `/var/lib/mg400/twin-test`, the test Console deploy state.
 It also preserves furnace state and `.state.json.lock` under `/var/lib/mg400/furnace`.
 
 Stop services and other data writers before a backup, as the migration steps below specify.

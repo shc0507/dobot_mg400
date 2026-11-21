@@ -7,7 +7,7 @@ import pytest
 
 from orchestrator import agent as agent_module
 from orchestrator import agent_cli
-from orchestrator.agent import Agent, Unreachable, code_for, exit_code, parse_params
+from orchestrator.agent import Agent, Unreachable, code_for, exit_code, hint, parse_params
 
 
 class FakeHttp:
@@ -406,6 +406,26 @@ def test_interrupt_during_a_wait_sends_one_device_stop(monkeypatch):
     assert code == 130 and result["outcome"] == "interrupted"
     assert result["stop"]["results"] == {"stage": "confirmed"}
     assert len(http.sent("api/console/stop/stage")) == 1
+
+
+def test_interrupt_during_labctl_wait_sends_one_device_stop():
+    def state(data):
+        raise KeyboardInterrupt
+
+    agent, http = make(
+        {
+            "api/console/state/stage": state,
+            "api/console/stop/stage": (200, {"device": "stage", "outcome": "confirmed"}),
+        }
+    )
+    code, result = run_cli(["stage", "wait", "9"], agent)
+    assert code == 130 and result["outcome"] == "interrupted"
+    assert result["command_id"] == "9"
+    assert len(http.sent("api/console/stop/stage")) == 1
+
+
+def test_unconfirmed_robot_stop_hints_clear_alarm():
+    assert hint("robot", "locked", {"stop_unconfirmed": True}) == "labctl robot clear-alarm"
 
 
 def test_no_wait_returns_the_command_id_and_wait_finds_it():

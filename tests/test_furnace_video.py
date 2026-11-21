@@ -99,6 +99,38 @@ def test_video_compilation_uses_ordered_segments_and_private_no_replace_output(
     assert len(list(run.glob("video_*.mp4"))) == 3
 
 
+def test_video_compilation_skips_a_segment_without_an_index(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from furnace import video
+    from furnace.recordings import create_run
+
+    root = tmp_path / "local"
+    _, run = create_run("Crash", "manual_recording", recordings_root=root)
+    for number in (1, 2):
+        private_video(run / f"video_{number:04}.mp4", str(number).encode())
+
+    def fake_process(command, **kwargs):
+        if command[0] == "ffprobe":
+            if Path(command[-1]).read_bytes() == b"2":
+                return SimpleNamespace(returncode=1, stdout="", stderr="moov atom not found")
+            return SimpleNamespace(returncode=0, stdout="120", stderr="")
+        manifest = Path(command[command.index("-i") + 1]).read_text()
+        inputs = [
+            Path(line.removeprefix("file '").removesuffix("'")) for line in manifest.splitlines()
+        ]
+        assert [path.read_bytes() for path in inputs] == [b"1"]
+        private_video(Path(command[-1]), b"compiled")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(video.shutil, "which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(video.subprocess, "run", fake_process)
+    assert video.combine_run_to_target(run.name, 3, recordings_root=root).read_bytes() == (
+        b"compiled"
+    )
+    assert "Skipped unreadable segment video_0002.mp4" in capsys.readouterr().out
+
+
 def test_video_output_escape_or_collision_never_invokes_compiler(tmp_path, monkeypatch):
     import pytest
 

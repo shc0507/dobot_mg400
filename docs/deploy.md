@@ -169,6 +169,7 @@
 - 只更改控制台静态 JavaScript/CSS 时，不重启服务。
 - 后端代码或模板更改时，重启 `mg400-twin-test`。
 - 下述相机覆盖配置已生效且通过检查时，相机代码或依赖更改会重启 `mg400-camera-preview.service`。
+  此次重启也会停止 go2rtc 和所有相机流，包括显微镜侧视流。只在没有显微镜或视觉任务运行时部署此类更改。
 
 脚本保留校准配置和运行数据目录。
 部署后，脚本检查服务健康状态，不运行测试。
@@ -459,7 +460,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 语法及工艺限制见[炉控配置](furnace.md#配置)。
 每次运行时，安装器把该文件恢复为 `root:root` 和 `0600`。
 
-该文件只含硬件事实。监听地址、端口、基础路径和服务 URL 是代码和单元中的固定默认值。
+该文件只含硬件事实。监听地址、端口和服务 URL 是代码和单元中的固定默认值。
+数据路径使用代码中的默认值。部分服务仍接受路径覆盖，例如 `MG400_ORCH_TOOL_FILE`。不要在此文件中设置路径覆盖。
 所有服务监听 `127.0.0.1`。VPN 上只开放代理端口 `8080`。VPN 是访问边界，服务不检查令牌。
 机械臂连接锁目录为 `/var/lib/mg400/locks`。实验室控制台使用基础路径 `/lab/`。
 
@@ -505,8 +507,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `labctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `labctl status` | 显示已启用服务的状态 |
 | `labctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
-| `labctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
-| `labctl restart web` | 重启服务。重启炉控时可加 `--force` |
+| `labctl stop all` | 停止服务。炉控检查拒绝时，先协调关闭加热和气体，再加 `--force`。见下文 |
+| `labctl restart web` | 重启服务。炉控检查拒绝时，先协调关闭加热和气体，再加 `--force`。见下文 |
 | `labctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `labctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
 | `labctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
@@ -566,7 +568,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 ## 备份
 
 `labctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
-它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
+它排除存放进程连接锁的 `/var/lib/mg400/locks`，以及测试控制台部署状态 `/var/lib/mg400/twin-test`。
 它也保留 `/var/lib/mg400/furnace` 下的炉控状态和 `.state.json.lock`。
 
 备份前，按下方迁移步骤停止服务和其他数据写入程序。

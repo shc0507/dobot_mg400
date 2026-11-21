@@ -61,6 +61,6 @@ arduino-cli compile --fqbn arduino:avr:uno firmware/stage-controller-v3
 python firmware/stage-controller-v3/tests/run.py --library /path/to/AccelStepper
 ```
 
-The native check compiles the actual sketch against simulated motors, encoders and switches. It requires a C++ compiler. It does not flash hardware. The Uno has little free flash and RAM; check both sizes after changes. Native checks cannot establish electrical behavior, mechanical clearance or accuracy under load.
+The native check compiles the actual sketch against simulated motors, encoders and switches. It requires a C++ compiler with a 32-bit `long`, as on the AVR, for example g++ with `--compiler-arg=-m32`. CI runs it with AccelStepper 1.64.0 on every run. It does not flash hardware. The Uno has little free flash and RAM; check both sizes after changes. Native checks cannot establish electrical behavior, mechanical clearance or accuracy under load.
 
 Before flashing, stop the stage service and close every serial monitor. Flash only with the intended board and port selected. See the [Stage guide](../../docs/stage-panel.en.md) for connection and operation.

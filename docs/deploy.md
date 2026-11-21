@@ -524,7 +524,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 
 炉控 `stop` 和 `restart` 在修改任何所选服务前，先读取实时状态。
 检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。
-仅当 systemd 报告全部炉控单元未安装且未运行时，`stop` 才跳过此检查。systemd 未给出明确结果时，仍执行检查。
+仅当 systemd 报告全部炉控单元未运行时，才跳过此检查：此时没有炉控进程。systemd 未给出明确结果时，仍执行检查。
 活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
 使用 `labctl stop furnace --force` 或 `labctl restart furnace --force` 前，必须与所有客户端协调。
 强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。

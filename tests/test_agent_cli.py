@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 
 import pytest
 
@@ -644,3 +645,92 @@ def test_chip_locate_prints_the_slot_result():
         "reason": None,
         "run_id": "r1",
     }
+
+
+def test_robot_busy_message_maps_to_busy_not_held_by_other():
+    assert code_for(409, "Another robot operation is in progress") == "busy"
+    assert code_for(409, "Another client holds this device.") == "held_by_other"
+
+
+def test_gas_off_keeps_the_console_answer_when_the_direct_stop_times_out(monkeypatch):
+    calls = []
+
+    def direct(self, device, **params):
+        calls.append((device, params))
+        return "unreachable"
+
+    monkeypatch.setattr(Agent, "_direct_stop", direct)
+    agent, _ = make(
+        {"api/console/ws/process/gas-stop": (200, {"outcome": "unconfirmed"})}, direct=True
+    )
+    code, result = run_cli(["furnace", "gas-off", "1"], agent)
+    assert code == 3 and result["results"] == {"1": "unconfirmed"}
+    assert "write-only" in result["error"]["message"]
+    assert calls == [("furnace", {"timeout": agent_module.GAS_STOP_TIMEOUT_S, "gas_channel": 1})]
+
+
+def test_gas_off_uses_the_direct_answer_when_the_console_is_down(monkeypatch):
+    monkeypatch.setattr(Agent, "_direct_stop", lambda self, device, **params: "confirmed")
+    agent, _ = make({"api/console/ws/process/gas-stop": Unreachable("refused")}, direct=True)
+    code, result = run_cli(["furnace", "gas-off", "0"], agent)
+    assert code == 0 and result["results"] == {"0": "confirmed"}
+
+
+def test_a_stop_path_that_does_not_answer_in_time_is_unconfirmed():
+    import threading
+
+    gate = threading.Event()
+    try:
+        sent = Agent._parallel({"fast": lambda: "confirmed", "slow": gate.wait}, 0.05)
+    finally:
+        gate.set()
+    assert sent == {"fast": "confirmed", "slow": "unconfirmed"}
+    assert Agent._answered(sent["slow"]) == {"result": "no-answer"}
+
+
+def test_a_broken_error_body_is_unreachable(monkeypatch):
+    import urllib.error
+
+    class Broken(urllib.error.HTTPError):
+        def read(self, *args):
+            raise ConnectionResetError("reset")
+
+    http = agent_module.Http("http://127.0.0.1:1/lab/", "agent-t")
+
+    def fail(request, timeout):
+        raise Broken(request.full_url, 409, "Conflict", {}, None)
+
+    monkeypatch.setattr(http.opener, "open", fail)
+    with pytest.raises(Unreachable, match="broke off"):
+        http.request("api/state")
+
+
+def test_do_reports_unknown_when_the_run_post_gets_no_answer():
+    routes = run_routes(["running"])
+    routes["api/runs"] = Unreachable("reset")
+    agent, http = make(routes)
+    code, result = run_cli(["do", "slot-state"], agent)
+    assert code == 3 and result["error"]["code"] == "unknown"
+    assert "labctl all state" in result["error"]["message"]
+
+
+def test_an_unexpected_error_still_prints_one_json_object():
+    agent, _ = make({"api/console/state/robot": lambda data: 1 / 0})
+    code, result = run_cli(["robot", "state"], agent)
+    assert code == 3 and result["error"]["code"] == "unknown"
+
+
+def test_images_go_to_a_directory_per_user(monkeypatch, tmp_path):
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(agent_module, "Path", lambda value: tmp_path / value.strip("/"))
+    path = Agent._out(None, "x.jpg")
+    assert path.parent.name == f"labctl-{os.getuid()}"
+
+
+def test_an_image_that_cannot_be_saved_fails_without_usage(tmp_path):
+    agent, _ = make({})
+    url = "http://127.0.0.1:8770/api/camera/side/frame.jpg"
+    agent.http.routes[url] = lambda data: (200, b"\xff\xd8jpeg")
+    out = tmp_path / "missing" / "s.jpg"
+    code, result = run_cli(["microscope", "frame", "side", "--out", str(out)], agent)
+    assert code == 1 and result["error"]["code"] == "failed"

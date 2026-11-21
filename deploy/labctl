@@ -55,6 +55,8 @@ AGENT_GROUPS = {
 }
 ORCHESTRATOR_COMMANDS = {"run", "rehearse", "runs", "station", *AGENT_GROUPS}
 STATION_ACTIONS = {"save", "list", "show", "rm", "retool"}
+# Stops use fixed loopback URLs and need no settings.
+STOP_VERBS = {"stop", "gas-off"}
 
 
 def furnace_state(settings, *, connection_factory=http.client.HTTPConnection, clock=time.monotonic):
@@ -124,6 +126,17 @@ def check_furnace_shutdown(settings, *, read_state=furnace_state):
         raise ValueError("A furnace sequence or its cooling gas plan is active")
 
 
+def stop_settings(host, argv):
+    """Read the settings. A stop also runs when the file is missing or invalid."""
+    try:
+        return parse_settings(host.settings.read_text())
+    except (OSError, ValueError, KeyError) as error:
+        if not (len(argv) > 1 and argv[0] in AGENT_GROUPS and argv[1] in STOP_VERBS):
+            raise
+        print(f"Settings ignored for the stop: {error}", file=sys.stderr)
+        return {}
+
+
 def orchestrator(host, argv, execvpe):
     """Dispatch only recipe commands, without changing the administrative root gate."""
     root = os.geteuid() == 0
@@ -141,9 +154,7 @@ def orchestrator(host, argv, execvpe):
     try:
         if root:
             # Rehearsal must not load production settings, even before dropping UID.
-            settings = (
-                parse_settings(host.settings.read_text()) if argv[0] != "rehearse" else os.environ
-            )
+            settings = os.environ if argv[0] == "rehearse" else stop_settings(host, argv)
         else:
             settings = os.environ
         environment = {
@@ -554,12 +565,8 @@ def unit_states(run, chosen):
     return states
 
 
-def missing_units(run, chosen):
-    """Return the chosen units that systemd reports as not installed and inactive.
-
-    A failed or incomplete answer returns no units, so every stop guard still runs.
-    A deleted unit file of a running service stays active, so its unit is not missing.
-    """
+def _unit_blocks(run, chosen):
+    """Return systemd LoadState and ActiveState per unit, or None when systemd fails."""
     try:
         shown = run(
             ["systemctl", "show", "--property=Id,LoadState,ActiveState", *chosen],
@@ -568,15 +575,35 @@ def missing_units(run, chosen):
             check=False,
         )
     except OSError:
-        return set()
+        return None
     if shown.returncode != 0 or not isinstance(shown.stdout, str):
-        return set()
-    missing = set()
-    for block in shown.stdout.strip().split("\n\n"):
-        values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
-        if values.get("LoadState") == "not-found" and values.get("ActiveState") == "inactive":
-            missing.add(values.get("Id"))
+        return None
+    return [
+        dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        for block in shown.stdout.strip().split("\n\n")
+    ]
+
+
+def missing_units(chosen, blocks):
+    """Return the chosen units that systemd reports as not installed and inactive.
+
+    A failed or incomplete answer returns no units, so every stop guard still runs.
+    A deleted unit file of a running service stays active, so its unit is not missing.
+    """
+    missing = {
+        values.get("Id")
+        for values in blocks or []
+        if values.get("LoadState") == "not-found" and values.get("ActiveState") == "inactive"
+    }
     return missing & set(chosen)
+
+
+def inactive_units(chosen, blocks):
+    """Return the chosen units that systemd reports inactive, with any LoadState."""
+    inactive = {
+        values.get("Id") for values in blocks or [] if values.get("ActiveState") == "inactive"
+    }
+    return inactive & set(chosen)
 
 
 def status(run, out, services):
@@ -814,10 +841,14 @@ def main(
         )
         # Stop reaches every registered unit, including optional ones never installed.
         # Read-only: systemd reports which of them are not installed and not running.
-        missing = set()
-        if args.command == "stop" and ("all" in args.names or furnace_selected):
-            missing = missing_units(run, chosen)
-        if furnace_selected and not set(services["furnace"]) <= missing and not args.force:
+        missing, inactive = set(), set()
+        if furnace_selected or (args.command == "stop" and "all" in args.names):
+            blocks = _unit_blocks(run, chosen)
+            inactive = inactive_units(chosen, blocks)
+            if args.command == "stop":
+                missing = missing_units(chosen, blocks)
+        # An inactive furnace unit runs no process, so no heat or gas sequence can be live.
+        if furnace_selected and not set(services["furnace"]) <= inactive and not args.force:
             try:
                 check_furnace_shutdown(settings, read_state=read_furnace_state)
             except (OSError, ValueError, http.client.HTTPException) as error:

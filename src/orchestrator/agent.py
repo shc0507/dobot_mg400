@@ -120,7 +120,8 @@ def code_for(status, message):
 def hint(device, code, state=None):
     """The next command to run, from a small fixed table."""
     state = state if isinstance(state, dict) else {}
-    if device == "robot" and state.get("alarms"):
+    if device == "robot" and (state.get("alarms") or state.get("stop_unconfirmed")):
+        # clear-alarm is Recover: it also clears an unconfirmed stop without an alarm.
         return "labctl robot clear-alarm"
     if device == "microscope" and state.get("focus_zero_known") is False:
         # Never hint `zero`: FOCUS ZERO at an arbitrary height shifts the focus limits.
@@ -505,6 +506,19 @@ class Agent:
     def wait(self, device, command_id=None, *, timeout=DEFAULT_TIMEOUT_S):
         """Wait for a command sent with wait=False; for the robot, until it is idle."""
         info = {"action": "wait"}
+        try:
+            return self._wait(device, command_id, timeout, info)
+        except KeyboardInterrupt:
+            stopped = self.stop(device)
+            return {
+                **failure(
+                    "interrupted", "Interrupted; the device stop was sent.", device=device, **info
+                ),
+                **({"command_id": command_id} if command_id is not None else {}),
+                "stop": stopped,
+            }
+
+    def _wait(self, device, command_id, timeout, info):
         deadline = self.clock() + timeout
         while True:
             try:

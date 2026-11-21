@@ -8,7 +8,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 代码检出：`uv run labctl <group> ...`，访问同一组回环服务。
 - 演示：先启动 `uv run python -m orchestrator serve --demo --port 18772 --base-path /lab/`，再在每次调用中加 `--url http://127.0.0.1:18772/lab/`。
 
-命令行不增加限制和检查。各服务保留测试台保护：停止、每台设备 1 个控制者、高温炉上限、机器人速度上限和报警阻止、显微镜对焦限位和物镜转换间隙位、电动台软限位。
+命令行不增加限制和检查。各服务保留测试台保护：停止、每台设备 1 个控制者、高温炉上限、机器人速度上限和报警阻止、显微镜对焦限位和物镜转换间隙位、位移台软限位。
 
 ## 会话和控制权
 
@@ -17,7 +17,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
 - 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
-- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。
+- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 
 ## 命令
 
@@ -51,7 +51,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `stage calibrate MOTOR [--speed N]` | `calibrate`。默认速度为 0.25 圈/秒 |
 | `stage reset-position MOTOR`, `stage set-limit MOTOR` | `reset_position`、`set_limit` |
 | `stage clear-upper-limit MOTOR`, `stage clear-lower-limit MOTOR`, `stage clear-fault MOTOR` | `clear_upper_limit`、`clear_lower_limit`、`clear_fault` |
-| `stage connect [PORT]` | 连接电动台串口。不给 PORT 时列出串口 |
+| `stage connect [PORT]` | 连接位移台串口。不给 PORT 时列出串口 |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | 从 JSON 文件发送 `set_sequence` 或 `start_sequence` |
 | `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve` |
@@ -79,7 +79,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
-- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。
+- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。用 `POST /lab/api/runs/<run_id>/abort` 终止该运行。HTTP 路由见 [配方编排器](orchestrator.md)。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
@@ -92,7 +92,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 | 命令 | 作用 |
 | --- | --- |
-| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、电动台和显微镜的停止 |
+| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、位移台和显微镜的停止 |
 | `labctl <device> stop` | 停止 1 台设备 |
 | `labctl furnace stop` | 关闭加热和气体 |
 | `labctl furnace gas-off [CHANNEL]` | 停止 1 路气体，或全部 3 路 |
@@ -103,7 +103,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 对只写流量控制器，炉控无法读回流量。停止这类气路时，炉控发送零流量并关闭阀门，但结果仍为 `unconfirmed`。用 `labctl furnace state` 检查该气路。
 
-没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot disable`，或控制台中的 **Recover** 恢复。
+没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot clear-alarm`，或控制台中的 **Recover** 恢复。
 
 ## 输出和退出码
 
@@ -135,6 +135,6 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ## 限制
 
 - 没有保持运行的操作员提示：`do` 终止该运行。
-- 不支持键盘点动和电动台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
+- 不支持键盘点动和位移台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
 - 命令行退出前已开始的运动按命令继续。
 - 未给 `--out` 时，图像文件保存到 `/tmp/labctl-<UID>/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

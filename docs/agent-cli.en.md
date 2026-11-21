@@ -17,7 +17,7 @@ The CLI adds no limits and no checks. The services keep the test-stage protectio
 - `labctl <device> take` takes control through the Lab Console. The console holds the lease between calls and renews it every 1 second.
 - The console releases the session's devices after 10 minutes without a call from the session. A release of the robot disables the arm first.
 - `labctl <device> release` releases 1 device. `labctl all release` releases every device of the session.
-- The owner takes control back with **Release all** on the Overview, or with `sudo labctl all release --session NAME`.
+- The owner takes control back with **Release all** on the Overview, or with `sudo labctl all release --session NAME`. Both skip devices lent to a run. Stop or abort the run first.
 
 ## Commands
 
@@ -79,7 +79,7 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 - The run borrows the session's devices. The console keeps the leases, so the arm stays enabled and the microscope keeps focus zero. During the run, the session cannot command these devices. Stops still work.
 - The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
 - Run 1 `do` at a time in a session. During a run, `do` and `chip locate` of the same session fail with `busy`. The run continues.
-- If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort the run on the Overview.
+- If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort it with `POST /lab/api/runs/<run_id>/abort`. See the HTTP routes in [Recipe orchestrator](orchestrator.en.md).
 - The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
 - The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.
 - One-step catalog recipes: `slot-state`, `station-transfer`, `crucible-load`, `crucible-unload`, `microscope-record`, `check-calibration`. `chip-pick` and `tray-transfer` are also in the catalog.
@@ -103,7 +103,7 @@ With the default `--url`, each stop also goes straight to the service on loopbac
 
 The furnace cannot read back the flow of a write-only flow controller. A gas stop of such a channel sends the zero and closes the valve, but its result stays `unconfirmed`. Check the channel with `labctl furnace state`.
 
-A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot disable`, or with **Recover** in the console.
+A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot clear-alarm`, or with **Recover** in the console.
 
 ## Output and exit codes
 

@@ -872,14 +872,15 @@ def test_full_still_waits_for_the_full_mode(still, monkeypatch):
     assert not module.STILL_CONFIG.exists()
 
 
-def test_full_still_of_the_side_stream_waits_for_an_idle_microscope(preview, monkeypatch):
+def test_every_full_still_waits_for_an_idle_microscope(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,640x360@30")
     module = load_preview()
-    state = Mock(return_value=io.BytesIO(b'{"busy": true}'))
+    state = Mock(side_effect=lambda *args, **kwargs: io.BytesIO(b'{"busy": true}'))
     monkeypatch.setattr(module.urllib.request, "urlopen", state)
     assert request(module, "camera3.full.jpg")[0] == 409
     state.assert_called_once_with("http://127.0.0.1:8770/api/state", timeout=2)
+    assert request(module, "camera1.full.jpg")[0] == 409
     assert request(module, "camera4.full.jpg")[0] == 404
     assert request(module, "camera1.full.jpg?fps=5")[0] == 404
 

@@ -117,6 +117,13 @@ def test_stage_firmware_change_runs_no_host_tests():
     ]
 
 
+def test_pressure_sensor_firmware_change_runs_no_host_tests():
+    assert select(["firmware/pressure-sensor/pressure-sensor.ino"]) == [
+        "tests/test_doc_pairs.py",
+        "tests/test_repo_files.py",
+    ]
+
+
 def test_static_file_under_a_package_does_not_select_importers(tmp_path):
     tests = tmp_path / "tests"
     tests.mkdir()

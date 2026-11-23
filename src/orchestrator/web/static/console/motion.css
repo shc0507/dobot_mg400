@@ -175,6 +175,7 @@ body:has(#ws-motion:not([hidden])) { background: var(--lc-ground); }
 #ws-motion .mo-vac-state, #ws-motion .mo-vac-held { font-size: 13px; font-weight: 600; color: var(--mo-text-2); }
 #ws-motion .mo-vac-state.mo-info { color: var(--mo-action); } #ws-motion .mo-vac-state.mo-warn { color: var(--mo-warn); }
 #ws-motion .mo-vac-held.mo-ok { color: var(--mo-ok); }
+#ws-motion .mo-vac-pressure { margin-left: auto; display: inline-flex; align-items: baseline; gap: 4px; }
 
 /* The alarm note wins the eye: a coral tint, the alarm IDs and the button that clears them. */
 #ws-motion .mo-alarm { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 16px; background: var(--mo-stop-soft); color: var(--mo-text); }

@@ -295,6 +295,16 @@ def test_non_finite_payload_is_reported_as_unknown(rig):
     wait_for(lambda: state.snapshot()["payload_kg"] == 0.25)
 
 
+def test_snapshot_reports_the_pressure_reader_and_none_without_one(rig):
+    state, feed, controls = rig
+    assert state.snapshot()["pressure"] is None
+    reader = Mock(reading=Mock(return_value={"abs_hpa": 960.0, "gauge_hpa": -49.5}))
+    assert RobotPanelState("192.0.2.1", pressure=reader).snapshot()["pressure"] == {
+        "abs_hpa": 960.0,
+        "gauge_hpa": -49.5,
+    }
+
+
 @pytest.mark.parametrize("action", ["disable"])
 def test_safety_command_without_sync_retains_ownership_after_unverified_result(rig, action):
     state, feed, controls = rig

@@ -19,6 +19,8 @@ EXPECTED = {
         ("usb", "0547", "1376", None),
     ],
     "stage": [("tty", "2341", "0043", "1453230313235111D1E0")],
+    # The robot service reads the suction line pressure sensor.
+    "web": [("tty", "2341", "0043", "1453230313235111B180")],
     # The P1 serial string carries trailing non-printing bytes, so the rule uses a prefix.
     "thermal": [("usb", "3474", "45c2", "P1016021DG040100208*")],
 }

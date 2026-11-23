@@ -258,7 +258,7 @@ The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
 | `busy`, `locked`, `stop_unconfirmed`, `recoverable` | Operation in progress, control locked, stop unconfirmed, recovery available |
 | `alarms` | Current alarm list, described above |
 | `message`, `last_command` | Service message and latest command result |
-| `vacuum`, `payload_kg` | Measured suction state and payload. See [Vacuum suction cup](#vacuum-suction-cup) |
+| `vacuum`, `payload_kg`, `pressure` | Measured suction state, payload and suction line pressure. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `controller_id` | Client ID that holds control, or `null` without a holder |
 | `keyboard_enabled`, `keyboard_arming` | Keyboard jog is on, or is turning on |
 | `keyboard_active_key`, `keyboard_speed_percent`, `keyboard_disarm_reason` | Active key, keyboard speed, and close reason |
@@ -507,6 +507,7 @@ The `operation` of the `vacuum` command is one of these values:
 - After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the result of `JointControl.stop()` contains `blow_error`; the stop itself does not fail because of it. The robot service does not report `blow_error`, and disable does not record the error.
 - The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is the measured level of DI8 (`GRIP_DI`), or `null` when `GRIP_DI` is `None` or without feedback.
 - The `payload_kg` field of the state object is the payload that the controller reports, in kg. At each enable, the service sends `PAYLOAD_KG` and `PAYLOAD_CENTER_MM` with the `EnableRobot` command. The 2 constants are in `src/mg400/joint_control.py`. `PAYLOAD_KG` is the total mass of the end tool, the wrist camera, and the camera mount. `PAYLOAD_CENTER_MM` is the position of the centre of that mass from the J4 axis, with J4 at 0°.
+- The `pressure` field of the state object is `{"abs_hpa": ..., "gauge_hpa": ...}` from the pressure sensor board, or `null` without a reading in the last 1 s. `gauge_hpa` is relative to the zero that the board measures when the service opens the port. Opening the port resets the board, so start the service with the cup open to room air. `src/mg400/pressure.py` reads the port `PORT` in a background thread and opens it again after 5 s without a sample.
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.
 - The offline simulator answers `DOExecute` and reports the DO bits in its feedback frames. While DO2 is high, the simulator also sets DI8.
 - For the wiring and the feedback fields, see [Vacuum suction cup](hardware.en.md#vacuum-suction-cup).

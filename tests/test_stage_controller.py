@@ -14,8 +14,8 @@ def motor(controller, name="bottom"):
 
 def test_move_uses_correct_motor_speed_direction_and_rotation_count(stage_rig):
     controller, transport, clock = stage_rig
-    controller.move("top", "ccw", 0.4, 0.1)
-    assert transport.commands == ["motor top", "dir ccw", "speed 0.4", "rev 0.1"]
+    controller.move("top", "ccw", 0.3, 0.1)
+    assert transport.commands == ["motor top", "dir ccw", "speed 0.3", "rev 0.1"]
     clock.advance(1)
     controller.poll()
     assert motor(controller, "top")["position"] == 0.1
@@ -41,7 +41,7 @@ def test_busy_and_post_completion_cooldown_cannot_be_bypassed(stage_rig):
 
 def test_tiny_move_finishing_before_first_poll_still_cools_down(stage_rig):
     controller, _, clock = stage_rig
-    controller.move("bottom", "cw", 0.5, 0.001)
+    controller.move("bottom", "cw", 0.3, 0.001)
     clock.advance(2)
     controller.poll()
     assert not motor(controller)["available"]
@@ -72,7 +72,7 @@ def test_simultaneous_clicks_do_not_queue_two_moves(stage_rig):
 
 def test_stop_interrupts_all_motors_and_preserves_cooldown(stage_rig):
     controller, transport, _ = stage_rig
-    controller.move("bottom", "cw", 0.5, 1000)
+    controller.move("bottom", "cw", 0.3, 1000)
     result = controller.stop_all()
     assert transport.commands[-1] == "stop all"
     assert all(item["mode"] == "idle" for item in result["motors"])
@@ -111,7 +111,7 @@ def test_board_rejection_aborts_transaction_before_rotation(stage_rig, monkeypat
 
 def test_link_loss_disables_controls_and_never_retries_move(stage_rig, monkeypatch):
     controller, transport, _ = stage_rig
-    controller.move("bottom", "cw", 0.5, 100)
+    controller.move("bottom", "cw", 0.3, 100)
 
     def failed_status():
         raise LinkError("USB unplugged")
@@ -167,9 +167,9 @@ def test_requires_connection_and_a_current_port():
 @pytest.mark.parametrize("direction,sign", [("cw", -1), ("ccw", 1)])
 def test_fractional_and_multiple_turn_moves_keep_units(stage_rig, rotations, direction, sign):
     controller, transport, clock = stage_rig
-    controller.move("insert", direction, 0.5, rotations)
+    controller.move("insert", direction, 0.3, rotations)
     assert transport.commands[-1] == f"rev {rotations:g}"
-    clock.advance(rotations / 0.5 + 1)
+    clock.advance(rotations / 0.3 + 1)
     controller.poll()
     assert motor(controller, "insert")["position"] == pytest.approx(sign * rotations)
     assert motor(controller, "insert")["remaining"] == 0

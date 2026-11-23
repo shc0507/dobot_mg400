@@ -85,8 +85,9 @@ float maximum(float a, float b) { return a > b ? a : b; }
 float clamp(float x, float low, float high) { return maximum(low, minimum(high, x)); }
 float pulsesPerRotation(const MotorState &m) { return m.stepsPerRevolution * float(microstepDivisor); }
 float speedLimit(const MotorState &m) {
-  // Reserve 20% pulse-rate headroom for encoder correction during held motion.
-  return minimum(EncoderConfig::MaxShaftSpeed, 800.0f / pulsesPerRotation(m));
+  // The main loop sends at most about 650 pulses/s on one axis. A held move needs
+  // 1.25 times its speed to catch up, so 480 pulses/s is the highest that tracks.
+  return minimum(EncoderConfig::MaxShaftSpeed, 480.0f / pulsesPerRotation(m));
 }
 float toleranceCounts(const MotorState &m) {
   return ceilf(0.5f * countsPerRotation / pulsesPerRotation(m) + EncoderConfig::EncoderNoiseCounts);
@@ -627,7 +628,7 @@ bool setAcceleration(float acceleration) {
   return true;
 }
 bool setStepsPerRevolution(uint16_t steps) {
-  if (!canConfigure() || !steps || steps * float(microstepDivisor) > 800000.0f) return false;
+  if (!canConfigure() || !steps || steps * float(microstepDivisor) > 480000.0f) return false;
   selectedState().stepsPerRevolution = steps;
   selectedState().speed = minimum(selectedState().speed, speedLimit(selectedState()));
   return true;

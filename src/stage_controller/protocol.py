@@ -21,6 +21,8 @@ DEFAULT_ROTATIONS = 0.25
 MIN_SPEED = 0.001
 MIN_ROTATIONS = 0.001
 MAX_SPEED = 5.0  # Device reports a lower limit for the selected microstep mode.
+# The firmware sends at most this many pulses/s on one axis; see speedLimit().
+MAX_PULSE_RATE = 480
 MAX_ROTATIONS = 10_000
 COOLDOWN_SECONDS = 1.0
 HOLD_TIMEOUT_SECONDS = 1.0  # Matches the Arduino hold watchdog.
@@ -1076,7 +1078,7 @@ class DemoTransport:
                 encoder="ok",
                 tolerance=math.ceil(0.5 * 4096 / (200 * REQUIRED_MICROSTEP) + ENCODER_NOISE_COUNTS)
                 / 4096,
-                max_speed=800 / (200 * REQUIRED_MICROSTEP),
+                max_speed=MAX_PULSE_RATE / (200 * REQUIRED_MICROSTEP),
                 lower_limit=-POSITION_LIMIT,
                 upper_limit=POSITION_LIMIT,
                 lower_limit_set=False,
@@ -1381,7 +1383,7 @@ class DemoTransport:
             self.microstep = int(argument)
             for state in self.motors.values():
                 state.max_speed = min(
-                    MAX_SPEED, 800 / (state.steps_per_revolution * self.microstep)
+                    MAX_SPEED, MAX_PULSE_RATE / (state.steps_per_revolution * self.microstep)
                 )
                 state.tolerance = (
                     math.ceil(0.5 * 4096 / (state.steps_per_revolution * self.microstep) + 2) / 4096

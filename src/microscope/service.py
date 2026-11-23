@@ -44,6 +44,7 @@ from .aruco_switch import (
     OBJECTIVE_ORDER,
     ArucoObjectiveSwitcher,
     SwitchSettings,
+    SwitchVisionError,
     full_steps_to_pulses,
     select_objective,
 )
@@ -62,6 +63,8 @@ NUDGE_STEPS = (-10, -1, 1, 10)
 # The objective on each turret position, by side-camera marker ID (ISO 8578 colour ring).
 OBJECTIVE_NAMES = {0: "5x", 1: "10x", 2: "20x", 3: "50x"}
 NUDGE_SPEED = 40
+# A learned turn between 2 objectives stays within this many full steps of the default.
+PAIR_STEPS_RANGE = 25
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.
 PREVIEW_SIZE = (1296, 972)
@@ -468,7 +471,11 @@ class _AuthorityCancel:
 
 
 class _Unidentified(RuntimeError):
-    """The side camera did not identify an objective before a turret turn."""
+    """The side camera did not identify an objective.
+
+    Before a turn, nothing moved. During a turn, the turret is stopped and disabled.
+    Focus keeps its reference in both cases.
+    """
 
 
 @dataclass
@@ -745,6 +752,8 @@ class MicroscopeService(TurretCalibrationMixin):
         # Full steps that nudges turned the turret since select_objective aligned it.
         # None: unknown, at start and after a failed or stopped turn.
         self._objective_offset = None
+        # Full steps that the last aligned turn needed, for each (source, target) pair.
+        self._pair_steps = {}
         self._init_turret_calibration(turret_store)
         self._last_command = self._last_result = None
         self.expiry_count = 0
@@ -1755,7 +1764,13 @@ class MicroscopeService(TurretCalibrationMixin):
             self._guard_reference(job, clearance=True)
             # The turret has a gap between the last and the first objective. Never cross it.
             direction = 1 if OBJECTIVE_ORDER.index(target) > OBJECTIVE_ORDER.index(current) else -1
-            settings = SwitchSettings()
+            expected = OBJECTIVE_ORDER[OBJECTIVE_ORDER.index(current) + direction]
+            # The objectives are not evenly spaced. Start from the steps that this
+            # pair needed last time, so the turn lands near the target.
+            default_steps = SwitchSettings().switch_steps
+            settings = SwitchSettings(
+                switch_steps=self._pair_steps.get((current, expected), default_steps)
+            )
             if self.demo:
                 settings = replace(
                     settings,
@@ -1774,15 +1789,22 @@ class MicroscopeService(TurretCalibrationMixin):
             with self._lock:
                 # The turret leaves the confirmed objective. A failed turn keeps it unknown.
                 self._objective_id = self._objective_offset = None
-            result = switcher.run(
-                direction, f"microscope/{job.ident}-switch-{len(completed)}.csv", source_id=current
-            )
+            try:
+                result = switcher.run(
+                    direction,
+                    f"microscope/{job.ident}-switch-{len(completed)}.csv",
+                    source_id=current,
+                )
+            except SwitchVisionError as error:
+                # The switcher stopped and disabled the turret. Focus did not move.
+                raise _Unidentified(str(error)) from error
             self._check_job(job)
-            expected = OBJECTIVE_ORDER[
-                (OBJECTIVE_ORDER.index(current) + direction) % len(OBJECTIVE_ORDER)
-            ]
             if result.target_id != expected:
                 raise RuntimeError("Objective switch returned an unexpected identity")
+            learned = round(abs(result.commanded_full_steps))
+            self._pair_steps[(current, expected)] = max(
+                default_steps - PAIR_STEPS_RANGE, min(default_steps + PAIR_STEPS_RANGE, learned)
+            )
             current = result.target_id
             item = asdict(result)
             item["log_path"] = str(item["log_path"])
@@ -1922,7 +1944,8 @@ class MicroscopeService(TurretCalibrationMixin):
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0, keep_recording=True)
         except (_Unidentified, NoFocusPeak) as error:
-            # No turret turn started, or autofocus ended its motion normally.
+            # No turret turn started, the switcher stopped and disabled the turret after
+            # the side camera lost the marker, or autofocus ended its motion normally.
             # Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except Exception as error:

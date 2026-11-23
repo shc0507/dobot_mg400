@@ -104,6 +104,10 @@ Before it moves, `select_objective` checks 1 side-camera frame. With a selected 
 If the initial image check fails, nothing moves, the focus zero stays known, and the service latches no fault. If profile identification fails after the clearance move, no turret turn starts. `last_command.message` gives the cause.
 The turret has a gap between objective `3` and objective `0`.
 `select_objective` turns the turret through the objectives between the current and the target objective. It never turns across the gap.
+After each turn, the motor holds the turret while the side camera measures and corrects the position. The service then releases the turret and checks the position again.
+Each measurement waits until 2 consecutive side-camera frames agree on the marker position, for a maximum of 3 s.
+If the side camera loses the marker during a turn, the service stops and disables the turret motor. Focus zero stays known, and the service latches no fault.
+The service starts each turn from the number of steps that the same objective pair needed last time. A service restart clears these numbers.
 If a turret turn fails, `objective_id` is `null`.
 
 `objective_nudge` turns the turret `steps` full steps at the current focus position. It does not move to the clearance position first. The `steps` value is `-10`, `-1`, `1`, or `10`.

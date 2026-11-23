@@ -209,7 +209,7 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
-| `enable` | 无 | 使能机械臂 |
+| `enable` | 无 | 使能机械臂，并设定负载 |
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
@@ -504,7 +504,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
 - 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。`held` 是 DI8（`GRIP_DI`）的实测电平；`GRIP_DI` 为 `None` 或无反馈时为 `null`。
-- 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
+- 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。服务每次使能时用 `EnableRobot` 命令发送 `PAYLOAD_KG` 和 `PAYLOAD_CENTER_MM`。两个常量在 `src/mg400/joint_control.py` 中。`PAYLOAD_KG` 是末端工具、腕部相机和相机支架的总质量。`PAYLOAD_CENTER_MM` 是 J4 为 0° 时该质量的重心相对 J4 轴的位置。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
 - 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。DO2 为高电平时，模拟器同时置高 DI8。
 - 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。

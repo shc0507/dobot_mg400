@@ -221,7 +221,8 @@ class Controller:
                 inputs = inputs | bit if status else inputs & ~bit
             self._sample = replace(sample, digital_outputs=outputs, digital_inputs=inputs)
             return ""
-        if text == "EnableRobot()":
-            self._sample = replace(sample, mode=5)
+        if text.startswith("EnableRobot("):
+            load = text[len("EnableRobot(") : -1].split(",")[0]  # optional payload in kg
+            self._sample = replace(sample, mode=5, load_kg=float(load) if load else sample.load_kg)
             return ""
         raise AssertionError(f"Unexpected controller command: {text}")

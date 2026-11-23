@@ -212,7 +212,7 @@ def test_unconfirmed_speed_factor_becomes_a_verified_stop_that_disable_recovers(
         "SpeedFactor(25)",
         "ResetRobot()",
         "DisableRobot()",
-        "EnableRobot()",
+        "EnableRobot(0.117,-27,19,0)",
         "SpeedFactor(25)",
     ]
 

@@ -512,6 +512,41 @@ cross_check_slots(location, *, taught_stations, chips,
 `observe_slots` 的错误消息列出每个未通过的槽位，以及其失败项、缺失证据和残差。
 不得把不完整证据视为运动许可。常规机器人限位、避让检查、租约和区域规则仍然适用。
 
+## 腕部相机校准
+
+腕部相机（`camera5`）装在机械臂的腕部支架上。该连杆保持水平，只随 J1 转动。工具旋转 R 不带动相机。
+
+`config/cameras/wrist.json` 保存 `3840x2160` 画面的校准：
+
+- 相机矩阵和 OpenCV 有理模型的 8 个畸变系数。
+- 安装位置：相机在腕部连杆坐标系中的位置，即相对工具轴的 x 和 y，以及连杆坐标系到相机坐标系的旋转。校准不给出相机相对法兰的高度。
+- `arm_lateral_scale`：机械臂报告的 x 和 y 乘以该系数，得到实际位置。它适用于 X -79 到 41、Y -316 到 -236。
+- 拟合误差，单位为像素。
+
+`vision.wrist_camera.load()` 读取该文件。目前没有服务使用该校准。
+改变镜头对焦、相机安装或采集尺寸后，重新校准。
+
+### 用打印的标定板校准
+
+1. 生成标定板：`uv run python scripts/wrist_camera_calibrate.py board work/wrist-camera/board.pdf`。用 A4 纸按 100% 打印。
+2. 测量打印图案的长边，即 11 个方格的两端边缘之间的距离。按 100% 打印时为 264 mm。
+3. 把打印件固定在硬底板上，放到托盘台上。运行期间不得移动标定板，也不得移动位移台。
+4. 把机械臂停在 X -39、Y -236、Z 163.8，偏差在 5 mm 内。标定板必须在相机下方 160 到 190 mm 处。脚本检查这 2 个条件，有一个不满足就拒绝启动。
+5. 确认机械臂周围没有障碍物。机械臂从起始位姿出发，X 方向移动 -40 到 80 mm，Y 方向移动 0 到 -80 mm，Z 方向移动 0 到 -38 mm，速度为 15。
+6. 运行 `uv run python scripts/wrist_camera_calibrate.py run --board-mm 264`，填入测得的长度。看住机械臂。`sudo labctl robot stop` 使它停止。
+7. 提交新的 `config/cameras/wrist.json`。
+
+脚本用会话 `wrist-calibration` 取得机器人的控制权。它记录 50 个位姿，把机械臂移回起始位姿，再释放机器人。
+拟合误差不超过 1 像素时，脚本才保存结果。
+脚本把记录的位姿和标定板角点写入 `work/wrist-camera/run.json`。
+如果不移动机械臂而重新拟合，运行 `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`。
+
+### 腕部校准的限制
+
+- 标定板的点位于图像中部。图像左边缘和机械臂入镜的区域没有点。
+- 每个标定板角点都是自由点，因此标定板不必平整。测得的长度确定比例。
+- 拟合把机械臂的 Z 步长当作真实距离。
+
 ## 停止与退出
 
 任何客户端都可调用 `POST api/stop`，不必持有租约。

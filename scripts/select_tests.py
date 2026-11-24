@@ -130,6 +130,8 @@ AREAS = [
         ],
     ),
     ("config/trays/*", ["test_vision_tray.py"]),
+    ("config/cameras/*", ["test_vision_wrist_camera.py"]),
+    ("scripts/wrist_camera_calibrate.py", ["test_vision_wrist_camera.py"]),
     ("scripts/vision_eval.py", ["test_vision_eval.py"]),
     ("scripts/console_shots.py", ["test_console_shots.py"]),
     ("scripts/agent_signal.py", ["test_agent_signal.py"]),

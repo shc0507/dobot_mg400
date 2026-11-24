@@ -607,3 +607,19 @@ Evaluation rules:
 - The center error is the distance between the box centers of a match. `--px-per-mm` converts pixels to millimetres.
 
 The output is a Markdown report. It shows the counts per frame group, the Chip precision and recall, the center errors, and the frames with false or missed detections.
+
+### Labeled frames from the wrist camera
+
+`scripts/wrist_chip_dataset.py` makes a labeled set from wrist camera frames of the tray. No person marks a chip and no trained model is used.
+The tray plate is plain grey. The script finds each object that differs from the tray around it, and it uses the flange pose of each frame and the [wrist camera calibration](#wrist-camera-calibration) to find the same object in all frames.
+
+```bash
+uv run python scripts/wrist_chip_dataset.py FRAMES OUT
+```
+
+- `FRAMES` contains the `3840x2160` frames and `frames.json`, a list of `{"image": "name.jpg", "pose": [x, y, z, r]}` with the flange pose of each frame.
+- `OUT` gets `images/` and `labels/`, which `scripts/vision_eval.py` can read. Each label is the rectangle around 1 chip, as a YOLO polygon of class `0`.
+- The script finds the tray from its corner markers `0`, `1` and `2`. Each marker must be in 2 frames or more.
+- A chip is an object that is at the same place on the tray in 60% of the frames or more.
+- The script does not write a frame that has an object which is not a chip, or a chip in view without an object. It prints the counts.
+- An object must be 3 mm or more from the edge of the tray and from the corner tiles, and its color must be different from the grey of the tray.

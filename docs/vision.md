@@ -608,3 +608,19 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 - 中心误差是匹配框的中心距离。`--px-per-mm` 把像素换算为毫米。
 
 输出是 Markdown 报告。报告列出各组帧的计数、芯片精确率和召回率、中心误差，以及有误检或漏检的帧。
+
+### 腕部相机的带标注画面
+
+`scripts/wrist_chip_dataset.py` 用腕部相机拍摄的托盘画面生成带标注的数据集。不需要人标注芯片，也不使用训练过的模型。
+托盘板是纯灰色。脚本找出与周围托盘不同的每个物体，并用每张画面的法兰位姿和[腕部相机校准](#腕部相机校准)在所有画面中找到同一个物体。
+
+```bash
+uv run python scripts/wrist_chip_dataset.py FRAMES OUT
+```
+
+- `FRAMES` 包含 `3840x2160` 画面和 `frames.json`。该文件是 `{"image": "name.jpg", "pose": [x, y, z, r]}` 的列表，给出每张画面的法兰位姿。
+- `OUT` 得到 `images/` 和 `labels/`，`scripts/vision_eval.py` 可以读取。每个标注是 1 个芯片的外接矩形，写成类别 `0` 的 YOLO 多边形。
+- 脚本用托盘角上的标记 `0`、`1` 和 `2` 找到托盘。每个标记必须出现在 2 张或更多画面中。
+- 在 60% 或更多的画面中位于托盘同一位置的物体才算芯片。
+- 画面中有不是芯片的物体，或者视野内的芯片位置上没有物体时，脚本不写出该画面。脚本打印这些数量。
+- 物体必须距托盘边缘和角上的标记块 3 mm 或更远，颜色必须与托盘的灰色不同。

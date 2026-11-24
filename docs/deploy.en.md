@@ -470,7 +470,7 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 | `MG400_PROXY_PORT` | `8080` | Proxy port, from `1024` to `65535` |
 | `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
 | `MG400_ROBOT_HOST` | Address in `config/robot.toml` | Robot address |
-| `MG400_CAMERA_DEVICES` | Empty | 1 to 4 distinct camera devices separated by commas. Empty disables cameras |
+| `MG400_CAMERA_DEVICES` | Empty | 1 to 5 distinct camera devices separated by commas. Empty disables cameras |
 | `MG400_CAMERA_MODES` | Empty | One approved `WIDTHxHEIGHT@FPS` mode per device, in device order |
 | `MG400_STAGE_SERIAL` | Empty | Arduino serial port path. See [Stage configuration](stage-panel.en.md#configuration) |
 | `MG400_VISION_WEIGHTS` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` | Verified local model weights |
@@ -481,8 +481,8 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 Configure the furnace caps and gas map as described in [furnace configuration](furnace.en.md#configuration).
 Configure microscope device selection, focus limits, and camera streams as described in the [microscope guide](microscope.en.md#contract-service).
 
-Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
-The camera service provides only configured streams, named `camera1` through `camera4` in device order.
+Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports. The wrist camera uses its name under `/dev/v4l/by-id/`.
+The camera service provides only configured streams, named `camera1` through `camera5` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry. If it is set with `MG400_CAMERA_MODES`, the installer, `labctl` and preview service refuse to run.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.

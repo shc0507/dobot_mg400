@@ -56,13 +56,18 @@ def simulated_records(scale, offset, yaw_deg):
 
 
 def test_fit_recovers_the_lens_the_mount_and_the_arm_scale():
-    result = wrist_camera.fit(simulated_records(0.9877, (-42.0, 43.0), 179.6))
+    records = simulated_records(0.9877, (-42.0, 43.0), 179.6)
+    result = wrist_camera.fit(records)
     matrix = np.array(result["camera_matrix"])
+    radius = np.mean([np.hypot(*record["pose"][:2]) for record in records])
     assert result["rms_px"] < 0.5 and result["max_px"] < wrist_camera.OUTLIER_PX
     assert matrix[0, 0] == pytest.approx(1235, rel=0.01)
     assert matrix[1, 1] == pytest.approx(1232, rel=0.01)
-    assert result["arm_lateral_scale"] == pytest.approx(0.9877, abs=0.002)
-    assert result["mount"]["offset_xy_mm"] == pytest.approx([-42.0, 43.0], abs=1.5)
+    assert result["arm_radial_scale"] == pytest.approx(0.9877, abs=0.002)
+    assert result["calibration_radius_mm"] == pytest.approx(radius)
+    # The stored offset is for the arm frame without the scale, at the mean radius.
+    expected = [-42.0 - (1 - 0.9877) * radius, 43.0]
+    assert result["mount"]["offset_xy_mm"] == pytest.approx(expected, abs=1.5)
     assert len(result["distortion"]) == 8 and result["poses"] == 18
 
 
@@ -86,7 +91,7 @@ def test_stored_calibration_is_valid(tmp_path):
     assert stored["distortion"].shape == (8,) and stored["rms_px"] <= wrist_camera.MAX_RMS_PX
     assert 20 < stored["mount"]["camera_above_tip_mm"] < 50
     bad = tmp_path / "wrist.json"
-    bad.write_text(wrist_camera.CONFIG.read_text().replace('"schema": 1', '"schema": 2'))
+    bad.write_text(wrist_camera.CONFIG.read_text().replace('"schema": 2', '"schema": 3'))
     with pytest.raises(ValueError, match="Invalid wrist camera calibration"):
         wrist_camera.load(bad)
 
@@ -101,13 +106,12 @@ def simulated_model():
             "rotation_link_to_camera": (tilt @ wrist_camera._down(np.radians(179.6))).tolist(),
             "camera_above_tip_mm": 35.0,
         },
-        "arm_lateral_scale": 0.9877,
     }
 
 
 def simulated_pixel(model, point, pose):
-    """Pixel of a real point. Its z is the flange z at which the lens is at its height."""
-    real = np.array([pose[0], pose[1], pose[2]]) * [0.9877, 0.9877, 1.0]
+    """Pixel of a point. Its z is the flange z at which the lens is at its height."""
+    real = np.array([pose[0], pose[1], pose[2]])
     j1 = np.arctan2(pose[1], pose[0])
     linked = wrist_camera.link_points(
         np.array([point]), real, np.array([j1]), model["mount"]["offset_xy_mm"]
@@ -118,8 +122,8 @@ def simulated_pixel(model, point, pose):
 
 def test_pixels_map_to_arm_coordinates_on_a_surface_and_from_2_views():
     model = simulated_model()
-    # A point at reported arm (150, -180), on a surface that the tip touches at flange z -70.
-    point = np.array([150 * 0.9877, -180 * 0.9877, -70.0 - 35.0])
+    # A point at arm (150, -180), on a surface that the tip touches at flange z -70.
+    point = np.array([150.0, -180.0, -70.0 - 35.0])
     poses = [(100.0, -230.0, 120.0, 0.0), (160.0, -215.0, 120.0, 0.0), (130.0, -220.0, 60.0, 0.0)]
     pixels = [simulated_pixel(model, point, pose) for pose in poses]
     for pixel, pose in zip(pixels, poses):

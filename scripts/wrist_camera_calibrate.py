@@ -133,7 +133,7 @@ def collect(square_mm):
 
 def fit(records, square_mm, out):
     result = wrist_camera.fit(records, square_mm)
-    print(json.dumps({key: result[key] for key in ("rms_px", "max_px", "arm_lateral_scale")}))
+    print(json.dumps({key: result[key] for key in ("rms_px", "max_px", "arm_radial_scale")}))
     if result["rms_px"] > wrist_camera.MAX_RMS_PX:
         raise RuntimeError("The fit error is above the limit. The calibration is not stored")
     out = Path(out)

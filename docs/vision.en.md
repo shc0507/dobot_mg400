@@ -519,12 +519,13 @@ The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays
 
 - The camera matrix and the 8 distortion coefficients of the OpenCV rational model.
 - The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
-- `arm_lateral_scale`: multiply the reported arm x and y by this factor to get the real position. It applies from X -79 to 41 and from Y -316 to -236.
+- `arm_radial_scale` and `calibration_radius_mm`: the board run gives the reported radial moves of the arm this scale factor about this radius. The factor is valid only near the run poses, from X -79 to 41 and from Y -316 to -236. The mapping functions do not use it.
 - `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
 - The fit error in pixels.
 
 `vision.wrist_camera.load()` reads the file. No service uses the calibration at this time.
 `surface_points()` gives the arm x and y of image points on a level surface. `locate()` gives the arm x and y and the touch Z of 1 point that 2 or more poses see. The touch Z is the flange Z at which the tip of the cup touches the surface.
+For `surface_points()`, use a pose with the lens 170 mm or more above the surface. A view from a shorter distance can be 2 mm off.
 Calibrate again after a change of the lens focus, the camera mount, or the capture size.
 
 ### Calibrate with the printed board
@@ -547,7 +548,7 @@ To repeat the fit without motion, run `uv run python scripts/wrist_camera_calibr
 The board run does not give `camera_above_tip_mm`. Measure it with a touch:
 
 1. Find a flat marker with `locate()` from 3 or more poses. Read its height, the 4th value of the result.
-2. Make sure that the camera body has free space at the touch pose. The camera is 61 mm from the tool axis.
+2. Make sure that the camera body has free space at the touch pose. The camera is 63 mm from the tool axis.
 3. Put the tool over the marker. Set suction to on and move down in steps of 0.1 mm near the surface. The cup has a seal when the line pressure falls from about -185 hPa to about -690 hPa.
 4. The value is the flange Z of the first step with a seal, minus the height from step 1.
 

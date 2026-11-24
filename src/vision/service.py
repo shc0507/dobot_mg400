@@ -429,15 +429,15 @@ class VisionService:
             "default": DRIFT_LIMIT_PX,
             "description": "Maximum distance from the detected to the expected marker 4 center.",
         }
-        markers = copy.deepcopy(params)
-        markers["properties"].update(
+        wrist = copy.deepcopy(params)
+        wrist["properties"].update(
             flange_mm=copy.deepcopy(drift["properties"]["flange_mm"]),
             touch_z_mm={
                 "type": "number",
                 "minimum": -1_000_000,
                 "maximum": 1_000_000,
                 "description": "Wrist camera only, with flange_mm: the flange Z at which the "
-                "tool tip touches the surface of the markers. Adds arm_xy_mm to each marker.",
+                "tool tip touches the surface. Adds robot_mm to each marker or detection.",
             },
         )
         slots = copy.deepcopy(params)
@@ -464,9 +464,9 @@ class VisionService:
             on_lease_expiry="cancel the controlling client's inference and discard late results",
             commands=(
                 {
-                    "detect": command(params),
+                    "detect": command(wrist),
                     "read_labels": command(labels),
-                    "read_markers": command(markers),
+                    "read_markers": command(wrist),
                     "calibrate_camera": command(calibration),
                     "check_calibration": command(drift),
                     "observe_slots": command(slots),
@@ -561,17 +561,17 @@ class VisionService:
         while not self._quit.wait(0.1):
             self.lease.poll()
 
-    def _wrist_markers(self, image, markers, args):
-        """Add the arm x, y of each marker centre, for markers on 1 level surface."""
+    def _wrist_points(self, image, items, args):
+        """Add robot_mm, the arm x and y of each center, for items on 1 level surface."""
         model = self._wrist_model()
         if list(image.size) != model["image_size"]:
             raise ValueError("Live image size differs from the wrist camera calibration.")
-        if not markers:
-            return markers
-        points = wrist_camera.surface_points(
-            model, [m["center_px"] for m in markers], args["flange_mm"], args["touch_z_mm"]
-        )
-        return [{**m, "arm_xy_mm": xy.tolist()} for m, xy in zip(markers, points)]
+        if not items:
+            return
+        centers = [item.get("center_px", item.get("center_xy")) for item in items]
+        points = wrist_camera.surface_points(model, centers, args["flange_mm"], args["touch_z_mm"])
+        for item, (x, y) in zip(items, points):
+            item["robot_mm"] = {"x": float(x), "y": float(y)}
 
     def _nominal_distance(self, tool_dz_mm):
         """The tag sits above the flange and the tip below it: D = tag height + tool dz."""
@@ -596,7 +596,7 @@ class VisionService:
             }
         if action == "check_calibration":
             allowed |= {"flange_mm", "limit_px"}
-        if action == "read_markers":
+        if action in {"read_markers", "detect"}:
             allowed |= {"flange_mm", "touch_z_mm"}
         if action == "observe_slots":
             allowed |= {"tray", "targets", "axis"}
@@ -663,7 +663,7 @@ class VisionService:
                     "Drift checking requires a configured stable camera port identity."
                 )
             camera_device(self._devices[camera - 1])
-        if action == "read_markers" and {"flange_mm", "touch_z_mm"} & set(args):
+        if {"flange_mm", "touch_z_mm"} & set(args) and action != "check_calibration":
             flange, touch = args.get("flange_mm"), args.get("touch_z_mm")
             if (
                 not isinstance(flange, list)
@@ -883,13 +883,10 @@ class VisionService:
             # This branch never reloads the model or maps marker centers to robot coordinates.
             return self._bounded_result(result), image
         if job["action"] == "read_markers":
-            markers = self._markers(image)
-            if "flange_mm" in job["args"]:
-                markers = self._wrist_markers(image, markers, job["args"])
             result = {
                 "image_size": {"width": image.width, "height": image.height},
                 "coordinate_system": "oriented_original_image_pixels",
-                "markers": markers,
+                "markers": self._markers(image),
                 "frame_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
                 "read_at": self._wall_clock(),
                 "camera_device": (
@@ -952,6 +949,10 @@ class VisionService:
             else:
                 with self._lock:
                     self._calibrated_cameras.discard(job["camera"])
+        if "flange_mm" in job["args"] and job["action"] in {"read_markers", "detect"}:
+            # The wrist camera moves with the arm: the caller gives the pose of this frame.
+            self._wrist_points(image, result.get("detections", result.get("markers")), job["args"])
+            result["calibrated"] = True
         return self._bounded_result(result), annotated
 
     @contextmanager

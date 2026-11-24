@@ -309,7 +309,8 @@ def test_robot_move_waits_for_its_command_id_and_uses_the_relative_pose():
     ]
 
 
-def test_vision_locate_sends_the_flange_pose_with_the_marker_command():
+@pytest.mark.parametrize("what,action", [("markers", "read_markers"), ("chips", "detect")])
+def test_vision_locate_sends_the_flange_pose_with_the_command(what, action):
     still = robot_state(None, actual=[278.0, -9.4, 100.0, -30.7])
     agent, http = make(
         {
@@ -318,10 +319,10 @@ def test_vision_locate_sends_the_flange_pose_with_the_marker_command():
             "api/console/command/vision": (202, {"command_id": "7"}),
         }
     )
-    code, result = run_cli(["vision", "locate", "5", "-68.75", "--no-wait"], agent)
+    code, result = run_cli(["vision", "locate", what, "5", "-68.75", "--no-wait"], agent)
     assert code == 0 and result["outcome"] == "accepted"
     params = {"camera": 5, "flange_mm": [278.0, -9.4, 100.0, -30.7], "touch_z_mm": -68.75}
-    assert http.sent("api/console/command/vision") == [{"action": "read_markers", "params": params}]
+    assert http.sent("api/console/command/vision") == [{"action": action, "params": params}]
 
 
 def test_vision_locate_sends_nothing_without_a_known_pose():
@@ -332,7 +333,7 @@ def test_vision_locate_sends_nothing_without_a_known_pose():
             "api/console/state/robot": states(moving),
         }
     )
-    code, result = run_cli(["vision", "locate", "5", "-68.75"], agent)
+    code, result = run_cli(["vision", "locate", "chips", "5", "-68.75"], agent)
     assert code == 1 and result["error"]["code"] == "busy"
     assert http.sent("api/console/command/vision") == []
 

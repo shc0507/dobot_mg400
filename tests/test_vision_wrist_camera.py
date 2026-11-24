@@ -163,7 +163,9 @@ def wrist_service(tmp_path):
     service = VisionService(
         demo=True,
         frames=frames,
-        localizer_factory=lambda: SimpleNamespace(predict=Mock()),
+        localizer_factory=lambda: SimpleNamespace(
+            predict=lambda image: (image, {"detections": [{"center_xy": pixel.tolist()}]})
+        ),
         marker_detector=lambda _image: [{"id": 18, "center_px": pixel.tolist()}],
         wrist_model=lambda: model,
         calibration_directory=tmp_path,
@@ -191,10 +193,20 @@ def test_marker_command_gives_arm_coordinates_for_the_wrist_camera(wrist_service
     body = {"action": "read_markers", "camera": 2}
     result, output = run_command(wrist_service, **body, flange_mm=POSE, touch_z_mm=-70.0)
     assert result == "ok" and output["camera_device"] == WRIST
-    assert output["markers"][0]["id"] == 18
-    assert output["markers"][0]["arm_xy_mm"] == pytest.approx([150.0, -180.0], abs=0.01)
+    assert output["markers"][0]["id"] == 18 and output["calibrated"] is True
+    assert output["markers"][0]["robot_mm"] == pytest.approx({"x": 150.0, "y": -180.0}, abs=0.01)
     result, output = run_command(wrist_service, **body)
-    assert result == "ok" and "arm_xy_mm" not in output["markers"][0]
+    assert result == "ok" and "robot_mm" not in output["markers"][0]
+    assert output["calibrated"] is False
+
+
+def test_detect_command_gives_arm_coordinates_for_the_wrist_camera(wrist_service):
+    body = {"action": "detect", "camera": 2}
+    result, output = run_command(wrist_service, **body, flange_mm=POSE, touch_z_mm=-70.0)
+    assert result == "ok" and output["calibrated"] is True
+    assert output["detections"][0]["robot_mm"] == pytest.approx({"x": 150.0, "y": -180.0}, abs=0.01)
+    result, output = run_command(wrist_service, **body)
+    assert result == "ok" and "robot_mm" not in output["detections"][0]
 
 
 @pytest.mark.parametrize(
@@ -207,8 +219,9 @@ def test_marker_command_gives_arm_coordinates_for_the_wrist_camera(wrist_service
         {"camera": 2, "flange_mm": POSE, "touch_z_mm": "low"},
     ],
 )
-def test_marker_command_refuses_incomplete_arm_arguments(wrist_service, arguments):
-    status, body = run_command(wrist_service, action="read_markers", **arguments)
+@pytest.mark.parametrize("action", ["read_markers", "detect"])
+def test_commands_refuse_incomplete_arm_arguments(wrist_service, arguments, action):
+    status, body = run_command(wrist_service, action=action, **arguments)
     assert status == 400 and "Arm coordinates need" in body["error"]
 
 

@@ -144,7 +144,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 
 | 命令 | 参数与结果 |
 | --- | --- |
-| `read_markers` | `camera`。返回含 `id`、`center_px` 和 `corners_px` 的 `markers`，以及 `camera`、`calibrated=false`、`coordinate_system`、`image_size`、`camera_device`、`frame_sha256` 和 `read_at`。没有稳定端口路径时，`camera_device` 为 `null`。对腕部相机，可选的 `flange_mm`（法兰位姿 `[x, y, z, r]`）和 `touch_z_mm` 给每个标记加上 `arm_xy_mm`：标记中心的机械臂 x 和 y，标记须在 1 个水平面上。见[腕部相机校准](#腕部相机校准)。 |
+| `read_markers` | `camera`。返回含 `id`、`center_px` 和 `corners_px` 的 `markers`，以及 `camera`、`calibrated=false`、`coordinate_system`、`image_size`、`camera_device`、`frame_sha256` 和 `read_at`。没有稳定端口路径时，`camera_device` 为 `null`。对腕部相机，可选的 `flange_mm`（法兰位姿 `[x, y, z, r]`）和 `touch_z_mm` 给每个标记加上 `robot_mm`：标记中心的机械臂 x 和 y，标记须在 1 个水平面上。`detect` 接受同样的 2 个参数。此时结果含 `calibrated=true`。见[腕部相机校准](#腕部相机校准)。 |
 | `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size`、`scan_r_deg` 和 `tool_dz_mm`。在持有租约时拟合并保存模型。返回 `camera`、`calibrated=true` 和已保存的模型 `calibration`。 |
 | `check_calibration` | `camera`、`flange_mm` 和可选 `limit_px`。返回同一图像的标记 4 检查。 |
 
@@ -524,7 +524,7 @@ cross_check_slots(location, *, taught_stations, chips,
 - `camera_above_tip_mm`：镜头高出吸盘尖端的距离。
 - 拟合误差，单位为像素。
 
-`vision.wrist_camera.load()` 读取该文件。视觉服务的 `read_markers` 命令对腕部相机使用它。
+`vision.wrist_camera.load()` 读取该文件。视觉服务的 `read_markers` 和 `detect` 命令对腕部相机使用它。
 `surface_points()` 给出水平面上图像点的机械臂 x 和 y。`locate()` 给出 2 个或更多位姿都看到的 1 个点的机械臂 x、y 和接触 Z。接触 Z 是吸盘尖端接触表面时的法兰 Z。
 使用 `surface_points()` 时，选镜头高出表面 170 mm 或更多的位姿。距离更近时，结果可能偏差 2 mm。
 改变镜头对焦、相机安装或采集尺寸后，重新校准。

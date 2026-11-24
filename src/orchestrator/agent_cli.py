@@ -169,6 +169,7 @@ def _parser():
             for name in ("detect", "markers", "labels"):
                 verb(verbs, name, sends=True).add_argument("camera", type=int)
             locate = verb(verbs, "locate", sends=True)
+            locate.add_argument("what", choices=["markers", "chips"])
             locate.add_argument("camera", type=int)
             locate.add_argument("touch_z", type=float)
 
@@ -309,12 +310,12 @@ def _shortcut(agent, args):
             return "start_recording", params
     if group == "vision":
         if verb == "locate":
-            # The wrist camera moves with the arm: its markers need the flange pose.
+            # The wrist camera moves with the arm: its frame needs the flange pose.
             actual, failed = current_pose(agent)
             if failed:
                 return failed
             params = {"camera": args.camera, "flange_mm": actual, "touch_z_mm": args.touch_z}
-            return "read_markers", params
+            return ("read_markers" if args.what == "markers" else "detect"), params
         action = {"detect": "detect", "markers": "read_markers", "labels": "read_labels"}[verb]
         return action, {"camera": args.camera}
     raise UsageError(f"Unknown command: {group} {verb}")

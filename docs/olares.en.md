@@ -284,7 +284,7 @@ The Angetube Live Camera (`camera1`) and the wrist camera (`camera5`) support MJ
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run.
 The following configuration of 5 cameras uses the order in the table above.
-`camera1` uses `3840x2160@30`. The other 4 cameras use `1280x720@30`.
+`camera1` and `camera5` use `3840x2160@30`. The other 3 cameras use `1280x720@30`.
 The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
 The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`. A shared USB 2 link then holds only 1 such stream.
 The [USB bandwidth patch](#usb-bandwidth-patch) supports concurrent `1280x720@30` capture settings for all 4 streams. Measure the actual delivered frame rate.
@@ -292,11 +292,11 @@ Before you raise a mode, check the bandwidth with `labctl camera-check` and the 
 
 ```ini
 MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0,/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0
-MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30,1280x720@30
+MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30,3840x2160@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-Only streams with width at most 1280 and height at most 720 are preloaded.
+Only streams with width at most 1280 and height at most 720 are preloaded. The stream of the wrist camera is preloaded at each mode.
 Preloaded capture continues when the browser is closed.
 Larger streams start when a video stream, microscope, or still consumer requests them.
 The microscope service reads its side stream only during `select_objective`.
@@ -332,7 +332,7 @@ Before simultaneous hardware use, open the required views together during a supe
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
 Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `labctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is disabled, omit `vision` from the command.
-After a stream stop, the wrist camera can refuse the next open, and go2rtc opens a camera again only after a restart. Thus the preview service resets the wrist camera through USB before each go2rtc restart. The reset affects only this 1 camera and does not reset the hub. The udev rule of the camera service lets the service group open its device node under `/dev/bus/usb`.
+After a stream stop, the wrist camera can refuse the next open, and go2rtc opens a camera again only after a restart. Thus go2rtc keeps the stream of the wrist camera open, and the preview service resets the wrist camera through USB before each go2rtc restart. The reset affects only this 1 camera and does not reset the hub. The udev rule of the camera service lets the service group open its device node under `/dev/bus/usb`.
 After replacing a camera, preserve the original calibration files. Recalibrate its image-coordinate mapping even if the mount stays the same.
 
 Start the camera services:

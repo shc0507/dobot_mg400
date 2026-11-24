@@ -1,5 +1,5 @@
 {
- "schema": 1,
+ "schema": 2,
  "image_size": [
   3840,
   2160
@@ -33,7 +33,7 @@
  ],
  "mount": {
   "offset_xy_mm": [
-   -42.2829046528732,
+   -45.762814989385234,
    43.57809284883509
   ],
   "rotation_link_to_camera": [
@@ -52,9 +52,11 @@
     -0.002301251708232111,
     -0.9999857045107023
    ]
-  ]
+  ],
+  "camera_above_tip_mm": 31.52
  },
- "arm_lateral_scale": 0.9874673888003946,
+ "arm_radial_scale": 0.9874673888003946,
+ "calibration_radius_mm": 277.6684189023284,
  "square_mm": 24.0,
  "poses": 50,
  "observations": 3272,

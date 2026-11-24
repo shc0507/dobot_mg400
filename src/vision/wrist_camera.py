@@ -10,9 +10,13 @@ R_cl is the camera rotation in the link frame and o is the camera position in th
 frame. o_z is 0: a change of o_z is the same as a shift of all P_z.
 
 Each board corner is a free 3D point, so the paper does not need to be flat. Its square
-size gives the real scale. The fit multiplies the reported arm x and y by 1 factor, and
-it takes the reported z steps as true. Each pose gets a small position correction for
-the arm accuracy.
+size gives the real scale. The fit takes the reported z steps as true. Each pose gets a
+small position correction for the arm accuracy.
+
+The reported radial moves of the arm do not agree exactly with the board. The fit gives
+them 1 scale factor about the mean radius of the poses. That factor is not valid away
+from those poses, so the mapping functions do not use it: a touch test on the stage was
+5 mm off with a scale about the base axis and 0.5 mm off without it.
 """
 
 import json
@@ -135,7 +139,7 @@ def _matrix(values):
 
 
 def fit(records, square_mm=SQUARE_MM):
-    """Fit the lens, the mount and the arm lateral scale.
+    """Fit the lens, the mount and the arm radial scale.
 
     records: [{"pose": [x, y, z, r], "board": {corner ID: [u, v]}}]. Discard the frame that
     follows an enable without a move: the arm is not at its reported position then.
@@ -217,8 +221,12 @@ def fit(records, square_mm=SQUARE_MM):
         pose, corner, pixels = arrays(rows)
     matrix, distortion, rotation, offset, _, moved, scale = unpack(x)
     errors = errors[keep] if not keep.all() else errors
+    # The fit scales about the base axis. A scale about the mean radius is the same model
+    # with a different radial offset, and it leaves positions at that radius unchanged.
+    radius = float(np.mean(np.hypot(flange[:, 0], flange[:, 1])))
+    offset = offset + [(scale - 1.0) * radius, 0.0]
     return {
-        "schema": 1,
+        "schema": 2,
         "image_size": list(IMAGE_SIZE),
         "camera_matrix": matrix.tolist(),
         "distortion": distortion.tolist(),
@@ -226,7 +234,8 @@ def fit(records, square_mm=SQUARE_MM):
             "offset_xy_mm": offset.tolist(),
             "rotation_link_to_camera": cv2.Rodrigues(rotation)[0].tolist(),
         },
-        "arm_lateral_scale": float(scale),
+        "arm_radial_scale": float(scale),
+        "calibration_radius_mm": radius,
         "square_mm": float(square_mm),
         "poses": len(records),
         "observations": int(len(errors)),
@@ -243,8 +252,9 @@ def load(path=CONFIG):
     distortion = np.array(document["distortion"], float)
     rotation = np.array(document["mount"]["rotation_link_to_camera"], float)
     offset = np.array(document["mount"]["offset_xy_mm"], float)
+    height = document["mount"].get("camera_above_tip_mm")
     if (
-        document.get("schema") != 1
+        document.get("schema") != 2
         or document.get("image_size") != list(IMAGE_SIZE)
         or matrix.shape != (3, 3)
         or distortion.shape != (8,)
@@ -252,6 +262,63 @@ def load(path=CONFIG):
         or offset.shape != (2,)
         or not all(np.all(np.isfinite(v)) for v in (matrix, distortion, rotation, offset))
         or not 0 < document["rms_px"] <= MAX_RMS_PX
+        or not 0.9 < document["arm_radial_scale"] < 1.1
+        or (height is not None and not 0 < height < 200)
     ):
         raise ValueError(f"Invalid wrist camera calibration: {path}")
     return {**document, "camera_matrix": matrix, "distortion": distortion}
+
+
+def rays(model, pixels, pose):
+    """Return the camera centre and a viewing direction for each pixel, for 1 arm pose.
+
+    The frame is the arm frame. Its z is the flange z of the pose, so the centre has the z
+    of the flange and not of the lens.
+    """
+    offset = model["mount"]["offset_xy_mm"]
+    rotation = np.array(model["mount"]["rotation_link_to_camera"], float)
+    points = np.asarray(pixels, float).reshape(-1, 1, 2)
+    normal = cv2.undistortPoints(points, model["camera_matrix"], model["distortion"]).reshape(-1, 2)
+    link = np.column_stack([normal, np.ones(len(normal))]) @ rotation
+    cos, sin = np.cos(np.arctan2(pose[1], pose[0])), np.sin(np.arctan2(pose[1], pose[0]))
+    turn = np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
+    centre = np.array(pose[:3], float) + turn @ [*offset, 0.0]
+    return centre, link @ turn.T
+
+
+def _height(model):
+    height = model["mount"].get("camera_above_tip_mm")
+    if height is None:
+        raise ValueError("The calibration has no camera height above the tool tip")
+    return height
+
+
+def surface_points(model, pixels, pose, touch_z):
+    """Return the arm x, y of pixels on a level surface.
+
+    touch_z is the flange z at which the tool tip touches the surface. A move to the
+    result puts the tool axis over the point. Use a pose 170 mm or more above the surface:
+    a view from a shorter distance can be 2 mm off.
+    """
+    centre, directions = rays(model, pixels, pose)
+    distance = (touch_z - _height(model) - centre[2]) / directions[:, 2]
+    if np.any(distance <= 0):
+        raise ValueError("A pixel does not look at the surface")
+    return (centre + distance[:, None] * directions)[:, :2]
+
+
+def locate(model, pixels, poses):
+    """Return the arm x, y and the touch z of 1 fixed point, from its pixel in 2 or more poses."""
+    normal, target = np.zeros((3, 3)), np.zeros(3)
+    for pixel, pose in zip(pixels, poses, strict=True):
+        centre, direction = rays(model, [pixel], pose)
+        direction = direction[0] / np.linalg.norm(direction[0])
+        plane = np.eye(3) - np.outer(direction, direction)
+        normal += plane
+        target += plane @ centre
+    if len(poses) < 2 or np.linalg.cond(normal) > 1e4:
+        raise ValueError("The poses do not give 2 different viewing directions")
+    point = np.linalg.solve(normal, target)
+    height = model["mount"].get("camera_above_tip_mm")
+    touch_z = None if height is None else float(point[2] + height)
+    return float(point[0]), float(point[1]), touch_z, float(point[2])

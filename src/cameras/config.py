@@ -79,6 +79,18 @@ class CameraConfig:
         """The devices with a by-id name: the wrist camera."""
         return tuple(device for device in self.devices if device.startswith("/dev/v4l/by-id/"))
 
+    @property
+    def held(self):
+        """Streams that go2rtc holds open: each preloaded stream and the wrist camera.
+
+        The wrist camera can refuse an open after a stream stop, so its stream does not stop.
+        """
+        return tuple(
+            stream
+            for stream, device in zip(self.streams, self.devices)
+            if stream in self.preloaded or device in self.wrist
+        )
+
     def large(self, side=""):
         """Streams above 1280x720 that a viewer starts. The microscope side stream is not one."""
         return tuple(

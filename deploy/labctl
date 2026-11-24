@@ -833,7 +833,7 @@ def main(
     if args.command == "status":
         return status(run, out, services)
     if args.command == "camera-check":
-        return camera_check(host, devices, run, out, services, preloaded=camera_config.preloaded)
+        return camera_check(host, devices, run, out, services, preloaded=camera_config.held)
     if args.command in ("start", "stop", "restart"):
         chosen = units(args.names, args.command, services)
         furnace_selected = (

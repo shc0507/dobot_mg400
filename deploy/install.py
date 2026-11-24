@@ -449,7 +449,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
     )
     if nvenc:
         streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n"
-    preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
+    preload = "".join(f"  {name}: video\n" for name in configured.held)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
         f"api:\n  listen: {ports.HOST}:{ports.PORTS['go2rtc']}\n"

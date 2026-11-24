@@ -1831,6 +1831,23 @@ def test_camera_devices_require_distinct_complete_stable_paths(module, value):
         module.camera_devices(value)
 
 
+def test_go2rtc_holds_the_wrist_camera_open_at_a_large_mode(module):
+    wrist = "/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0"
+    devices = [DEVICES[0], DEVICES[1], wrist]
+    configured = module.camera_configuration(
+        {
+            "MG400_CAMERA_DEVICES": ",".join(devices),
+            "MG400_CAMERA_MODES": "3840x2160@30,1280x720@30,3840x2160@30",
+        }
+    )
+    assert configured.preloaded == ("camera2",) and configured.held == ("camera2", "camera3")
+    rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=True)
+    assert "preload:\n  camera2: video\n  camera3: video\nstreams:\n" in rendered
+    assert f"  camera3: v4l2:device?video={wrist}&input_format=mjpeg&video_size=3840" in rendered
+    assert "api/stream.mjpeg?src=camera3#input=mjpeg#video=h265#bitrate=6M\n" in rendered
+    assert "camera3_h264" not in rendered
+
+
 def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(
     module, host, inventory_udev
 ):

@@ -290,6 +290,15 @@ class Agent:
 
         return self._guard(read)
 
+    def twin_joints(self):
+        """Joint values of the bench twin model, or {} when the console gives none."""
+        try:
+            status, body = self._get("ws/twin/state")
+        except Unreachable:
+            return {}
+        joints = body.get("joints") if status == 200 else None
+        return joints if isinstance(joints, dict) else {}
+
     def describe(self, device):
         def read():
             status, body = self._get("describe/" + device)

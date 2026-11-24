@@ -11,6 +11,7 @@ import signal
 import sys
 from contextlib import contextmanager
 
+from . import collision
 from .agent import (
     DEFAULT_TIMEOUT_S,
     DEFAULT_URL,
@@ -111,6 +112,11 @@ def _parser():
                 move.add_argument(axis.lower(), type=float, metavar=axis)
             move.add_argument("--speed", type=int)
             move.add_argument("--relative", action="store_true")
+            move.add_argument(
+                "--no-collision-check",
+                action="store_true",
+                help="Send the move without the bench twin check (a taught, supervised move)",
+            )
             vacuum = verb(verbs, "vacuum", sends=True)
             vacuum.add_argument("operation", choices=["suck", "release", "off"])
         elif device == "stage":
@@ -196,6 +202,57 @@ def _parser():
     return parser
 
 
+def _robot_pose(agent):
+    """Return the robot state with a known ``actual`` pose, or a failure dict."""
+    # The pose is unknown while the arm moves and until the next feedback sample.
+    deadline = agent.clock() + POSE_WAIT_S
+    while True:
+        current = agent.state("robot")
+        if not current.get("ok"):
+            return current
+        state = current.get("state") or {}
+        actual = state.get("actual")
+        if isinstance(actual, list) and len(actual) == 4 and None not in actual:
+            return state
+        if agent.clock() >= deadline:
+            return failure(
+                "busy", "The current pose is unknown while the arm moves.", device="robot"
+            )
+        agent.sleep(0.1)
+
+
+def _collision(agent, state, target):
+    """Return a failure dict when the bench twin does not clear the straight move to target."""
+    skip = "For a taught, supervised move, add --no-collision-check."
+    try:
+        problem = collision.check(
+            state["actual"], target, joints=state.get("joints"), stage=agent.twin_joints()
+        )
+    except collision.Unavailable as error:
+        message = f"The collision check cannot run: {error} No command was sent. {skip}"
+        return failure("collision", message, device="robot")
+    if problem is None:
+        return None
+    place = "{along_mm:g} mm along the line, at flange ({pose[0]:g}, {pose[1]:g}, {pose[2]:g})"
+    where = f"'{problem['obstacle']}' ({problem['group']}) " + place.format(**problem)
+    if problem["clearance_mm"] == 0:
+        text = f"The bench twin shows contact of the arm ({problem['arm_part']}) with {where}."
+    elif problem["start_clearance_mm"] is None:
+        text = (
+            f"The bench twin shows the arm ({problem['arm_part']}) {problem['clearance_mm']:g} mm "
+            f"from {where}. The margin is {collision.MARGIN_MM:g} mm."
+        )
+    else:
+        text = (
+            f"The bench twin shows the arm ({problem['arm_part']}) {problem['clearance_mm']:g} mm "
+            f"from {where}. At the start it is {problem['start_clearance_mm']:g} mm away. "
+            f"Inside the {collision.MARGIN_MM:g} mm margin, a move must not go closer."
+        )
+    return failure(
+        "collision", f"{text} No command was sent. {skip}", device="robot", collision=problem
+    )
+
+
 def _shortcut(agent, args):
     """Return (action, params) for a command shortcut, or a failure dict."""
     group, verb = args.group, args.verb
@@ -206,24 +263,17 @@ def _shortcut(agent, args):
             return "vacuum", {"operation": args.operation}
         if verb == "move":
             target = [args.x, args.y, args.z, args.r]
+            if args.relative or not args.no_collision_check:
+                state = _robot_pose(agent)
+                if "actual" not in state:
+                    return state
+                actual = state["actual"]
             if args.relative:
-                # The pose is unknown while the arm moves and until the next feedback sample.
-                deadline = agent.clock() + POSE_WAIT_S
-                while True:
-                    current = agent.state("robot")
-                    if not current.get("ok"):
-                        return current
-                    actual = (current.get("state") or {}).get("actual")
-                    if isinstance(actual, list) and len(actual) == 4 and None not in actual:
-                        break
-                    if agent.clock() >= deadline:
-                        return failure(
-                            "busy",
-                            "The current pose is unknown while the arm moves.",
-                            device="robot",
-                        )
-                    agent.sleep(0.1)
                 target = [a + b for a, b in zip(actual, target, strict=True)]
+            if not args.no_collision_check:
+                blocked = _collision(agent, state, target)
+                if blocked:
+                    return blocked
             params = {"targets": dict(zip("xyzr", target, strict=True))}
             if args.speed is not None:
                 params["speed"] = args.speed

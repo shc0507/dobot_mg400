@@ -5,6 +5,7 @@ import io
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 from werkzeug.serving import make_server
@@ -12,6 +13,14 @@ from werkzeug.serving import make_server
 from orchestrator import agent as agent_module
 from orchestrator import agent_cli
 from orchestrator.agent import Agent, Unreachable, code_for, exit_code, hint, parse_params
+
+WORLD = Path(__file__).parent / "fixtures/collision_world.json"
+
+
+@pytest.fixture(autouse=True)
+def collision_world(monkeypatch):
+    """`robot move` checks the test world: the arm, the table, the tray table, the camera pole."""
+    monkeypatch.setattr(agent_cli.collision, "WORLD", WORLD)
 
 
 class FakeHttp:
@@ -320,6 +329,131 @@ def test_relative_move_waits_briefly_for_a_known_pose():
     code, result = run_cli(["robot", "move", "0", "0", "1", "0", "--relative"], agent)
     assert code == 1 and result["error"]["code"] == "busy"
     assert http.sent("api/console/command/robot") == []
+
+
+def move_agent(actual, **fields):
+    last = {"id": "i1:1", "action": "enable", "client": "h", "result": "ok"}
+    ready = robot_state(last, actual=actual, **fields)
+    done = robot_state({"id": "i1:2", "action": "execute", "client": "h", "result": "ok"})
+    return make(
+        {
+            "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
+            "api/console/state/robot": states(ready, ready, done),
+            "api/console/command/robot": (202, {"outcome": "accepted", "command_id": "i1:2"}),
+            "api/console/ws/twin/state": (200, {"joints": {"stage_top": 4.0, "insert": None}}),
+        }
+    )
+
+
+def no_check(*args, **kwargs):
+    raise AssertionError("The collision check must not run.")
+
+
+PROBLEM = {
+    "obstacle": "pole tube 1",
+    "group": "fixtures",
+    "arm_part": "link4_3_0",
+    "clearance_mm": 0.0,
+    "along_mm": 48.8,
+    "pose": [-117.8, -243.0, 163.7, -31.3],
+    "start_clearance_mm": None,
+}
+
+
+def test_robot_move_is_refused_when_the_twin_shows_a_collision(monkeypatch):
+    seen = []
+
+    def check(start, target, **options):
+        seen.append((start, target, options))
+        return PROBLEM
+
+    monkeypatch.setattr(agent_cli.collision, "check", check)
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0], joints=[1.0, 2.0, 3.0, 4.0])
+    code, result = run_cli(["robot", "move", "0", "0", "5", "0", "--relative"], agent)
+    assert code == 1 and result["outcome"] == "refused"
+    assert result["error"]["code"] == "collision" and result["collision"] == PROBLEM
+    message = result["error"]["message"]
+    assert "contact of the arm (link4_3_0) with 'pole tube 1' (fixtures)" in message
+    assert "48.8 mm along the line, at flange (-117.8, -243, 163.7)" in message
+    assert "No command was sent." in message and "--no-collision-check" in message
+    options = {"joints": [1.0, 2.0, 3.0, 4.0], "stage": {"stage_top": 4.0, "insert": None}}
+    assert seen == [([10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 35.0, 40.0], options)]
+    assert http.sent("api/console/command/robot") == []
+
+
+@pytest.mark.parametrize(
+    ("change", "text"),
+    [
+        ({"clearance_mm": 6.2}, "6.2 mm from 'pole tube 1' (fixtures) 48.8 mm along the line"),
+        ({"clearance_mm": 6.2}, "The margin is 10 mm."),
+        ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "At the start it is 3 mm away."),
+        ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "a move must not go closer"),
+    ],
+)
+def test_robot_move_refusal_names_the_clearance(monkeypatch, change, text):
+    monkeypatch.setattr(agent_cli.collision, "check", lambda *a, **k: {**PROBLEM, **change})
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4"], agent)
+    assert code == 1 and text in result["error"]["message"]
+    assert http.sent("api/console/command/robot") == []
+
+
+def test_robot_move_is_refused_when_the_check_cannot_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_cli.collision, "WORLD", tmp_path / "missing.json")
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4"], agent)
+    assert code == 1 and result["error"]["code"] == "collision"
+    assert (
+        "The collision check cannot run: Cannot read the collision world"
+        in (result["error"]["message"])
+    )
+    assert http.sent("api/console/command/robot") == []
+
+
+def test_robot_move_without_the_check_sends_the_move(monkeypatch):
+    monkeypatch.setattr(agent_cli.collision, "check", no_check)
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4", "--no-collision-check"], agent)
+    assert code == 0 and result["outcome"] == "ok"
+    assert http.sent("api/console/command/robot") == [
+        {"action": "execute", "params": {"targets": {"x": 1.0, "y": 2.0, "z": 3.0, "r": 4.0}}}
+    ]
+    assert not any("twin" in path for path, _ in http.calls)
+
+
+def test_robot_stop_never_runs_the_collision_check(monkeypatch):
+    monkeypatch.setattr(agent_cli.collision, "check", no_check)
+    monkeypatch.setattr(agent_cli.collision, "WORLD", Path("/nonexistent/world.json"))
+    agent, http = make({"api/console/stop/robot": (200, {"outcome": "confirmed"})})
+    code, result = run_cli(["robot", "stop"], agent)
+    assert code == 0 and result["results"] == {"robot": "confirmed"}
+    assert [path for path, _ in http.calls] == ["api/console/stop/robot"]
+
+
+@pytest.mark.parametrize(
+    ("start", "target", "obstacle"),
+    [
+        # 2026-11-24: this move touched a screw on the pole of the tray camera.
+        ([-69.3, -237.9, 163.7, -31.3], [-137.2, -245.1, 163.7, -31.3], "pole tube 1"),
+        ([-39.0, -236.0, 163.8, -31.3], [41.0, -236.0, 163.8, -31.3], None),
+    ],
+)
+def test_robot_move_checks_the_line_in_the_bench_twin(start, target, obstacle):
+    agent, http = move_agent(start)
+    code, result = run_cli(["robot", "move", *map(str, target)], agent)
+    sent = http.sent("api/console/command/robot")
+    if obstacle is None:
+        assert code == 0 and result["outcome"] == "ok"
+        assert sent == [
+            {"action": "execute", "params": {"targets": dict(zip("xyzr", target, strict=True))}}
+        ]
+    else:
+        assert code == 1 and result["error"]["code"] == "collision"
+        assert result["collision"]["obstacle"] == obstacle
+        assert result["collision"]["clearance_mm"] == 0
+        assert 40 < result["collision"]["along_mm"] < 60
+        assert f"'{obstacle}' (fixtures)" in result["error"]["message"]
+        assert sent == []
 
 
 def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():

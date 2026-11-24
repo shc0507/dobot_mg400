@@ -9,6 +9,7 @@ This document provides permanent information/instructions for the convenience of
 - VPN is necessary to access services on Olares (`100.64.0.1`). Turn it on with the LarePass application.
 - Agents operate the lab devices with `sudo labctl <device> ...` on Olares. Read [docs/agent-cli.en.md](docs/agent-cli.en.md) first.
 - There is a Dobot MG400 robot arm in the physical lab. The user will tell if it is connected or not.
+- The robot service does not check obstacles. `labctl robot move` checks each move against the bench twin and refuses a move that the twin shows in contact. Read [Collision check](docs/agent-cli.en.md#collision-check) before you plan an arm move. To plan a path, run `tools/pyc tools/collide.py` (`line`, `descend`, `pose`) in the twin project `/home/olares/dobot_mg400/work/setup-scan/twin`. Use `--no-collision-check` only for a taught move that the owner monitors.
 - 排查真机报警或碰撞时，先读 [报警与历史日志](docs/hardware.md#报警与历史日志)。历史查询优先读取控制器 SMB 日志。
 - Coordinator and workers: a coordinator session reads [docs/agents/coordinator.md](docs/agents/coordinator.md) and keeps the board in `work/board.md`. A dispatched worker reads [docs/agents/worker.md](docs/agents/worker.md).
 
@@ -87,6 +88,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Microscope recordings and furnace metadata | `src/furnace/recordings.py`, `video.py`, `src/microscope/service.py`, `src/orchestrator/skills/recording.py` | `test_furnace_recordings.py`, `test_furnace_video.py`, `test_furnace_local_run_sync.py`, `test_microscope_panel.py`, `test_orchestrator_recording.py` | [microscope.md](docs/microscope.md), [furnace.md](docs/furnace.md) |
 | Furnace run lifecycle and recovery | `src/furnace/service.py`, `state.py`, `sim.py` | `test_furnace_service.py`, `test_furnace_sim.py` | Module docstrings, [furnace lifecycle ADR](docs/adr/0005-furnace-lifecycle.en.md) |
 | Agent CLI (`labctl` device groups) | `src/orchestrator/agent.py`, `agent_cli.py`, `web/console.py`, `deploy/labctl` | `test_agent_cli.py`, `test_agent_cli_e2e.py`, `test_console.py`, `test_deploy_labctl.py` | [agent-cli.md](docs/agent-cli.md) |
+| Arm move collision check | `src/orchestrator/collision.py`, `agent_cli.py` (`robot move`), `config/assets.toml` (`twin-collision`) | `test_orchestrator_collision.py`, `test_agent_cli.py`, `fixtures/collision_world.json` | [agent-cli.md](docs/agent-cli.md#碰撞检查) |
 | Recipe orchestration and rehearsal | `src/orchestrator/`, `recipes/`, `deploy/labctl` | `test_orchestrator_*.py`, `test_recipe_tray_transfer.py`, `test_deploy_labctl.py` | [orchestrator.md](docs/orchestrator.md) |
 | Lab Console and device cache | `src/orchestrator/web/`, `src/orchestrator/devices.py`, `src/orchestrator/app.py`, `scripts/console_font.py`, `scripts/console_preview.py` | `test_console*.py`, `test_console*.mjs`, `test_dashboard.py`, `test_dashboard_passport.py` | [dashboard.md](docs/dashboard.md) |
 | Microscope motor firmware and simulator | `firmware/microscope-axes/`, `src/microscope/sim.py` | `test_microscope_protocol.py` | [Firmware guide](firmware/microscope-axes/README.md) |

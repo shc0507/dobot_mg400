@@ -277,7 +277,7 @@ def test_each_switch_search_has_its_own_timeout(stage_rig, start, lower_set):
 
 
 @pytest.mark.parametrize(
-    "speed", [None, True, "0.25", float("nan"), float("inf"), 0, 0.0009, 0.301, 5.1]
+    "speed", [None, True, "0.25", float("nan"), float("inf"), 0, 0.0009, 0.601, 5.1]
 )
 def test_invalid_calibration_speed_preserves_bounds_and_never_commands(stage_rig, speed):
     controller, transport, _ = stage_rig

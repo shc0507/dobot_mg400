@@ -22,7 +22,7 @@ MIN_SPEED = 0.001
 MIN_ROTATIONS = 0.001
 MAX_SPEED = 5.0  # Device reports a lower limit for the selected microstep mode.
 # The firmware sends at most this many pulses/s on one axis; see speedLimit().
-MAX_PULSE_RATE = 480
+MAX_PULSE_RATE = 960
 MAX_ROTATIONS = 10_000
 COOLDOWN_SECONDS = 1.0
 HOLD_TIMEOUT_SECONDS = 1.0  # Matches the Arduino hold watchdog.

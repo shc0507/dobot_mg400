@@ -1,4 +1,4 @@
-// Runs the real control loop, encoder reader, serial parser and AccelStepper source.
+// Runs the real control loop, encoder reader, serial parser and step generator.
 // Only clocks/GPIO/I2C/UART are replaced. No hardware port is opened.
 #include "Arduino.h"
 #include "Wire.h"
@@ -94,10 +94,12 @@ double requestedPulseRate(uint8_t axis);
 unsigned long millis() { return static_cast<uint32_t>(clockUs/1000); }
 unsigned long micros() { return static_cast<uint32_t>(clockUs); }
 void delayMicroseconds(unsigned int us) { clockUs += us; }
+uint8_t ADCSRA = 0x87; // Arduino core default: ADC on, prescaler 128.
 void pinMode(uint8_t pin,uint8_t mode) { assert(pin<20); pinModes[pin]=mode; }
 int analogRead(uint8_t pin) {
   assert(pin>=A0 && pin<=A2 && pinModes[pin]==INPUT_PULLUP);
-  delayMicroseconds(100); // Model the Uno ADC's approximately 100 microsecond conversion.
+  // Model the Uno ADC conversion: about 104 us at prescaler 128, 13 us at prescaler 16.
+  delayMicroseconds((ADCSRA & 7) == 4 ? 13 : 104);
   const uint8_t axis=pin-A0;
   if(switchPlant[axis]) {
     if(physical[axis]>=physicalLower[axis]) return 250;
@@ -274,7 +276,7 @@ void testFixedEighthAndConcurrentAxes() {
     assert(state().position==0 && pulseCount[0]==0);
   }
   finite(.5f);
-  assert(std::fabs(state().maxSpeed-.3f)<0.00001f);
+  assert(std::fabs(state().maxSpeed-.6f)<0.00001f);
   assert(state().tolerance==4.0f/4096);
   assert(pulseCount[0]>784 && pulseCount[0]<816);
   reset(); assert(MotorControl::rotateSteps(1600)); finish();
@@ -363,15 +365,14 @@ void testProtocolAndBounds() {
   assert(Serial.output.find("OK: bottom rev")!=std::string::npos);
   assert(!MotorControl::setSpeed(NAN)); assert(!MotorControl::setSpeed(INFINITY));
   assert(!MotorControl::rotateRevolutions(0)); assert(!MotorControl::rotateRevolutions(10001));
-  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.301f));
+  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.601f));
   assert(MotorControl::setSpeed(.001f)); assert(!MotorControl::rotateRevolutions(100));
   assert(!MotorControl::setStepsPerRevolution(0));
-  assert(!MotorControl::setStepsPerRevolution(65535));
-  assert(MotorControl::setStepsPerRevolution(60000));
+  assert(MotorControl::setStepsPerRevolution(65535));
   assert(state().maxSpeed>=.001f);
   assert(!MotorControl::setMicrostep(1));
   assert(!MotorControl::setMicrostep(16));
-  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.199335f));
+  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.398671f));
   assert(state().speed<=state().maxSpeed);
   Serial.output.clear(); Serial.input="microstep 16\nmicrostep 8\nmicrostep\n";
   while(Serial.available()) readSerialCommands();

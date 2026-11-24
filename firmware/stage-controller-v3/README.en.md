@@ -2,7 +2,7 @@
 
 # Stage Controller v3
 
-Open `stage-controller-v3.ino` in Arduino IDE. Select Arduino Uno and install AccelStepper. The sketch and its folder must have the same name. Older firmware remains in the other folders under `firmware/`.
+Open `stage-controller-v3.ino` in Arduino IDE. Select Arduino Uno. The sketch needs no extra library. The sketch and its folder must have the same name. Older firmware remains in the other folders under `firmware/`.
 
 This firmware controls 3 A4988 drivers with AS5600 encoder feedback through a TCA9548A multiplexer. The Arduino owns the closed loop. The Console sends rotation targets and reads measured shaft rotations. It does not convert camera measurements or millimetres into pulses.
 
@@ -34,7 +34,7 @@ Normal switch contact stops outward travel. It does not reset the position or ch
 
 Relative moves and holds use measured rotations. Absolute moves require completed calibration, valid bounds and fresh healthy encoder feedback. Resetting the position or changing a bound invalidates completed calibration. Stop cancels calibration and movement without restarting them.
 
-The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². The speed limit is 480 pulses/s: 0.3 rotations/s at 200 full steps per revolution. The main loop sends at most about 650 pulses/s on 1 axis. Held motion needs up to 1.25 times its speed to correct a following error, so a higher limit makes long holds stop with a `tracking` fault. A finite move has no rate correction and runs up to about 20% slower than the requested speed. Drivers sleep after 10 s idle. A wake can move a shaft up to 2 full steps. The reverse-direction check allows this movement in the first move after a wake. A move stops with a `stall` fault after at least 1.5 s and 0.05 rotations of pulses without encoder movement in the pulse direction. Back-and-forth movement at an obstruction does not count. Held motion and seeks catch up after an obstruction at no more than 1.25 times the requested speed. A failed encoder read does not stop a move or lose tracking. The firmware uses the last good sample. If the gap between good samples exceeds 60 ms, the move stops with an `encoder` fault and tracking is lost. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
+The default speed and acceleration are 0.25 rotations/s and 0.25 rotations/s². The speed limit is 960 pulses/s: 0.6 rotations/s at 200 full steps per revolution. The main loop sends STEP pulses. When a loop pass is late, the next pulse keeps the original pulse timing, so short delays do not lower the rate. A pulse that is more than 1 interval late restarts the timing and sends no burst. The home switches use ADC prescaler 16, about 13 µs per read. Held motion needs up to 1.25 times its speed to correct a following error. A higher limit makes long holds stop with a `tracking` fault. A finite move has no rate correction and can run a few percent slower than the requested speed. Drivers sleep after 10 s idle. A wake can move a shaft up to 2 full steps. The reverse-direction check allows this movement in the first move after a wake. A move stops with a `stall` fault after at least 1.5 s and 0.05 rotations of pulses without encoder movement in the pulse direction. Back-and-forth movement at an obstruction does not count. Held motion and seeks catch up after an obstruction at no more than 1.25 times the requested speed. A failed encoder read does not stop a move or lose tracking. The firmware uses the last good sample. If the gap between good samples exceeds 60 ms, the move stops with an `encoder` fault and tracking is lost. Encoder feedback continues while a shaft moves manually. No active position hold runs after a move completes.
 
 Positions and bounds are in RAM. Arduino reset or power loss invalidates them. Recalibrate before using absolute targets. A single-turn AS5600 cannot recover rotations made while power was off.
 
@@ -61,9 +61,9 @@ Unsolicited `TEL` and `LIM` lines report each axis at about 10 Hz. `TEL` include
 
 ```sh
 arduino-cli compile --fqbn arduino:avr:uno firmware/stage-controller-v3
-python firmware/stage-controller-v3/tests/run.py --library /path/to/AccelStepper
+python firmware/stage-controller-v3/tests/run.py
 ```
 
-The native check compiles the actual sketch against simulated motors, encoders and switches. It requires a C++ compiler with a 32-bit `long` and 32-bit `float` math, as on the AVR. For example, give g++ `-m32 -msse2 -mfpmath=sse` through `--compiler-arg`. CI runs it with AccelStepper 1.64.0 on every run. It does not flash hardware. The Uno has little free flash and RAM; check both sizes after changes. Native checks cannot establish electrical behavior, mechanical clearance or accuracy under load.
+The native check compiles the actual sketch against simulated motors, encoders and switches. It requires a C++ compiler with a 32-bit `long` and 32-bit `float` math, as on the AVR. For example, give g++ `-m32 -msse2 -mfpmath=sse` through `--compiler-arg`. CI runs it on every run. It does not flash hardware. The Uno has little free flash and RAM; check both sizes after changes. Native checks cannot establish electrical behavior, mechanical clearance or accuracy under load.
 
 Before flashing, stop the stage service and close every serial monitor. Flash only with the intended board and port selected. See the [Stage guide](../../docs/stage-panel.en.md) for connection and operation.

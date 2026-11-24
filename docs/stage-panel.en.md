@@ -37,7 +37,7 @@ For hardware-free operation, use `uv run stage-panel --demo` and connect to `DEM
 
 Take stage control before connection or motion. Only 1 controller can hold the lease. The default lease lasts 3 s. Expiry requests a stop. Releasing the lease does not stop a finite move. Stop or wait for completion before release.
 
-- Positions use rotations and speeds use rotations/s. The firmware fixes microstepping at 1/8. Defaults are 200 full steps/revolution and 0.25 rotations/s. Use the reported motor speed limit, normally 0.3 rotations/s with these defaults.
+- Positions use rotations and speeds use rotations/s. The firmware fixes microstepping at 1/8. Defaults are 200 full steps/revolution and 0.25 rotations/s. Use the reported motor speed limit, normally 0.6 rotations/s with these defaults.
 - Hold a direction button to move. Release it to stop. **Keys** uses I/K for Bottom Up/Down, J/L for Top Right/Left, and U/O for Insert In/Out.
 - Each axis row has **Clear fault** beside its movement controls. It requires stage control and does not move the motor. The X/Y diagram shows the minimum and maximum rotation bounds at its corners; unavailable bounds show **—**.
 - **Moves, limits and calibration** contains relative moves, absolute targets and setup controls. Relative moves accept 0.001–10000 rotations. A relative move requires fresh healthy encoder feedback, but no completed calibration.

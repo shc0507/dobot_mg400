@@ -1,19 +1,52 @@
 #include "MotorControl.h"
 #include "MotorPins.h"
 #include "EncoderConfig.h"
-#include <AccelStepper.h>
 #include <limits.h>
 #include <math.h>
 
 namespace MotorControl {
 namespace {
-AccelStepper bottom(AccelStepper::DRIVER, MotorPins::Bottom.step, MotorPins::Bottom.dir, 0, 0, false);
-AccelStepper top(AccelStepper::DRIVER, MotorPins::Top.step, MotorPins::Top.dir, 0, 0, false);
-AccelStepper insert(AccelStepper::DRIVER, MotorPins::Insert.step, MotorPins::Insert.dir, 0, 0, false);
+// Constant-rate STEP/DIR pulses for an A4988. Positive speed sets DIR HIGH.
+class Stepper {
+public:
+  Stepper(uint8_t stepPin, uint8_t dirPin) : stepPin(stepPin), dirPin(dirPin) {}
+  void enableOutputs() { pinMode(stepPin, OUTPUT); pinMode(dirPin, OUTPUT); }
+  long currentPosition() const { return position; }
+  void setCurrentPosition(long value) { position = value; rate = 0; interval = 0; }
+  float speed() const { return rate; }
+  void setSpeed(float pulsesPerSecond) {
+    if (pulsesPerSecond == rate) return;
+    rate = pulsesPerSecond;
+    interval = rate == 0 ? 0 : static_cast<unsigned long>(fabsf(1000000.0f / rate));
+  }
+  bool runSpeed() {
+    if (!interval) return false;
+    const unsigned long now = micros();
+    const unsigned long late = now - lastStepUs;
+    if (late < interval) return false;
+    // Keep the pulse phase after a late call, so loop delays do not lower the rate.
+    // A call more than 1 interval late restarts the phase and sends no burst.
+    lastStepUs = late >= 2 * interval ? now : lastStepUs + interval;
+    position += rate > 0 ? 1 : -1;
+    digitalWrite(dirPin, rate > 0 ? HIGH : LOW);
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(3);
+    digitalWrite(stepPin, LOW);
+    return true;
+  }
+private:
+  uint8_t stepPin, dirPin;
+  long position = 0;
+  float rate = 0;
+  unsigned long interval = 0, lastStepUs = 0;
+};
+Stepper bottom(MotorPins::Bottom.step, MotorPins::Bottom.dir);
+Stepper top(MotorPins::Top.step, MotorPins::Top.dir);
+Stepper insert(MotorPins::Insert.step, MotorPins::Insert.dir);
 enum class Mode : uint8_t { Idle, Finite, Continuous };
 enum class Power : uint8_t { Sleeping, Waking, Awake };
 struct MotorState {
-  AccelStepper *stepper;
+  Stepper *stepper;
   MotorPins::PinPair pins;
   uint8_t sleepPin;
   Direction direction;
@@ -76,7 +109,7 @@ bool initialized = false;
 // All three stages always use eighth stepping; no command can change this.
 constexpr uint8_t microstepDivisor = 8;
 constexpr float countsPerRotation = 4096.0f;
-constexpr float maximumPulseRate = 1000.0f;
+constexpr float maximumPulseRate = 1200.0f; // 1.25 times the speed limit.
 constexpr unsigned long holdTimeoutMs = 1000;
 constexpr unsigned long driverWakeDelayUs = 2000;
 
@@ -85,9 +118,9 @@ float maximum(float a, float b) { return a > b ? a : b; }
 float clamp(float x, float low, float high) { return maximum(low, minimum(high, x)); }
 float pulsesPerRotation(const MotorState &m) { return m.stepsPerRevolution * float(microstepDivisor); }
 float speedLimit(const MotorState &m) {
-  // The main loop sends at most about 650 pulses/s on one axis. A held move needs
-  // 1.25 times its speed to catch up, so 480 pulses/s is the highest that tracks.
-  return minimum(EncoderConfig::MaxShaftSpeed, 480.0f / pulsesPerRotation(m));
+  // Held motion needs up to 1.25 times this rate to catch up. The main loop delays
+  // pulses, so a higher limit makes long holds stop with a tracking fault.
+  return minimum(EncoderConfig::MaxShaftSpeed, 960.0f / pulsesPerRotation(m));
 }
 float toleranceCounts(const MotorState &m) {
   return ceilf(0.5f * countsPerRotation / pulsesPerRotation(m) + EncoderConfig::EncoderNoiseCounts);
@@ -525,8 +558,6 @@ void begin() {
     digitalWrite(m.pins.dir, HIGH);
     m.stepper->enableOutputs();
     m.stepper->setCurrentPosition(0);
-    m.stepper->setMaxSpeed(maximumPulseRate);
-    m.stepper->setMinPulseWidth(3);
   }
   digitalWrite(MotorPins::MS1, HIGH);
   digitalWrite(MotorPins::MS2, HIGH);
@@ -535,6 +566,9 @@ void begin() {
   pinMode(MotorPins::MS2, OUTPUT);
   pinMode(MotorPins::MS3, OUTPUT);
   Encoders::begin();
+  // ADC prescaler 16: about 13 us per switch read instead of about 104 us.
+  // The 3 switch bands (below 100, below 700, above) do not need 10-bit accuracy.
+  ADCSRA = (ADCSRA & 0xF8) | 0x04;
   for (uint8_t i = 0; i < 3; ++i) {
     pinMode(switchPins[i], INPUT_PULLUP);
     SwitchState &s = switches[i];
@@ -628,7 +662,7 @@ bool setAcceleration(float acceleration) {
   return true;
 }
 bool setStepsPerRevolution(uint16_t steps) {
-  if (!canConfigure() || !steps || steps * float(microstepDivisor) > 480000.0f) return false;
+  if (!canConfigure() || !steps || steps * float(microstepDivisor) > 960000.0f) return false;
   selectedState().stepsPerRevolution = steps;
   selectedState().speed = minimum(selectedState().speed, speedLimit(selectedState()));
   return true;

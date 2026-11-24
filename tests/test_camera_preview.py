@@ -952,3 +952,57 @@ def test_startup_fails_when_go2rtc_never_answers(preview, monkeypatch):
     upstream.side_effect = ConnectionRefusedError()
     with pytest.raises(OSError, match="go2rtc did not answer"):
         module.wait_go2rtc(seconds=0)
+
+
+WRIST = "/dev/v4l/by-id/usb-HDMI_USB_Camera_2023121018-video-index0"
+
+
+@pytest.mark.parametrize("failure", [None, OSError("no such device")])
+def test_go2rtc_restart_resets_the_wrist_camera_first(preview, monkeypatch, failure):
+    monkeypatch.setenv("MG400_CAMERA_DEVICES", f"/dev/v4l/by-path/fake-camera-1,{WRIST}")
+    module = load_preview()
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    order = []
+
+    def reset(device):
+        order.append(device)
+        if failure is not None:
+            raise failure
+
+    def urlopen(target, timeout=None):
+        order.append(getattr(target, "full_url", target))
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(module, "reset_usb_device", reset)
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    module.restart_go2rtc()
+    assert order == [WRIST, "http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
+
+
+def test_usb_reset_goes_to_the_usb_device_of_the_camera(tmp_path, monkeypatch):
+    from cameras import usb
+
+    node = tmp_path / "dev/video7"
+    interface = tmp_path / "sys/devices/usb4/4-3/4-3:1.0"
+    sys_root = tmp_path / "sys/class/video4linux"
+    by_id = tmp_path / "by-id/wrist-video-index0"
+    bus = tmp_path / "bus/004/066"
+    for path in (node, bus):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    for path in (interface, sys_root / "video7", by_id.parent):
+        path.mkdir(parents=True)
+    (interface.parent / "busnum").write_text("4\n")
+    (interface.parent / "devnum").write_text("66\n")
+    (sys_root / "video7/device").symlink_to(interface)
+    by_id.symlink_to(node)
+    requests = []
+    monkeypatch.setattr(usb.fcntl, "ioctl", lambda _handle, *request: requests.append(request))
+    monkeypatch.setattr(usb.time, "sleep", lambda _seconds: None)
+    opened = []
+    real_open = usb.os.open
+    monkeypatch.setattr(
+        usb.os, "open", lambda path, flags: opened.append(Path(path)) or real_open(path, flags)
+    )
+    usb.reset_usb_device(str(by_id), sys_root=sys_root, usb_root=tmp_path / "bus")
+    assert opened == [bus] and requests == [(0x5514, 0)]

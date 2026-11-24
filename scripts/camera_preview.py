@@ -15,6 +15,7 @@ from threading import Condition, Lock, Thread
 from cameras.config import camera_configuration
 from cameras.jpeg import jpeg_size
 from cameras.rate import SendRate
+from cameras.usb import reset_usb_device
 from labkit import ports
 
 CAMERAS = camera_configuration(os.environ)
@@ -151,6 +152,13 @@ def still_overlay(stream):
 
 def restart_go2rtc():
     """Re-exec go2rtc with its config files, then wait until its API answers again."""
+    for device in CAMERAS.wrist:
+        # After a stream stop, the wrist camera refuses about 1 open in 4, and go2rtc opens
+        # a camera again only after a restart. A USB reset before the open prevents that.
+        try:
+            reset_usb_device(device)
+        except (OSError, ValueError):
+            pass  # The camera is absent. go2rtc reports that.
     try:
         urllib.request.urlopen(
             urllib.request.Request(GO2RTC + "/api/restart", method="POST"), timeout=2
@@ -210,8 +218,7 @@ def grab_still(stream):
             try:
                 return read_still(stream, deadline)
             except (OSError, ValueError, HTTPException):
-                # The wrist camera can refuse the first open after a mode change. go2rtc
-                # opens a camera again only after a restart.
+                # The wrist camera can refuse an open after a mode change.
                 if attempt == STILL_TRIES - 1 or time.monotonic() >= deadline:
                     raise
     finally:
@@ -503,9 +510,10 @@ class Preview(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     host = sys.argv[1] if len(sys.argv) == 2 else ports.HOST
-    if STILL_CONFIG.exists():
-        # This process stopped during a still. Return go2rtc to the previews.
-        STILL_CONFIG.unlink()
+    if STILL_CONFIG.exists() or CAMERAS.wrist:
+        # This process stopped during a still: return go2rtc to the previews. Or go2rtc
+        # opened the wrist camera without a USB reset: open it again after one.
+        STILL_CONFIG.unlink(missing_ok=True)
         restart_go2rtc()
     else:
         # The capture unit can report started before go2rtc listens.

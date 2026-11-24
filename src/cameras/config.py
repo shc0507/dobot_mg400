@@ -74,6 +74,11 @@ class CameraConfig:
             if width <= 1280 and height <= 720
         )
 
+    @property
+    def wrist(self):
+        """The devices with a by-id name: the wrist camera."""
+        return tuple(device for device in self.devices if device.startswith("/dev/v4l/by-id/"))
+
     def large(self, side=""):
         """Streams above 1280x720 that a viewer starts. The microscope side stream is not one."""
         return tuple(
@@ -90,8 +95,7 @@ class CameraConfig:
         mode = self.mode(camera)
         if self.streams[camera - 1] not in self.preloaded:
             return mode
-        by_id = self.devices[camera - 1].startswith("/dev/v4l/by-id/")
-        return WRIST_STILL_MODE if by_id else STILL_MODE
+        return WRIST_STILL_MODE if self.devices[camera - 1] in self.wrist else STILL_MODE
 
 
 def camera_configuration(settings):

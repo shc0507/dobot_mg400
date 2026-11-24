@@ -1,8 +1,12 @@
 """Open the live Olares reader, with optional local simulation tests."""
 
 import argparse
+import os
+import subprocess
 import sys
-import threading
+import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -11,30 +15,77 @@ from werkzeug.serving import make_server
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from orchestrator.agent_connect.mock import create_mock_app  # noqa: E402
 from orchestrator.agent_connect.portal import create_portal_app  # noqa: E402
-from orchestrator.web.control_socket import ControlSocket  # noqa: E402
+
+
+def start_child(module, url, *arguments):
+    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+    child = subprocess.Popen(
+        [sys.executable, "-m", module, *arguments],
+        cwd=ROOT,
+        env=env,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            if child.poll() is not None:
+                raise RuntimeError(f"{module} did not start. Close another local preview first.")
+            try:
+                with urllib.request.urlopen(url, timeout=0.2):
+                    return child
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.05)
+        raise RuntimeError(f"{module} did not become ready.")
+    except BaseException:
+        child.terminate()
+        child.wait(timeout=5)
+        raise
+
+
+def stop_child(child):
+    if child.poll() is None:
+        child.terminate()
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=5)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
-    # The portal reads the fixed Olares test site. Simulations keep their own source.
-    app = create_mock_app(streaming=True)
-    mock = make_server("127.0.0.1", 8790, app, threaded=True)
-    stream = ControlSocket(app, host="127.0.0.1", port=8793, base_path="/lab")
+    children = []
+    app = None
     try:
-        portal = make_server("127.0.0.1", 8792, create_portal_app(), threaded=True)
+        children.append(
+            start_child(
+                "orchestrator.agent_connect.fallback",
+                "http://127.0.0.1:8794/status",
+                "--simulation",
+            )
+        )
+        children.append(
+            start_child(
+                "orchestrator.agent_connect.mock_server",
+                "http://127.0.0.1:8790/lab/api/agent/control/contract",
+            )
+        )
+        app = create_portal_app()
+        portal = make_server("127.0.0.1", 8792, app, threaded=True)
     except BaseException:
-        mock.server_close()
+        if app is not None:
+            app.extensions["agent_portal_chat"].close()
+            app.extensions["agent_portal_control"].close()
+        for child in reversed(children):
+            stop_child(child)
         raise
-    worker = threading.Thread(target=mock.serve_forever, daemon=True)
-    worker.start()
-    app.config["AGENT_SIMULATION"].hub.start()
-    stream.start()
     print(
-        "Agent Portal http://127.0.0.1:8792/ | Olares 8082 read-only | Optional local simulations"
+        "Agent Portal http://127.0.0.1:8792/ | Olares 8082 commands after Console grant | "
+        "Optional local simulations"
     )
     if not args.no_browser:
         webbrowser.open("http://127.0.0.1:8792/")
@@ -43,12 +94,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        stream.close()
-        app.config["AGENT_SIMULATION"].close()
+        app.extensions["agent_portal_chat"].close()
+        app.extensions["agent_portal_control"].close()
         portal.server_close()
-        mock.shutdown()
-        mock.server_close()
-        worker.join(3)
+        for child in reversed(children):
+            stop_child(child)
 
 
 if __name__ == "__main__":

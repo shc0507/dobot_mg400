@@ -149,7 +149,7 @@
     }
     const frame = readers[0].state;
     const deviceCards = [];
-    for (const [name, label, value, unit] of [["stage", "Insert position", frame?.devices?.stage?.values?.axes?.[0]?.position_rotations, "rotations"], ["furnace", "Temperature", frame?.devices?.furnace?.values?.pv_c, "\u00b0C"]]) {
+    for (const [name, label, value, unit] of [["stage", "Insert position", frame?.devices?.stage?.values?.axes?.find(axis => axis.id === "insert")?.position_rotations, "rotations"], ["furnace", "Temperature", frame?.devices?.furnace?.values?.pv_c, "\u00b0C"]]) {
       const device = frame?.devices?.[name];
       if (!device) continue;
       const seconds = typeof device.age_s === "number" ? device.age_s + Math.max(0, Date.now() / 1000 - frame.generated_at) : null;

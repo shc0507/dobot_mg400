@@ -100,6 +100,8 @@ def vision_summary(response):
         "status": _text(response.get("status")),
         "finished_at": _number(response.get("finished_at")),
         "source_observed_at": _number(response.get("observed_at")),
+        "source_identity_known": bool(response.get("instance")),
+        "result_source": _text(response.get("result_source", "retained_result")),
         "read_at": _number(output.get("read_at")),
         "coordinate_system": _text(output.get("coordinate_system")),
         "calibrated": output.get("calibrated") if type(output.get("calibrated")) is bool else None,
@@ -246,6 +248,16 @@ class SharedObservations:
             self._store(name, _missing("no_result", instance=instance))
             self.vision_key = None
             return
+        if name == "vision" and instance is not None and key == self.vision_key:
+            return
+        if name == "vision" and instance is None:
+            inline = self._inline_vision(state, key)
+            if inline is not None:
+                value = vision_summary(inline)
+                value.update(observed_at=self.wall_clock(), request_elapsed_s=0)
+                self._store(name, value)
+                self.vision_key = key
+                return
         if name == "vision" and key == self.vision_key:
             return
         adapter = self.adapters.get(name)
@@ -258,29 +270,44 @@ class SharedObservations:
         path = (
             "api/frame?summary=1"
             if name == "thermal"
-            else ("api/results/" + key[1] + "?" + urlencode({"instance": key[0]}))
+            else (
+                "api/results/" + key[1] + ("?" + urlencode({"instance": key[0]}) if key[0] else "")
+            )
         )
         started = self.clock()
         try:
             response = adapter.request(path)
         except ServiceError as error:
-            if name != "vision" or error.status != 410:
+            if name != "vision" or (
+                error.status != 410 and not (instance is None and error.status in (400, 404))
+            ):
                 raise
             # The shared HTTP client raises for expired or evicted results.
             # Keep this identity unavailable until a new job or process appears.
             self._store(
                 name,
-                {**_missing("result_expired_or_unavailable", instance=instance), "job_id": key[1]},
+                {
+                    **_missing(
+                        "source_identity_unavailable"
+                        if instance is None
+                        else "result_expired_or_unavailable",
+                        instance=instance,
+                    ),
+                    "job_id": key[1],
+                },
             )
             self.vision_key = key
             return
         elapsed = max(0, self.clock() - started)
-        if response.get("instance") != instance:
+        if instance is not None and response.get("instance") != instance:
             self._store(name, _missing("instance_changed", instance=response.get("instance")))
             return
         if name == "vision" and str(response.get("job_id")) != key[1]:
             self._store(name, _missing("result_mismatch", instance=instance))
             return
+        if name == "vision" and instance is None:
+            # A response alone cannot establish continuity with an unidentified cache.
+            response = {**response, "instance": None, "result_source": "unidentified_result"}
         value = thermal_summary(response) if name == "thermal" else vision_summary(response)
         value.update(observed_at=self.wall_clock(), request_elapsed_s=elapsed)
         if name == "thermal" and value["frame_age_s"] is not None:
@@ -293,17 +320,55 @@ class SharedObservations:
     @staticmethod
     def _vision_identity(state):
         instance = state.get("instance")
-        if not isinstance(instance, str) or not re.fullmatch(r"[0-9a-f]{32}", instance):
+        if instance is not None and (
+            not isinstance(instance, str) or not re.fullmatch(r"[0-9a-f]{32}", instance)
+        ):
             return None
-        candidates = []
+        candidates = {}
         for key, field in (("last_result", "job_id"), ("last_command", "id")):
             row = state.get(key) or {}
             job = row.get(field)
-            if row.get("instance", instance) != instance or not isinstance(job, str):
+            if (
+                instance is not None and row.get("instance", instance) != instance
+            ) or not isinstance(job, str):
                 continue
             if re.fullmatch(r"[1-9][0-9]{0,19}", job):
-                candidates.append(job)
-        return (instance, max(candidates, key=int)) if candidates else None
+                candidates[job] = _number(row.get("finished_at"))
+        if not candidates:
+            return None
+        job = max(candidates, key=int)
+        return instance, job, candidates[job]
+
+    @staticmethod
+    def _inline_vision(state, key):
+        """Use the latest cached result when process identity is not available."""
+        for name, field in (("last_command", "id"), ("last_result", "job_id")):
+            row = state.get(name) or {}
+            if row.get(field) != key[1]:
+                continue
+            status = row.get("status", row.get("result"))
+            output = row.get("output")
+            if name == "last_command" and status in ("running", "pending"):
+                return {
+                    "instance": None,
+                    "job_id": key[1],
+                    "available": False,
+                    "status": "pending",
+                    "reason": "pending",
+                    "result_source": "console_cache",
+                }
+            if not isinstance(output, dict) and status not in ("failed", "rejected", "stopped"):
+                continue
+            return {
+                **row,
+                "instance": None,
+                "job_id": key[1],
+                "available": True,
+                "status": status or "ok",
+                "result_source": "console_cache",
+                "camera": row.get("camera", (output or {}).get("camera")),
+            }
+        return None
 
     def snapshot(self):
         with self.lock:

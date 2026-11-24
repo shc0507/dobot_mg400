@@ -984,6 +984,9 @@ class OrchestratorService:
             return self._record("recovery-abort", client)
 
     def close(self):
+        control = getattr(self, "agent_control", None)
+        if control is not None:
+            control.close()
         self.dashboard.begin_close()
         stream = getattr(self, "agent_stream", None)
         if stream is not None:
@@ -1045,13 +1048,19 @@ def create_app(service, *, base_path="/"):
         if not getattr(service, "agent_stream", None):
             service.agent_stream = create_hub(service)
         register_routes(app, service.agent_stream, prefix=prefix + "/api/agent")
+        from .agent_connect.access import install_access
+        from .agent_connect.control import install_control
+
+        install_control(app, service, prefix=prefix, allow_physical=not service.demo)
+        install_access(app, prefix)
 
     @app.before_request
     def access():
         if request.method == "POST":
             if request.mimetype != "application/json":
                 raise ServiceError(415, "Expected Content-Type: application/json.")
-            validate_client(request.headers.get("X-MG400-Client"))
+            if not request.path.startswith(prefix + "/api/agent/control/"):
+                validate_client(request.headers.get("X-MG400-Client"))
             if not isinstance(request.get_json(), dict):
                 raise ValueError("Expected a JSON object.")
 

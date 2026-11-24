@@ -82,6 +82,29 @@ def bundle():
             "state_at": scalar,
             "observed_at": scalar,
             "frame_age_s": scalar,
+            "cached_state": {
+                "type": "object",
+                "required": ["values", "complete", "omitted", "omitted_count", "units"],
+                "properties": {
+                    "values": {"type": "object"},
+                    "complete": {"type": "boolean"},
+                    "omitted_count": {"type": "integer", "minimum": 0},
+                    "omitted": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                            "type": "object",
+                            "required": ["path", "reason"],
+                            "properties": {
+                                "path": {"type": "string"},
+                                "reason": {"type": "string"},
+                            },
+                        },
+                    },
+                    "units": {"type": "object", "additionalProperties": {"type": "string"}},
+                },
+            },
+            "data_gaps": {"type": "array", "items": {"type": "string"}},
             "values": {
                 "type": "object",
                 "properties": {
@@ -122,6 +145,7 @@ def bundle():
                     "timestamp_basis",
                     "coordinate_system",
                     "source",
+                    "result_source",
                 )
             },
             "camera": {"type": ["string", "integer", "null"]},
@@ -143,6 +167,7 @@ def bundle():
             "frame_sequence": {"type": ["integer", "null"]},
             "temperature_unit": {"const": "celsius"},
             "calibrated": nullable_bool,
+            "source_identity_known": {"type": "boolean"},
             "complete": {"type": "boolean"},
             "count": {"type": "integer", "minimum": 0},
             "total": {"type": "integer", "minimum": 0},
@@ -209,13 +234,15 @@ def bundle():
     return {
         "$schema": DIALECT,
         "contract": "agent-connect",
-        "version": "1.0.0",
-        "phase": 3,
+        "version": "1.1.0",
+        "phase": 7,
         "actions": {},
         "semantics": {
             "quality": list(QUALITY),
             "sampled_at": (
-                "Source Unix seconds when available; null means unknown. "
+                "Source sample time in Unix seconds when available. "
+                "It need not be sensor capture time. "
+                "Null means unknown. "
                 "Stage monotonic assembly time is excluded."
             ),
             "observed_at": "Console cache update time in Unix seconds.",
@@ -236,7 +263,24 @@ def bundle():
             ),
             "vision_freshness": (
                 "Result completion time is not frame capture time. "
-                "Historical inference has unknown current-scene quality."
+                "Historical inference has unknown current-scene quality. "
+                "An absent source instance does not prevent reading a cached result. "
+                "Its process continuity remains unknown."
+            ),
+            "cached_state": (
+                "Bounded source fields from the existing Console cache. "
+                "Values retain the source names and types. No additional device poll occurs. "
+                "Omissions include private fields, locations, images, matrices, command output, "
+                "nonfinite numbers, and fields beyond size limits. "
+                "Check complete and omitted_count."
+            ),
+            "cached_state_units": (
+                "The units map uses JSON Pointer paths within cached_state.values. "
+                "Only verified legacy names and explicit unit suffixes receive units. "
+                "A missing unit is unknown or not applicable. No unit is inferred from a value."
+            ),
+            "data_gaps": (
+                "Names of absent source metadata. These are not inferred from broadcast time."
             ),
             "events": "Ordered within boot_id by event_seq. Replay keeps original contract_id.",
             "selection": "active or ids; count is returned rows, total is matching rows.",

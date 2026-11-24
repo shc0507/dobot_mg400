@@ -183,12 +183,61 @@
     constructor(message, status = 0, body = null) { super(message); this.status = status; this.body = body; }
   }
 
+  const authority = { value: null, at: -Infinity, pending: null, session: "" };
+
+  function isStop(path, data) {
+    if (["/api/stop", "/api/dashboard/motion", "/api/dashboard/heat", "/api/dashboard/gas",
+      "/api/console/ws/process/gas-stop", "/api/console/ws/sample-transfer/stop",
+      "/api/console/ws/motion/stage/release"].includes(path)) return true;
+    if (path.startsWith("/api/console/stop/")) return SERVICES.includes(path.slice("/api/console/stop/".length));
+    return path === "/api/console/ws/motion/keys" && data && Object.keys(data).length === 2 &&
+      Number.isSafeInteger(data.seq) && data.seq >= 0 && Array.isArray(data.held) && data.held.length === 0;
+  }
+
+  function setAuthority(value) {
+    if (!value || typeof value !== "object") return;
+    authority.value = value;
+    authority.at = now();
+    const session = value.boot_id || "";
+    if (session !== authority.session) {
+      authority.session = session;
+      // A Console restart invalidates the old socket and control version.
+      if (link.ws) { link.open = false; link.ws.close?.(); }
+    }
+  }
+
+  async function refreshAuthority() {
+    if (authority.pending) return authority.pending;
+    const controller = typeof AbortController === "undefined" ? null : new AbortController();
+    const timer = controller ? setTimeout(() => controller.abort(), 2000) : null;
+    authority.pending = (async () => {
+      try {
+        const response = await root.fetch(shell.base + "/api/agent/control/status", {
+          headers: { Accept: "application/json", "X-MG400-Client": shell.page },
+          credentials: "same-origin", redirect: "error", cache: "no-store", signal: controller?.signal,
+        });
+        if (response.status === 404) { setAuthority({}); return authority.value; }
+        const value = await response.json();
+        if (!response.ok || !value || typeof value !== "object") throw new Error();
+        setAuthority(value);
+        return value;
+      } catch { throw new RequestError("Could not verify Console control. No command was sent."); }
+      finally { if (timer) clearTimeout(timer); authority.pending = null; }
+    })();
+    return authority.pending;
+  }
+
   async function request(path, data, options = {}) {
     if (!path.startsWith("/api/")) throw new RequestError("Invalid console path.");
-    if (options.socket && link.open && data !== undefined) return viaSocket(path, data, options);
+    const normalWrite = data !== undefined && !isStop(path, data) && !path.startsWith("/api/agent/control/");
+    if (normalWrite && !options.keepalive && now() - authority.at >= 1000) await refreshAuthority();
+    const epoch = normalWrite && typeof authority.value?.control_epoch === "string" ? authority.value.control_epoch : undefined;
+    if (options.socket && link.open && data !== undefined) return viaSocket(path, data, { ...options, epoch });
     const headers = { Accept: "application/json" };
     if (shell.page) headers["X-MG400-Client"] = shell.page;
-    const init = { headers, redirect: "error", credentials: "omit", cache: "no-store", keepalive: options.keepalive === true };
+    if (epoch !== undefined) headers["X-MG400-Control-Epoch"] = epoch;
+    if (options.stopId) headers["X-MG400-Stop-ID"] = options.stopId;
+    const init = { headers, redirect: "error", credentials: "same-origin", cache: "no-store", keepalive: options.keepalive === true };
     if (data !== undefined) {
       init.method = "POST";
       headers["Content-Type"] = "application/json";
@@ -267,15 +316,16 @@
         } else resolve(body);
       }
       link.waiting.set(seq, answer);
-      try { link.ws.send(JSON.stringify({ seq, path, body: data })); }
+      try { link.ws.send(JSON.stringify({ seq, path, body: data, ...(options.epoch === undefined ? {} : { control_epoch: options.epoch }), ...(options.stopId ? { stop_request_id: options.stopId } : {}) })); }
       catch { answer(null); }
     });
   }
 
   /** Send one stop over the socket and over HTTP. Resolve with the first answer. */
   function both(path, data = {}) {
-    const sent = [request(path, data)];
-    if (link.open) sent.unshift(viaSocket(path, data));
+    const stopId = root.crypto?.randomUUID?.() || `stop-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const sent = [request(path, data, { stopId })];
+    if (link.open) sent.unshift(viaSocket(path, data, { stopId }));
     return Promise.any(sent).catch(error => { throw error.errors[error.errors.length - 1]; });
   }
 
@@ -656,9 +706,9 @@
   }
 
   return {
-    register, start, strings, shell,
-    logic: { translate, pickLanguage, serviceChip, runsChip, chips, filterEvents, latestOperation, stopView },
+    register, start, strings, shell, setAuthority,
+    logic: { translate, pickLanguage, serviceChip, runsChip, chips, filterEvents, latestOperation, stopView, isStop },
     STALE_MS, BEAT_MS, SERVICES,
-    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops },
+    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops, authority, refreshAuthority },
   };
 });

@@ -1,4 +1,4 @@
-"""Read-only Agent Connect diagnostics from the existing device cache."""
+"""Agent Connect connection status and observations from the existing cache."""
 
 from flask import jsonify
 
@@ -57,16 +57,36 @@ def status(service):
                 retained_events=len(hub.events),
                 event_bytes=hub.event_bytes,
             )
+    authority = getattr(service, "agent_authority", None)
     return {
-        "mode": "read-only",
+        "mode": "connection-and-control" if authority else "read-only",
         "source": "shared device cache",
-        "normal_commands": False,
+        "normal_commands": bool(
+            getattr(getattr(service, "agent_control", None), "commands_enabled", False)
+        ),
         "phases": [
             {"phase": 0, "status": "local mock portal", "available": True},
             {"phase": 1, "status": "service observations", "available": True},
             {"phase": 2, "status": "sample evidence", "available": True},
             {"phase": 3, "status": "read-only stream", "available": hub is not None},
-            {"phase": "4–9", "status": "not enabled", "available": False},
+            {"phase": 4, "status": "connection and control", "available": authority is not None},
+            {"phase": 5, "status": "simulated commands", "available": authority is not None},
+            {
+                "phase": 6,
+                "status": "simulated Stop and recovery",
+                "available": authority is not None,
+            },
+            {"phase": 7, "status": "live data and release identity", "available": hub is not None},
+            {
+                "phase": 8,
+                "status": "live commands after operator grant",
+                "available": authority is not None,
+            },
+            {
+                "phase": 9,
+                "status": "connection-loss warning only",
+                "available": authority is not None,
+            },
         ],
         "services": rows,
         "stream": stream,

@@ -144,14 +144,32 @@ class MockConsole:
             return self.snapshot()
 
 
-def create_mock_app(source=None, *, streaming=False):
+def create_mock_app(source=None, *, streaming=False, command_service=None):
     source = source or MockConsole()
     app = Flask(__name__, static_folder=None)
     app.config["MOCK_SOURCE"] = source
+    from labkit.errors import ServiceError
+
+    from .control import install_control
+
+    control_host = install_control(app, command_service, mock=True, source=source)
+
+    @app.errorhandler(ServiceError)
+    def control_error(error):
+        return jsonify(error=error.message), error.status
+
+    @app.errorhandler(ValueError)
+    def invalid_control(error):
+        return jsonify(error=str(error)), 400
+
     if streaming:
         from .simulation import register_simulation
 
         register_simulation(app, source)
+        simulation = app.config["AGENT_SIMULATION"]
+        control_host.publish_command = simulation.hub.publish
+        simulation.commands = control_host.operation_summaries
+        simulation.command_observations = control_host.command_observations
 
     @app.get("/lab/")
     def index():
@@ -186,6 +204,8 @@ def create_mock_app(source=None, *, streaming=False):
             return jsonify(error="Send a mock action and optional value."), 400
         try:
             result = source.control(data.get("action"), data.get("value"))
+            if data.get("action") in {"restart", "reset"}:
+                control_host.authority().restart()
             if streaming:
                 app.config["AGENT_SIMULATION"].source_changed(data.get("action"), data.get("value"))
             return jsonify(result)

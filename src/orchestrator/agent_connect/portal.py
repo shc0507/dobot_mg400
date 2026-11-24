@@ -12,12 +12,19 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from .client import ORIGIN, LocalTransport, NoRedirect, ScriptedClient
 from .contract import FIXTURES
-from .live import register_live_routes
+from .live import LiveTransport, register_live_routes
 from .mock import ASSETS
 from .scenarios import run_scenarios
 
 
-def create_portal_app(transport=None, *, live_transport=None):
+def create_portal_app(
+    transport=None,
+    *,
+    live_transport=None,
+    control_transport=None,
+    interpreter=None,
+    chat_reader=None,
+):
     transport = transport or LocalTransport()
     clients = {
         name: ScriptedClient(name, generation, transport)
@@ -27,7 +34,14 @@ def create_portal_app(transport=None, *, live_transport=None):
     results = {}
     app = Flask(__name__, static_folder=None)
     app.config["MOCK_CLIENTS"] = clients
+    live_transport = live_transport if live_transport is not None else LiveTransport()
     register_live_routes(app, live_transport)
+    from .control_portal import register_control_portal
+
+    control = register_control_portal(app, control_transport, live_reader=live_transport.read)
+    from .chat_routes import register_chat
+
+    register_chat(app, control, live_transport.read, model=interpreter, reader=chat_reader)
 
     @app.get("/")
     def index():

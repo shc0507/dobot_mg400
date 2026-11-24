@@ -54,7 +54,7 @@ function page() {
   return { doc, nodes, i18n, tabs, sections };
 }
 
-function load({ stored = null, language = "en-US", responses = [] } = {}) {
+function load({ stored = null, language = "en-US", responses = [], authority = { activated: false } } = {}) {
   delete require.cache[shellPath];
   const storage = new Map(stored ? [["labconsole.lang", stored]] : []);
   const calls = [];
@@ -75,6 +75,7 @@ function load({ stored = null, language = "en-US", responses = [] } = {}) {
     },
   });
   const LabConsole = require(shellPath);
+  if (authority) LabConsole.setAuthority(authority);
   return { LabConsole, storage, calls, listeners };
 }
 
@@ -259,7 +260,7 @@ test("relay sends one request with the page identity and reports an unknown outc
   assert.equal(init.headers["X-MG400-Client"], "console-page-test");
   assert.equal(init.headers.Authorization, undefined);
   assert.deepEqual(JSON.parse(init.body), { action: "move", params: { motor: 1 } });
-  assert.equal(init.credentials, "omit");
+  assert.equal(init.credentials, "same-origin");
   assert.match(view.nodes.get("lc-notice").textContent, /unknown/);
 });
 
@@ -293,6 +294,7 @@ test("page close releases this page's leases with a keepalive request", async ()
 class FakeSocket {
   constructor(url) { this.url = url; this.sent = []; FakeSocket.made.push(this); }
   send(text) { this.sent.push(JSON.parse(text)); }
+  close() { this.closed = true; this.onclose?.(); }
 }
 FakeSocket.made = [];
 
@@ -344,12 +346,76 @@ test("Stop and STOP ALL go over the socket and over HTTP", withSocket(async ({ c
   const result = internal.stop("stage");
   assert.deepEqual(calls.map(call => call.url), ["/lab/api/console/stop/stage"]);
   assert.deepEqual(ws.sent.map(item => item.path), ["/api/console/stop/stage"]);
+  assert.equal(ws.sent[0].stop_request_id, calls[0].init.headers["X-MG400-Stop-ID"]);
+  assert.ok(ws.sent[0].stop_request_id);
   // The first answer counts.
   ws.onmessage({ data: JSON.stringify({ seq: ws.sent[0].seq, status: 200, body: { device: "stage", outcome: "confirmed" }, t: 1 }) });
   assert.equal((await result).outcome, "confirmed");
   await internal.stopAll();
   assert.equal(calls[1].url, "/lab/api/dashboard/motion");
-  assert.deepEqual(ws.sent[1], { seq: 2, path: "/api/dashboard/motion", body: {} });
+  assert.deepEqual(ws.sent[1], { seq: 2, path: "/api/dashboard/motion", body: {}, stop_request_id: calls[1].init.headers["X-MG400-Stop-ID"] });
+  assert.notEqual(ws.sent[1].stop_request_id, ws.sent[0].stop_request_id);
+}));
+
+test("trusted Console commands read control status and carry the current epoch without agent credentials", async () => {
+  const { LabConsole, calls } = load({ authority: null, responses: [
+    { status: 200, body: { activated: true, control_epoch: "boot-a:3" } },
+    { status: 200, body: { outcome: "accepted" } },
+  ] });
+  LabConsole.shell.base = "/lab";
+  await LabConsole._internal.request("/api/console/command/stage", { action: "move" });
+  assert.deepEqual(calls.map(call => call.url), ["/lab/api/agent/control/status", "/lab/api/console/command/stage"]);
+  assert.equal(calls[0].init.credentials, "same-origin");
+  assert.equal(calls[1].init.credentials, "same-origin");
+  assert.equal(calls[1].init.headers["X-MG400-Control-Epoch"], "boot-a:3");
+  assert.equal(calls[1].init.headers.Authorization, undefined);
+});
+
+test("a failed control status read sends no equipment command and never delays Stop", async () => {
+  const { LabConsole, calls } = load({ authority: null, responses: [{ status: 503, body: { error: "Busy" } }] });
+  await assert.rejects(LabConsole._internal.request("/api/console/command/stage", {}), /No command was sent/);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/api\/agent\/control\/status$/);
+  await LabConsole._internal.request("/api/console/stop/stage", {});
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].url, /\/api\/console\/stop\/stage$/);
+  assert.equal(calls[1].init.headers["X-MG400-Control-Epoch"], undefined);
+});
+
+test("an authority rejection never retries a hardware command", async () => {
+  const { LabConsole, calls } = load({
+    authority: { activated: true, control_epoch: "boot-a:1" },
+    responses: [{ status: 409, body: { error: "Control changed." } }],
+  });
+  await assert.rejects(LabConsole._internal.request("/api/console/command/stage", {}), /Control changed/);
+  assert.equal(calls.length, 1);
+});
+
+test("socket messages carry an opaque control epoch and stops omit it", withSocket(async ({ LabConsole, internal }) => {
+  LabConsole.setAuthority({ activated: true, control_epoch: "boot-a:4" });
+  internal.connect();
+  const ws = FakeSocket.made[0];
+  ws.onopen();
+  const moving = internal.request("/api/console/ws/motion/keys", { seq: 1, held: ["W"] }, { socket: true });
+  assert.equal(ws.sent[0].control_epoch, "boot-a:4");
+  ws.onmessage({ data: JSON.stringify({ seq: ws.sent[0].seq, status: 200, body: {} }) });
+  await moving;
+  const stopping = internal.request("/api/console/ws/motion/keys", { seq: 2, held: [] }, { socket: true });
+  assert.equal(ws.sent[1].control_epoch, undefined);
+  ws.onmessage({ data: JSON.stringify({ seq: ws.sent[1].seq, status: 200, body: {} }) });
+  await stopping;
+}));
+
+test("a Console restart reconnects the socket and uses the new control epoch", withSocket(async ({ LabConsole, calls, internal }) => {
+  internal.connect();
+  const ws = FakeSocket.made[0];
+  ws.onopen();
+  LabConsole.setAuthority({ boot_id: "boot-b", management_available: true, control_epoch: "boot-b:0" });
+  assert.equal(ws.closed, true);
+  assert.equal(internal.link.open, false);
+  await internal.request("/api/console/ws/motion/keys", { seq: 1, held: ["W"] }, { socket: true });
+  assert.equal(calls[0].init.headers["X-MG400-Control-Epoch"], "boot-b:0");
+  assert.equal(ws.sent.length, 0);
 }));
 
 test("pages keep fonts and scripts local", () => {

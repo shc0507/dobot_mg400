@@ -3,6 +3,8 @@
 import copy
 import math
 
+from .state_fields import cached_fields
+
 
 def _age(source_age, cache_age, divisor=1):
     if any(
@@ -119,6 +121,8 @@ class CacheStateProvider:
                 values.update(
                     _fields(source, ("run_state", "control_mode", "ramp_c_per_min", "flow_pct"))
                 )
+                if "ramp_c_per_min" not in values:
+                    values["ramp_c_per_min"] = source.get("ramp")
                 values["sequence"] = _fields(
                     source.get("sequence") or {},
                     ("running", "current_index", "phase", "hold_remaining_seconds"),
@@ -161,6 +165,16 @@ class CacheStateProvider:
                 "frame_age_s": _age(state.get("frame_age_s"), age),
                 "instance": state.get("instance"),
                 "values": values,
+                "cached_state": cached_fields(state, name),
+                "data_gaps": [
+                    field
+                    for field, missing in (
+                        ("source_instance", not state.get("instance")),
+                        ("sensor_capture_time", state.get("capture_timestamp") is None),
+                        ("state_time", state.get("ts_unix") is None),
+                    )
+                    if missing
+                ],
             }
             if name in observations:
                 detail = observations[name]

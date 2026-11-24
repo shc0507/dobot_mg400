@@ -147,8 +147,14 @@ def create_app(storage_root=ROOT / "work" / "console-preview"):
     service.sample_transfer_adapter = LiveTransferAdapter(service)
     app = Flask(__name__)
     app.extensions["preview_service"] = service
+    from orchestrator.agent_connect.access import install_access
+    from orchestrator.agent_connect.control import install_control
+
+    control = install_control(app, service, mock=True)
+    install_access(app, "/lab")
 
     def close():
+        control.close()
         service.devices.close()
         service.console.close()
         transfer = getattr(service, "sample_transfer", None)

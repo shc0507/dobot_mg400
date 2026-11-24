@@ -1,8 +1,9 @@
 (function (global) {
   "use strict";
   const agreement = typeof module !== "undefined" ? require("./stream-portal.js") : global.AgentStreamPortal;
+  const visuals = typeof module !== "undefined" ? require("./portal-visuals.js") : global.AgentPortalVisuals;
   const prefix = "/lab/api/agent";
-  const labels = { robot: "Robot arm", stage: "Stage", furnace: "Furnace", microscope: "Microscope", thermal: "Thermal camera", vision: "Vision" };
+  const labels = { stage: "Stage", robot: "Robot arm", furnace: "Furnace", thermal: "Thermal camera", microscope: "Microscope", vision: "Vision" };
   const qualityNames = { valid: "Current", stale: "Outdated", unavailable: "Unavailable", uncalibrated: "Not calibrated", unknown: "Unknown" };
   function rows(value, path = []) {
     if (value && typeof value === "object" && Object.keys(value).length) return Object.entries(value).flatMap(([key, item]) => rows(item, [...path, key]));
@@ -160,11 +161,12 @@
   function deviceCard(name) {
     if (cards.has(name)) return cards.get(name);
     const root = el("article", null, "card live-device"), header = el("div", null, "card-heading");
+    root.dataset.device = name;
     const title = el("h3", labels[name] || name), badge = el("span", "", "status-pill"); header.append(title, badge);
     const age = el("p", "", "section-note"), values = el("div", null, "live-device-values");
     values.tabIndex = 0; values.setAttribute("aria-label", `${labels[name] || name} received fields`);
     const details = el("details", null, "live-device-details"), metadata = el("div");
-    details.append(el("summary", "Source details and observations"), metadata);
+    details.append(el("summary", "Inspect all received fields and units"), metadata);
     root.append(header, age, values, details); $("live-devices").append(root);
     const result = { root, badge, age, values, metadata }; cards.set(name, result); return result;
   }
@@ -175,14 +177,12 @@
     $("live-metrics").textContent = `${reader.frames} frames · ${reader.messages} messages · ${(reader.bytes / 1024).toFixed(1)} KiB${elapsed === null ? "" : ` · Last message ${elapsed.toFixed(1)} s ago`}`;
     $("live-connect").textContent = reader.wanted ? "Disconnect" : "Reconnect";
     $("live-error").hidden = !reader.error; $("live-error").textContent = reader.error || "";
-    $("live-empty").hidden = hasFrame; $("live-devices").hidden = !hasFrame;
+    $("live-empty").hidden = hasFrame; $("live-devices").hidden = false;
     if (!hasFrame) $("live-empty").textContent = reader.error ? "Readings are unavailable. The last raw message remains below." : "Connect LarePass to receive data from Olares.";
     if (frame !== renderedState) {
       renderedState = frame;
-      for (const [name, card] of cards) { if (!frame?.devices?.[name]) { card.root.remove(); cards.delete(name); } }
       for (const [name, device] of Object.entries(frame?.devices || {})) {
-        const card = deviceCard(name); card.values.replaceChildren(table(device.values));
-        const { values, ...metadata } = device; card.metadata.replaceChildren(table(metadata));
+        const card = deviceCard(name); card.metadata.replaceChildren(table(device));
       }
       for (const [group, noun] of [["samples", "sample"], ["operations", "operation"]]) {
         const data = frame?.[group]; const items = data?.items;
@@ -190,11 +190,17 @@
         $("live-" + group).replaceChildren(data ? table(data) : el("p", "No data received.", "empty-state"));
       }
     }
-    for (const [name, device] of Object.entries(frame?.devices || {})) {
-      const card = cards.get(name); const quality = readingQuality(device, reader.receivedAt, reader.connected);
-      card.badge.textContent = quality; card.badge.classList.toggle("warning", quality !== "Current");
-      const age = typeof device.age_s === "number" ? device.age_s + Math.max(0, Date.now() / 1000 - reader.receivedAt) : null;
+    const names = [...new Set([...Object.keys(labels), ...Object.keys(frame?.devices || {})])];
+    for (const name of names) {
+      const device = frame?.devices?.[name], card = deviceCard(name);
+      const quality = device ? readingQuality(device, reader.receivedAt, reader.connected) : "Not received";
+      card.badge.textContent = ["thermal", "vision"].includes(name) && quality === "Current" ? "Service current" : quality;
+      card.badge.classList.toggle("warning", quality !== "Current");
+      const ageElapsed = reader.receivedAt == null ? Infinity : Math.max(0, Date.now() / 1000 - reader.receivedAt);
+      const age = typeof device?.age_s === "number" ? device.age_s + ageElapsed : null;
       card.age.textContent = age === null ? "Source update time unknown" : `Console cache updated ${age.toFixed(1)} s ago`;
+      card.values.replaceChildren(visuals.deviceVisual(name, device, reader.connected ? ageElapsed : Infinity));
+      if (!device) card.metadata.replaceChildren(el("p", "No device data received.", "section-note"));
     }
     const key = JSON.stringify(reader.events.map(row => [row.message.boot_id, row.message.event_seq, row.message.type]));
     if (eventKey !== key) {
@@ -210,7 +216,7 @@
     $("live-raw").textContent = reader.rawState ? JSON.stringify(reader.rawState, null, 2) : "Waiting for a state frame.";
     $("live-last-message").textContent = reader.raw ? JSON.stringify(reader.raw, null, 2) : "Waiting for a message.";
     $("live-download").disabled = !reader.rawState;
-    $("live-agreement").replaceChildren(...[["Console process", reader.discovery?.boot_id], ["Data agreement", reader.discovery?.contract_id], ["Console release", reader.discovery?.server_release]].flatMap(([key, value]) => [el("dt", key), el("dd", value || "Not received")]));
+    $("live-agreement").replaceChildren(...[["Read-stream process", reader.discovery?.boot_id], ["Data agreement", reader.discovery?.contract_id], ["Console release", reader.discovery?.release?.release_id || reader.discovery?.server_release]].flatMap(([key, value]) => [el("dt", key), el("dd", value || "Not received")]));
   }
   const reader = new LiveReader({ read, source: url => new EventSource(url), changed: render });
   $("live-connect").onclick = () => reader.wanted ? reader.stop() : reader.start();
@@ -222,7 +228,7 @@
   $("enable-tests").onchange = () => {
     const enabled = $("enable-tests").checked; $("live-view").hidden = enabled; $("advanced-tests").hidden = !enabled;
     document.body.dataset.mode = enabled ? "MOCK" : "live";
-    $("portal-mode").textContent = enabled ? "Simulation · No hardware" : "Live · Read only";
+    $("portal-mode").textContent = enabled ? "Simulation · No hardware" : "Live equipment";
     dispatchEvent(new CustomEvent("portal-test-mode", { detail: enabled ? document.querySelector('[data-panel][aria-pressed="true"]').dataset.panel : null }));
     if (enabled) reader.stop(); else reader.start();
   };

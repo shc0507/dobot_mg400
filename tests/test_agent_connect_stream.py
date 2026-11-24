@@ -89,7 +89,7 @@ def test_snapshot_then_replay_preserves_old_contract_and_binding(setup):
     old = hub.contract_id
     hub.publish("sample.changed", {"chip_id": "one"})
     changed = bundle()
-    changed["version"] = "1.1.0"
+    changed["version"] = "1.2.0"
     current = hub.change_contract(changed)
     reader = hub.subscribe(cursor={"boot_id": hub.boot_id, "event_seq": 0})
     assert reader.poll()["contract_id"] == current

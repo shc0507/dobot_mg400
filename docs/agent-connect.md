@@ -1,6 +1,6 @@
 # 智能体连接
 
-智能体连接页显示 Console 共用设备缓存中的观测数据。此页不获取控制权，也不发送设备命令。服务未发布进程 ID 时，页面显示不可用。
+智能体连接发布设备缓存数据，并在明确授予操作权后提供目录命令。控制接口使用版本 6、阶段 8。8082 正式 Console 启用真机命令，包括受支持的加热炉命令。只读数据流、普通命令和紧急 Stop 使用独立路径。
 
 ## 本地连接页
 
@@ -10,17 +10,191 @@
 uv run python scripts/agent_portal.py
 ```
 
-命令会打开 Agent Portal：`http://127.0.0.1:8792/`。Olares data stream（Olares 数据流）默认建立 1 个只读连接。目标固定为 `http://100.64.0.1:8082`，连接标有 Live · Read only（实时，只读）。VPN 或数据源不可用时，页面显示连接错误，不替换成模拟数据。
+命令在 `http://127.0.0.1:8792/` 打开 Agent Portal。Live equipment 来源连接 `http://100.64.0.1:8082`。如果 VPN 或数据源不可用，页面显示错误。页面不会换成模拟数据。
 
-本地服务器将 Olares 只读 WebSocket 转发为服务器推送事件（SSE）。它订阅 `devices`、`samples` 和 `operations`。Updates per second（每秒更新次数）可选 1、2 或 4 Hz，默认为 2 Hz。Disconnect（断开）停止读取。Reconnect（重新连接）恢复读取。
+**Agent** 页接受问题和指令。打开 **OpenAI model**，输入 API 密钥，选择 **Use model**。默认模型是 `gpt-6.2-sol`，也可输入支持 Responses 结构化输出的其他模型。密钥只保存在进程内存中。`OPENAI_API_KEY` 可提供初始密钥。重启后，页面输入的密钥会清除。指令、近期对话、已核验的 Console 状态和当前命令目录会发送给 OpenAI。不发送摄像头视频或 Console 凭据。
 
-页面显示设备读数、Active samples（活动样品）和 Operations（操作）。Recent events（近期事件）保留最近 100 条事件。Full state JSON（完整状态 JSON）显示所收状态的全部字段。浏览器校验不可变的数据约定及其摘要后，才解释读数。定义不受支持或摘要不匹配时，停止解释。原始 JSON 仍可查看。
+连接并明确授予操作权后，清晰指令立即执行。缺少目标或单位时，智能体会提问。每条指令可执行 1 个目录动作，包括已有的组合动作。位移台坐标使用圈数。机器人 X/Y/Z 使用毫米，R 使用度。智能体显示 Console 返回的结果。结果未知时，保留请求 ID，不自动重发运动命令。**Cancel agent task** 取消待处理的解释，并请求取消自己的命令。两个页签均保留 Stop 控件。
 
-使用 `--no-browser` 可跳过打开标签页。按 Ctrl+C 可停止服务器。本地服务器仅绑定本机回环地址。HTTP 使用端口 8790 和 8792。模拟 WebSocket 使用端口 8793。
+实时活动列表每 1 秒更新。它显示状态读取、指令解释、参数核验、命令提交和 Console 结果。每条已提交命令均显示完整 JSON 请求正文和请求 ID。指令解释提供简短的动作说明，不展示模型的私有推理。活动只保存在进程内存中，真机和模拟来源分别保存。
 
-启动前，关闭其他 Console 预览。两者都使用端口 8790。
+**Manual testing** 页保留设备图、实时读数、参数表单和可选模拟。切换页签不会断开智能体。只有明确提交的指令或手动命令才会请求设备操作。打开页面、设置模型和授予控制权均不会启动设备。
 
-使用外观控件选择深色或浅色模式。浏览器在本地保存偏好，并在再次打开页面时恢复。
+本地服务器把 Olares 只读 WebSocket 转发为服务器发送事件（SSE）。它订阅 `devices`、`samples` 和 `operations`。Updates per second 可选 1、2 或 4 Hz，默认 2 Hz。读取区的 Disconnect 只断开数据连接。
+
+Received state 显示位移台位置图、机器人坐标、温度、气体读数、显微镜状态和视觉结果。缺失读数仍为未知。设备详情和 Full state JSON 保留收到的全部字段。主视图下方保留 Active samples、Operations 和最近 100 条事件。浏览器核对不可变数据约定及其摘要后才解码。定义不受支持或摘要不匹配时，停止解码。原始 JSON 仍可查看。
+
+在 Manual testing 中，Send command 按设备分组显示动作。表单显示参数、受支持的目标预览和待发送 JSON。目标预览不会移动设备。只有 Send command 提交手动请求。可视化页面使用现有机器接口，不向数据流添加摄像头视频。
+
+使用 `--no-browser` 可不打开标签页。按 Ctrl+C 停止服务器。下列进程只监听回环地址：
+
+| 进程 | 端口 | 用途 |
+| --- | --- | --- |
+| Portal | 8792 | 显示实时数据并转发明确提交的命令。 |
+| 模拟 Console | 8790、8793 | 提供模拟 HTTP 和 WebSocket 接口。 |
+| 独立模拟器与 Stop 网关 | 8794 | 模拟 Console 停止后，仍提供模拟位移台 Stop 和状态。 |
+
+启动前关闭其他 Console 预览，两者都使用端口 8790。外观按钮选择深色或浅色模式，并在本地保存选择。
+
+## 智能体连接与控制
+
+操作员归属只限于 8082 测试 Console。它不会锁定 8080 或其他设备直连接口。Mark 协调测试，确保智能体控制期间无人通过这些接口操作设备。原有设备租约继续生效。
+
+公共只读数据流不要求邀请或操作员授权。Console 管理信任实验室网络内的访问。不要求所有者登录、密码、所有者代码或 SSH 隧道。人工控制继续使用设备租约。智能体持有操作权时，先选择 Take control，再发送普通人工命令。
+
+### Console 策略
+
+通过 LarePass 打开 `http://100.64.0.1:8082/lab/#agent-connect`。控制约定位于 `/lab/api/agent/control/contract`。它声明 `pairing: {approval: "invitation", operator_grant: "explicit"}`。状态报告 `management_available`。
+
+库构造默认使用 `allow_physical=False`。正式注册通过 `allow_physical=True` 明确启用真机。邀请、授权、命令参数和页面控件都不能改变服务器的这个选择。
+
+| 来源 | 模式与命令策略 |
+| --- | --- |
+| 8082 正式 Console | `equipment_mode: "physical"`、`commands_enabled: true`、`physical_commands_enabled: true`、`furnace_control_enabled: true`、`stop_enabled: true`。 |
+| 本地模拟 | `equipment_mode: "simulated"`、`commands_enabled: true`、`physical_commands_enabled: false`、`furnace_control_enabled: false`、`stop_enabled: true`。 |
+| 未启用真机或模拟的库 | `equipment_mode: "disabled"`、`commands_enabled: false`、`physical_commands_enabled: false`、`furnace_control_enabled: false`、`stop_enabled: false`。 |
+
+选择动作前，读取命令目录。受支持的动作调用已审查的原生处理器，涵盖位移台、机器人、显微镜、热像仪、视觉和加热炉。服务不支持的能力显示不可用及其原因。接口不提供任意设备命令、URL、配方或组合动作转发。
+
+命令保留原生限制和设备租约。这些限制包括机器人速度与报警检查、已配置的位移台限位、显微镜焦点与转盘避让限制，以及加热炉温度和升温速率上限。
+
+### 从 PC 连接并发送命令
+
+在 Portal 中使用 Agent connection and control。控制连接和只读数据流向同一 8082 Console 发送独立请求。
+
+1. 在 Console 中选择 Create invitation。单次邀请在 300 秒后过期。选择 Copy。
+2. 在 Portal 中输入 Agent name 和邀请。选择 Use invitation。
+3. 选择 Connect。智能体以观察者身份连接。
+4. 释放现有设备控制。等待运行、任务和 Sample Transfer 结束。
+5. 在 Console 中为已连接智能体选择 Grant control。
+6. 在 Portal 中选择 Action。填写参数。选择 1 次 Send command。
+
+邀请包含 8 个易读字符，显示为 `XXXX-XXXX`。HTTP Console 页面支持 Copy。有效邀请立即授予连接权限，不要求另行批准。
+
+同一 Console 同时只允许 1 名操作员。Grant control 不获取设备租约，也不发送命令。用户选择首条真机命令及其参数。选择动作、连接、重连和操作员授权都不会自动提交命令。
+
+Commands 区标明 Physical commands 或 Simulated commands。选择器只列出可用动作。展开不可用动作可查看原因。
+
+表单显示单位、限制和已存选项。加热炉参数初始为空。按约定填写温度 °C、升温速率 °C/min 和气体流量百分比。表单按约定检查序列 JSON。Advanced JSON and parameter schema 显示完整约定。可选的 Preconditions (JSON) 初始为 `{}`。
+
+Move one stage axis 使用编码器绝对位置，单位为转数，原点是所选轴的零位。Portal 显示该轴当前位置和校准后的最小、最大位置。校准数据缺失或过期时，Send command 不可用。校准数据刷新不会替换已输入的目标。
+
+`/commands/choices` 响应中的 `constraints.stage` 来自现有设备缓存。这些运行时限位不改变命令目录约定或摘要。运动前，服务器重新检查所选轴限位、故障、租约和 Stop 版本。X/Y 移动不依赖 Insert 的位置。这适用于单轴移动、组合坐标、微动、步进和已存位置。组合 X/Y 移动先执行 Bottom，再执行 Top，Insert 不变。命名位置按 Bottom、Top、Insert 顺序移动，不额外执行抽出动作。每次只移动 1 个轴。
+
+拒绝或失败的命令在控制区显示原因。展开 Recent commands and results 可查看完整记录。
+
+每次明确选择 Send command 都创建新的 `request_id`。如果响应丢失，Portal 查询原 ID，不重发命令。结果未确定时，禁止再次提交。切换来源会清空命令视图，并忽略旧来源迟到的响应。
+
+### 交接与连接丢失
+
+Take control 把操作权交给人。Release control 清空操作员。Revoke access 断开智能体并禁止重连。撤销后，智能体从 Agent connections 列表消失。内部保留连接权限记录，用于拒绝旧凭据及追踪命令或 Stop 的发送者。已批准的智能体断线后仍保留在列表中。这些归属变更要求设备空闲。
+
+每次变更都会更新 `control_epoch`。命令工作线程取消过期任务，并只释放该智能体的设备租约。清理时不会获取其他持有者的租约。
+
+选择 Connect 后，本地 Portal 进程每 2 秒发送 1 次心跳。最小化或关闭浏览器不会结束智能体连接。保持 Portal 进程运行、PC 唤醒和 LarePass 连接。明确选择 Disconnect 会停止本地智能体会话。撤销权限、会话过期或重启 Console 也会结束会话。重新打开页面只显示当前会话，不发送设备命令。
+
+本地智能体连接后，即使浏览器关闭，也每秒采集 1 个原始状态快照。内存只保留最新快照。此接收检查不解码数据，也不验证数据约定，状态标为未验证。浏览器可视化保留独立的已验证数据流。`GET /api/agent-control/latest?source=live` 返回本地接收状态和最后的原始快照。Disconnect 停止采集。网络错误会把保留快照标为最后收到的数据。
+
+连续 10 秒未收到心跳后，会话和授权过期。Console 为失联操作员记录警告。重连后仍为观察者，必须再次明确授权。
+
+连接监控使用 `policy: "warn_only"` 和 `shutdown_enabled: false`。它不添加自动关炉动作。清理会释放运动控制。加热炉遵循原有运行与恢复规则。
+
+警告包含发送者，并保留到人工选择 Dismiss warning。此操作向 `POST /lab/api/agent/control/acknowledge-warning` 发送 `{}`。关闭警告不会恢复操作权，也不会删除事件记录。
+
+客户端连接权限保存在 Console 运行目录的 `agent-connect/authority.db`。邀请、会话和授权不持久化。重启 Console 会使会话和授权失效。
+
+PC Portal 只在服务器内存中保留凭据。重启 Portal 后必须使用新邀请。旧版待批准客户端也必须使用新邀请。
+
+Start test、Run next step 和 Stop test 提供独立的内存交接测试。测试包含 3 个手动步骤，在 Olares 上也只改变内存。Stop test 只停止该测试，不停止设备。
+
+### 命令接口与结果
+
+命令路由以 `/lab/api/agent/control` 为基础路径：
+
+| 方法 | 路径 | 权限与结果 |
+| --- | --- | --- |
+| GET | `/commands/catalog` | 公开。读取定义、可用状态和摘要。 |
+| GET | `/commands/choices` | 已认证。读取已存配置和设备选项。 |
+| GET | `/commands/history` | 已认证。读取最近 50 条摘要及总数。 |
+| GET | `/commands/request/<request_id>` | 已认证。读取完整记录。 |
+| POST | `/commands` | 已认证。新命令要求当前操作员和约定。 |
+| POST | `/commands/cancel` | 已认证。为自己持有的操作发送 `{"request_id":"..."}`。 |
+
+智能体使用 `Authorization: Bearer <session_token>`。Portal 从服务器内存提供令牌，浏览器不能替换。智能体只能读取自己客户端的记录。受信任的 Console 管理可读取全部记录。如果 ID 匹配多个客户端，管理查询返回 409。
+
+版本 1 命令目录包含 `version`、`contract_id` 和 `actions`。摘要以 `sha256:` 开头。每个动作包含 `id`、`label`、`description`、`params`、`defaults`、`device`、`available`、`reason` 和 `revision`。可用状态可能变化，而定义摘要不变。
+
+只提交 `request_id`、`boot_id`、`contract_id`、`control_epoch`、`action` 和 `params`，以及可选的 `preconditions`。最后 2 个字段必须为 JSON 对象。Portal 明确发送 `preconditions`。执行前，服务器检查当前标识、命令摘要、操作员授权和动作约定。
+
+将控制状态中的 `command_boot_id` 用作命令的 `boot_id`。其 `identity_scope` 为 `command_control`。原样保留返回的 `control_epoch` 字符串。状态的 `command_contract_id` 必须匹配目录的 `contract_id`。只读数据流有独立的 `boot_id` 和约定摘要，不得用它们替换命令标识。
+
+请求 ID 属于客户端。会话有效时，相同 ID 和请求体返回原记录，不重复执行。同一 ID 使用不同请求体时返回 409。会话过期后不能读取或重发请求。结果未知时，查询原 ID。不得自动用新 ID 重发运动命令。
+
+操作状态为 `accepted`、`running`、`succeeded`、`failed`、`rejected`、`cancelling`、`stopped` 或 `unknown`。Cancel my operation 请求取消本会话的操作。它不能证明设备已停止。取消加热炉命令保留原有运行与恢复规则。必须停止这些输出时，使用明确的加热炉或气体 Stop 控件。
+
+记录保存在权限数据库旁的 `agent-connect/commands.db`。重启会把未完成记录改为 `unknown`，不会重放。本地模拟使用内存或临时存储。重启本地测试会清空其记录和配置。
+
+历史返回 `items` 和 `count`。摘要省略参数和结果。展开操作可读取完整记录。
+
+### Stop 与发送者历史
+
+Stop 使用同一控制基础路径：
+
+| 方法 | 路径 | 结果 |
+| --- | --- | --- |
+| POST | `/stop` | 执行 Stop 并返回初始记录。 |
+| GET | `/stops` | 读取有上限的摘要和审计状态。 |
+| GET | `/stops/<id>` | 读取投递详情和设备结果。 |
+
+只发送请求 ID 和目标：
+
+```json
+{"request_id":"example-stop-1","target":"all_motion"}
+```
+
+| 目标 | 效果 |
+| --- | --- |
+| `stage`、`robot`、`microscope` | 停止所选运动设备。 |
+| `all_motion` | 停止上述运动设备，不包括加热炉。 |
+| `furnace` | 请求原生加热炉 Stop，停止加热和气体。 |
+| `gas_all` | 停止全部 3 个气路。 |
+| `gas_0`、`gas_1`、`gas_2` | 停止气路 0、1 或 2。 |
+
+Stop 不要求会话、操作员授权、当前版本或约定摘要。它不等待普通命令处理或状态刷新。服务器确定发送者，调用者不能在请求体中指定身份。凭据缺失或未知时，发送者标为未验证。
+
+每次明确按下按钮都创建新 ID。同一 ID 和目标的请求共用历史记录，但每次投递仍执行 Stop。详情保留所有传输路径、发送者和设备结果。混合发送者的请求不会继承另一次投递的已验证身份。
+
+Stop 历史状态为 `pending`、`confirmed`、`unconfirmed`、`unknown` 或 `disabled`。收到请求不能证明设备已停止。后续投递成功也不会把未知投递改为已确认。现有人工紧急路径保留原有执行方式，并在执行后添加发送者历史。
+
+Console 把历史保存在 `runs/agent-connect/stops.db`。审计存储不能延迟 Stop 执行。历史会报告存储失败。进程在保存前退出时，近期记录可能丢失。重启把未完成投递改为 `unknown`。已存 Stop 从不重放。
+
+### 独立 Stop 网关
+
+普通 Stop 路径出现网络错误或 HTTP 503 时，Portal 使用固定备用路径。它保留请求 ID，且不发送凭据：
+
+| 来源 | 备用基础路径 |
+| --- | --- |
+| 真机 | `http://100.64.0.1:8082/lab/api/agent/emergency` |
+| 模拟 | `http://127.0.0.1:8794` |
+
+两者都提供 `/stop`、`/status`、`/stops` 和 `/stops/<id>`。备用进程没有 Console 会话存储，因此调用者标为未验证。恢复后，历史仍保留 Console 和备用路径的记录。服务或网络故障仍可能使 Stop 未确认。备用路径不重放普通命令，也不把实时读数替换成模拟数据。
+
+Olares 网关监听 `127.0.0.2:8874`。8082 代理把 `/lab/api/agent/emergency/*` 转发到该网关。真机部署运行 `orchestrator.agent_connect.fallback --physical`，并保存 `runs/agent-connect/emergency-stops.db`。此模式只提供固定的原生 Stop 和状态处理器。网关不提供普通真机命令。
+
+库默认仍禁用网关真机操作。使用 `service_unit(checkout, physical=True)` 生成真机单元。将其安装为 `mg400-agent-emergency-test.service`，然后启用开机启动：
+
+```sh
+sudo systemctl enable --now mg400-agent-emergency-test.service
+```
+
+普通 `deploy/twin.py` 注册表不会重启此单元。修改网关代码后，单独重启：
+
+```sh
+sudo systemctl restart mg400-agent-emergency-test.service
+```
+
+检查紧急状态中的 `equipment_mode: "physical"` 和 `stop_enabled: true`。网关独立于 Console 进程，但仍依赖代理、网络和设备服务。它不改变 8080 Console，也不重启共用设备进程。
+
 
 ## 可选模拟测试
 
@@ -73,11 +247,11 @@ Browse saved chips（浏览已存芯片）分页读取芯片列表。如果翻�
 
 承载位置与是否入炉是两个判断。丢失入炉参考时，保留已确定的位移台承载位置。真机尚未配置炉内映射，因此 Olares 上的 `inside_furnace` 保持 `null`。模拟映射不能确定真机位置。
 
-芯片履历在 Console 基础路径下读取 `/api/chip/location?id=...`，并同时显示当前证据和原有历史。阶段 4 添加操作员控制前，Report location（报告位置）和 Mark unknown（标记未知）保持禁用。这些阶段只有本地模拟表单可提交人工报告。
+芯片履历在 Console 基础路径下读取 `/api/chip/location?id=...`，并同时显示当前证据和原有历史。真机 Report location（报告位置）和 Mark unknown（标记未知）仍禁用。本地模拟表单仍是唯一的人工报告接口。
 
 ## 读取接口与重放
 
-阶段 3 在 `/lab/api/agent` 下提供以下读取路径：
+Console 在 `/lab/api/agent` 下提供以下读取路径：
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -99,12 +273,18 @@ Browse saved chips（浏览已存芯片）分页读取芯片列表。如果翻�
 
 重连时同时发送 `boot_id` 和 `event_seq`。数据流先发送当前快照，再发送保留的事件。事件保留原 `contract_id`，重放不改变当前约定。`resync` 消息报告 `boot_changed`、`cursor_ahead` 或 `history_evicted`。出现缺口后，读取新快照。共用采样历史与重复广播分开保存。
 
+## 缓存字段与版本标识
+
+每台设备添加 `cached_state`，包含 `values`、`units`、`complete`、`omitted` 和 `omitted_count`。这些字段提供有上限的原生缓存值，不增加硬件轮询。副本排除私密数据、路径、图像和热像矩阵。大小限制可能省略更多字段。判定副本完整前，先检查省略原因。
+
+设备的 `data_gaps` 列出缺失的来源标识或时间戳。未知值保持未知。Portal 显示收到的嵌套字段和原始 JSON。Console 帧是新的，不代表传感器读数也是新的。来源单位、观测时效和帧生成时间分别保留。
+
+发现接口的 `release` 包含 `release_id`、`source_bundle_id`、`read_contract_id`、`command_contract_id`、`source`、`complete` 和 `scope`。范围为 `this-console`。版本 ID 由启动时的源码摘要和当前两个约定摘要共同确定。源码摘要只覆盖有上限的 Console 源文件集合，不覆盖设备固件或全部共用服务。
+
+`source` 对象报告 `digest`、`complete`、`file_count`、`bytes_hashed` 和 `scope`。即使磁盘文件变化，运行进程仍保留启动时的源码标识。元数据缺失或源码副本不完整时，仍报告不完整。识别已审查的 Console 版本时，对比版本 ID 和两个约定 ID。
+
 ## 当前范围
 
-阶段 0 支持服务发现、不可变的测试约定文件、HTTP 状态快照和本地兼容检查。这些文件使用 JSON Schema 2020-12。摘要使用 JCS 子集，键名为 ASCII，数值为安全整数。实时读数不改变摘要。
+命令目录把智能体操作限制在已审查的原生能力内。启用真机不会启用不受支持的动作，也不会移除设备限制。实时读取、模拟设备和格式测试保留独立的标识与结果。模拟检查不能确定真机行为。
 
-更改单位的测试设置会改变位移台单位。脚本提示必须更新，并停止解释读数卡片。原始 JSON 仍可查看。无法识别的模式格式和损坏的约定文件也会阻止解释。
-
-服务发布阶段 1 的字段后，Console 页面会显示这些字段。此页读取缓存的进程 ID、位移台参考和选定的观测字段，不增加设备轮询。
-
-阶段 2 和 3 添加样品证据与只读数据流。智能体命令、连接审批和控制权授予仍未启用。在 Olares 上，这些读取路径属于端口 8082 的 Console 服务。本地连接页通过 VPN 读取该服务。可选模拟测试仍只在本地运行，不能证明真机行为。
+在另一位开发者完成共用服务工作前，继续暂缓设备服务进程 ID 的进一步集成和部署。下次联合集成审查时，核对分支中保留的实现。缺失的服务 ID 仍显示不可用。Console `boot_id`、客户端身份和 `control_epoch` 保持启用。

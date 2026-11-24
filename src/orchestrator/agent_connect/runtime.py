@@ -1,6 +1,7 @@
 """Attach the read stream to existing Console caches and persistent chip records."""
 
 from .observations import SharedObservations
+from .release import running_source_bundle
 from .samples import SampleTracker
 from .state import CacheStateProvider
 from .stream import BroadcastHub
@@ -50,6 +51,9 @@ def create_hub(service):
                         },
                     }
                 )
+        control = getattr(service, "agent_control", None)
+        if control is not None:
+            items.extend(control.operation_summaries())
         return {"available": True, "items": items, "count": len(items), "complete": True}
 
     service.agent_observations = SharedObservations(service)
@@ -60,7 +64,10 @@ def create_hub(service):
         observations=service.agent_observations.snapshot,
         mode="demo" if service.demo else "live",
     )
-    return BroadcastHub(provider, server_release="agent-connect-phase-2-3")
+    source = running_source_bundle()
+    hub = BroadcastHub(provider, server_release=source["digest"] or "source-unavailable")
+    hub.source_bundle = source
+    return hub
 
 
 def publish_device_events(service, name, rows, previous, instance, report):

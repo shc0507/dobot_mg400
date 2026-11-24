@@ -169,4 +169,82 @@ def test_command_output_is_omitted_and_message_is_bounded():
     command = frame["devices"]["vision"]["values"]["last_command"]
     assert "output" not in command
     assert len(command["message"]) == 512
-    assert len(json.dumps(frame)) < 2000
+    assert len(json.dumps(frame)) < 3500
+
+
+def test_cached_sensor_fields_preserve_human_state_and_known_units():
+    states = {
+        "robot": {"payload_kg": 0.25, "keyboard_speed_percent": 10, "actual": [1, 2, 3, 4]},
+        "furnace": {
+            "pv": 42,
+            "sv": 100,
+            "ramp": 5,
+            "stored_sv": 100,
+            "auxiliary_output": {"value": 3, "verified": True},
+            "flow": {"gas_channels": [{"actual_percent": 8, "target_percent": 10}]},
+        },
+        "stage": {
+            "sampled_at": 123.4,
+            "motors": [{"encoder_counts": 12, "telemetry_age_ms": 20, "position_rotations": 3}],
+        },
+        "microscope": {"objective_offset_limit_steps": 400, "stabilization": True},
+        "thermal": {"frame_sequence": 12, "custom_sensor": {"reading": 3.5}},
+    }
+    rows = provider(states)()["devices"]
+    for name, state in states.items():
+        cached = rows[name]["cached_state"]
+        assert cached["values"] == state
+        assert cached["complete"] and cached["omitted_count"] == 0
+        assert rows[name]["data_gaps"] == ["source_instance", "sensor_capture_time", "state_time"]
+    assert rows["furnace"]["values"]["ramp_c_per_min"] == 5
+    assert (
+        rows["furnace"]["cached_state"]["units"]["/flow/gas_channels/0/actual_percent"] == "percent"
+    )
+    assert rows["stage"]["cached_state"]["units"]["/motors/0/position_rotations"] == "rotation"
+    assert "/motors/0/encoder_counts" not in rows["stage"]["cached_state"]["units"]
+    assert rows["thermal"]["cached_state"]["units"] == {}
+    assert rows["robot"]["cached_state"]["units"]["/actual/0"] == "mm"
+    assert rows["robot"]["cached_state"]["units"]["/actual/3"] == "degree"
+    assert rows["stage"]["sampled_at"] is None
+    assert rows["stage"]["cached_state"]["units"]["/sampled_at"] == "monotonic_s"
+
+
+def test_cached_fields_bound_bulk_data_and_remove_nested_secrets():
+    state = {
+        "pv_c": 25,
+        "nested": {"session_token": "sensitive", "password": "secret", "apiKey": "private-api-key"},
+        "reading_c": None,
+        "unlabelled_matrix": [[1, 2]],
+        "image": "base64-image",
+        "image_url": "https://private",
+        "unbounded": {f"sensor_{i}_mm": i for i in range(10000)},
+        "nonfinite": float("nan"),
+    }
+    row = provider({"furnace": state})()["devices"]["furnace"]
+    encoded = json.dumps(row, allow_nan=False)
+    assert not any(
+        value in encoded
+        for value in ("sensitive", '"secret"', "private-api-key", "base64-image", "https://private")
+    )
+    cached = row["cached_state"]
+    assert cached["values"]["pv_c"] == 25
+    assert cached["units"]["/reading_c"] == "degC"
+    assert not cached["complete"]
+    assert len(cached["omitted"]) <= 32
+    assert len(encoded.encode()) < 32768
+    assert {item["reason"] for item in cached["omitted"]} >= {
+        "private_or_bulk_data",
+        "matrix",
+        "location",
+        "nonfinite",
+    }
+
+
+def test_cached_state_is_detached_and_does_not_claim_capture_time():
+    states = {"furnace": {"sample_time": 1700000000, "flow": {"target_percent": 5}}}
+    source = provider(states)
+    row = source()["devices"]["furnace"]
+    assert row["sampled_at"] == 1700000000
+    assert "sensor_capture_time" in row["data_gaps"]
+    row["cached_state"]["values"]["flow"]["target_percent"] = 99
+    assert source()["devices"]["furnace"]["cached_state"]["values"]["flow"]["target_percent"] == 5

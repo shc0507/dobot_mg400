@@ -6,11 +6,13 @@
   <title>Simulated Console · Agent Connect</title>
   <script src="/assets/theme.js"></script>
   <link rel="stylesheet" href="/assets/portal.css">
+  <link rel="stylesheet" href="/lab/api/agent/control/assets/control-owner.css">
 </head>
 <body data-mode="MOCK"><main>
   <header class="page-header"><div><p class="eyebrow">LAB CONSOLE · LOCAL TESTING</p><h1>Simulated Console</h1></div><div class="header-actions"><span class="mock">Simulation · No hardware</span><button id="theme-toggle" type="button">Dark mode</button></div></header>
-  <p class="intro">This is the source of the portal's simulated readings. Use the portal to pause updates or choose a test setup.</p>
+  <p class="intro">These readings come from the local simulated command controller. Data format tests use separate example readings.</p>
   <nav aria-label="Test tools"><a href="http://127.0.0.1:8792/" target="_blank" rel="noopener">Open Agent Test Portal ↗</a></nav>
+  <section id="owner-control" aria-label="Agent connection and control"></section>
   <div class="section-head"><h2>Reading status</h2><p class="section-note">An outdated reading is older than 3 seconds.</p></div>
   <section id="source-readings" class="readings" aria-label="Simulated readings"></section>
   <section class="two-column technical" aria-label="Message details">
@@ -18,5 +20,5 @@
     <details class="card disclosure"><summary>Message JSON</summary><div class="disclosure-content"><p class="section-note">The exact state message sent to the agent scripts.</p><pre id="source-state">Waiting for a message.</pre></div></details>
   </section>
   <footer>This Console supplies simulated data only. It does not connect to lab hardware.</footer>
-</main><script src="/assets/console.js"></script></body>
+</main><script src="/assets/console.js"></script><script src="/lab/api/agent/control/assets/control-owner.js"></script><script src="/assets/control-console.js"></script></body>
 </html>

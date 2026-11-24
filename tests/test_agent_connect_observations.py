@@ -286,3 +286,78 @@ def test_detection_marker_and_slot_points_keep_source_coordinate_names():
     assert compact["items"][0]["robot_mm"] == {"x": 3, "y": 4}
     assert compact["items"][1]["center_px"] == [5, 6]
     assert compact["items"][2]["center_xy_mm"] == [7, 8]
+
+
+def test_missing_instance_uses_latest_cached_output_without_network_or_freshness_claim():
+    service, clock = Service(), Clock()
+    service.rows["vision"]["state"] = {
+        "last_result": {"job_id": "1", "finished_at": 98},
+        "last_command": {
+            "id": "2",
+            "instance": INSTANCE,
+            "result": "ok",
+            "finished_at": 99,
+            "output": vision()["output"],
+        },
+    }
+    observations = SharedObservations(service, clock=clock)
+    observations.refresh()
+    value = observations.snapshot()["vision"]
+    assert value["instance"] is None and not value["source_identity_known"]
+    assert value["available"] and value["quality"] == "unknown"
+    assert value["job_id"] == "2" and value["result_source"] == "console_cache"
+    assert value["source_observed_at"] is None and value["items"][0]["text"] == "chip-1"
+    assert service.vision.paths == []
+    # Without process identity, a repeated job ID with a new finish time is a new result.
+    service.rows["vision"]["state"]["last_command"]["finished_at"] = 100
+    service.rows["vision"]["state"]["last_command"]["output"]["labels"][0]["text"] = "chip-2"
+    clock.now = 1
+    observations.refresh()
+    assert observations.snapshot()["vision"]["items"][0]["text"] == "chip-2"
+    assert service.vision.paths == []
+    observations.close()
+
+
+def test_missing_instance_never_reuses_older_success_for_failed_latest_job():
+    service, clock = Service(), Clock()
+    service.rows["vision"]["state"] = {
+        "last_result": {"job_id": "1", "output": vision()["output"]},
+        "last_command": {"id": "2", "result": "failed", "finished_at": 100},
+    }
+    observations = SharedObservations(service, clock=clock)
+    observations.refresh()
+    value = observations.snapshot()["vision"]
+    assert value["job_id"] == "2" and value["quality"] == "unavailable"
+    assert value["items"] == [] and service.vision.paths == []
+    observations.close()
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_missing_instance_reads_only_advertised_retained_job(supported):
+    service, clock = Service(), Clock()
+    service.rows["vision"]["state"] = {"last_result": {"job_id": "1"}}
+    service.vision.responses["api/results/1"] = (
+        vision() if supported else ServiceError(400, "Instance required")
+    )
+    observations = SharedObservations(service, clock=clock)
+    observations.refresh()
+    value = observations.snapshot()["vision"]
+    assert value["instance"] is None
+    assert value["available"] is supported
+    assert value["quality"] == ("unknown" if supported else "unavailable")
+    if not supported:
+        assert value["reason"] == "source_identity_unavailable"
+    clock.now = 1
+    observations.refresh()
+    assert service.vision.paths == ["api/results/1"]
+    if not supported:
+        service.rows["vision"]["state"]["last_command"] = {
+            "id": "1",
+            "result": "ok",
+            "output": vision()["output"],
+        }
+        clock.now = 2
+        observations.refresh()
+        assert observations.snapshot()["vision"]["available"]
+        assert service.vision.paths == ["api/results/1"]
+    observations.close()

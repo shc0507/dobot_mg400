@@ -9,6 +9,7 @@ from flask import jsonify, request
 from mg400.websocket import Connection, ConnectionClosed, ProtocolError
 
 from .protocol import PREFIX
+from .release import metadata, running_source_bundle
 from .stream import Subscription, encoded
 
 
@@ -51,10 +52,45 @@ def options(query):
 
 def register_routes(app, hub, *, prefix=PREFIX):
     app.extensions["agent_stream"] = hub
+    if not hasattr(hub, "source_bundle"):
+        hub.source_bundle = running_source_bundle()
 
     @app.get(prefix + "/discovery", endpoint="agent_discovery")
     def discovery():
-        response = jsonify(hub.discovery(prefix))
+        value = hub.discovery(prefix)
+        value["identity_scope"] = "read_stream"
+        host = app.extensions.get("agent_control")
+        value["release"] = metadata(hub, host, read_contract_id=value["contract_id"])
+        value["limits"] = {
+            "stream_rates_hz": [1, 2, 4],
+            "max_subscribers": hub.max_subscribers,
+            "max_frame_bytes": hub.max_frame_bytes,
+            "supplement_interval_s": 1,
+            "vision": "latest retained or cached result only; no capture or inference",
+            "device_state": "shared Console cache; no device reads per subscriber",
+            "source_process_identity": "optional; absent identity leaves continuity unknown",
+            "cached_state": "bounded public fields; check complete, omitted, and data_gaps",
+        }
+        if host is not None:
+            value["control"] = {
+                "version": 6,
+                "phase": 8,
+                "endpoint": prefix + "/control",
+                "contract_url": prefix + "/control/contract",
+                "commands_enabled": host.commands_enabled,
+                "physical_commands_enabled": host.physical_commands_enabled,
+                "identity_scope": "command_control",
+                "command_boot_id": host.authority().boot_id,
+                "command_contract_id": value["release"]["command_contract_id"],
+                "stop_url": prefix + "/control/stop",
+                "stop_history_url": prefix + "/control/stops",
+                "stop_enabled": host.stop_enabled,
+                "furnace_control_enabled": host.furnace_control_enabled,
+                "equipment_mode": host.equipment_mode,
+                "transport": "console-network",
+                "command_catalog_url": prefix + "/control/commands/catalog",
+            }
+        response = jsonify(value)
         response.headers["Cache-Control"] = "no-store"
         return response
 

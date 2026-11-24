@@ -16,6 +16,8 @@ from .stream import BroadcastHub
 class Simulation:
     def __init__(self, source):
         self.source = source
+        self.commands = lambda: []
+        self.command_observations = lambda: {}
         self.tracker = SampleTracker.memory()
         self.seed()
         self.hub = BroadcastHub(self, server_release="local-simulation")
@@ -67,8 +69,9 @@ class Simulation:
                     },
                 },
                 "furnace": {**common, "values": {"pv_c": raw["temperature"]["value"]}},
+                **self.command_observations(),
             },
-            "operations": {"items": [], "available": False},
+            "operations": {"items": self.commands(), "available": True},
         }
 
     def samples(self, **kwargs):

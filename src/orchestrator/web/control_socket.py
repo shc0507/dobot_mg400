@@ -3,8 +3,9 @@
 Chrome opens at most 6 HTTP/1.1 connections to one host. The Motion workspace keeps 3
 of them for camera streams, so control requests can wait behind polls. A WebSocket
 does not use that pool. The page sends stage holds, arm keys and stops here as
-``{"seq", "path", "body"}``. Each message runs the same POST route in-process, with
-the page identity from the handshake. The reply is ``{"seq", "status", "body", "t"}``,
+``{"seq", "path", "body", "control_epoch"}``. Each message runs the same POST route,
+with credentials from the handshake and authority checked again. The reply is
+``{"seq", "status", "body", "t"}``,
 where ``t`` is the server monotonic time when the message arrived. HTTP stays the
 fallback, and the page also sends every stop over HTTP.
 
@@ -36,7 +37,7 @@ from mg400.websocket import (
 # Only control requests. Every other request stays on HTTP.
 ROUTES = re.compile(
     r"/api/(?:console/(?:ws/motion/(?:keys|stage/hold|stage/release)"
-    r"|stop/[a-z][a-z0-9-]{0,31})|dashboard/(?:motion|heat|gas))"
+    r"|stop/[a-z][a-z0-9-]{0,31})|dashboard/(?:motion|heat|gas)|agent/control/stop)"
 )
 MAX_SOCKETS = 32
 MAX_PENDING = 8
@@ -141,6 +142,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.server.discharge()
 
     def _session(self, page):
+        self.credential_headers = {
+            name: self.headers[name]
+            for name in ("Cookie", "Authorization", "Origin", "Host", "X-Forwarded-Proto")
+            if name in self.headers
+        }
         self.connection.settimeout(IDLE_S)
         connection = Connection(self.connection, self.rfile, self.wfile)
         self.server.track(connection)
@@ -172,6 +178,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
     def _message(self, connection, page, text, slots):
+        from orchestrator.agent_connect.access import is_stop
+
         received = time.monotonic()
         try:
             message = json.loads(text)
@@ -181,29 +189,61 @@ class _Handler(BaseHTTPRequestHandler):
         if type(seq) is not int or not 0 <= seq < 2**53:
             raise ProtocolError(1007, "Send JSON objects with a whole-number seq.")
         path, body = message.get("path"), message.get("body")
+        epoch = message.get("control_epoch")
+        stop_id = message.get("stop_request_id")
+        if not isinstance(stop_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", stop_id
+        ):
+            stop_id = None
+        emergency = isinstance(path, str) and is_stop(path, body)
+        if emergency:
+            epoch = None
         if not isinstance(path, str) or not ROUTES.fullmatch(path):
             self._reply(connection, seq, 404, {"error": "Send this request over HTTP."}, received)
         elif not isinstance(body, dict):
             self._reply(connection, seq, 400, {"error": "Expected a JSON object."}, received)
-        elif not slots.acquire(blocking=False):
+        elif epoch is not None and (not isinstance(epoch, str) or len(epoch) > 256):
+            self._reply(
+                connection, seq, 400, {"error": "Send the current control version."}, received
+            )
+        elif not emergency and not slots.acquire(blocking=False):
             self._reply(connection, seq, 503, {"error": "Too many requests wait."}, received)
         else:
             # A slow request must never delay the next one, for example a stop.
             threading.Thread(
                 target=self._run,
-                args=(connection, page, seq, path, body, received, slots),
+                args=(
+                    connection,
+                    page,
+                    seq,
+                    path,
+                    body,
+                    received,
+                    None if emergency else slots,
+                    epoch,
+                    stop_id,
+                ),
                 name="console-socket-request",
                 daemon=True,
             ).start()
 
-    def _run(self, connection, page, seq, path, body, received, slots):
+    def _run(self, connection, page, seq, path, body, received, slots, epoch, stop_id=None):
         try:
-            status, data = self.server.call(page, path, body, self.client_address[0])
+            status, data = self.server.call(
+                page,
+                path,
+                body,
+                self.client_address[0],
+                credential_headers=self.credential_headers,
+                epoch=epoch,
+                stop_id=stop_id,
+            )
         except Exception:
             log.exception("Console socket request failed")
             status, data = 500, {"error": "The console failed."}
         finally:
-            slots.release()
+            if slots is not None:
+                slots.release()
         self._reply(connection, seq, status, data, received)
 
     @staticmethod
@@ -254,14 +294,20 @@ class _Server(ThreadingHTTPServer):
         for connection in connections:
             connection.abort()
 
-    def call(self, page, path, body, address):
+    def call(self, page, path, body, address, *, credential_headers=None, epoch=None, stop_id=None):
         """Run one POST route of the app, as the HTTP client of this page would."""
+        headers = {"X-MG400-Client": page}
+        headers.update(credential_headers or {})
+        if epoch is not None:
+            headers["X-MG400-Control-Epoch"] = epoch
+        if stop_id is not None:
+            headers["X-MG400-Stop-ID"] = stop_id
         builder = EnvironBuilder(
             path=self.prefix + path,
             method="POST",
             json=body,
-            headers={"X-MG400-Client": page},
-            environ_base={"REMOTE_ADDR": address},
+            headers=headers,
+            environ_base={"REMOTE_ADDR": address, "mg400.transport": "websocket"},
         )
         try:
             environ = builder.get_environ()

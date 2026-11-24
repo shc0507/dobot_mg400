@@ -196,13 +196,14 @@ def test_transfer_requires_calibrated_fresh_insert(rig, override):
 @pytest.mark.parametrize("target", ["out_stage", "microscope"])
 def test_stage_targets_move_bottom_then_top_without_insert(rig, target):
     manager, adapter = rig
+    adapter.values["insert"] = 10.0
     manager.start_stage(PAGE, target)
     assert finish(manager)["status"] == "completed"
     assert [(move["motor"], move["position"]) for move in adapter.moves] == [
         ("bottom", 5),
         ("top", 6),
     ]
-    assert adapter.values["insert"] == 0
+    assert adapter.values["insert"] == 10
 
 
 @pytest.mark.parametrize(
@@ -214,22 +215,34 @@ def test_stage_targets_move_bottom_then_top_without_insert(rig, target):
         (0.0, {"positioning_ready": False}),
     ],
 )
-def test_xy_moves_require_insert_fully_out(rig, insert, override):
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("stage", [("bottom", 5), ("top", 6)]),
+        ("coordinates", [("bottom", 5), ("top", 6)]),
+        ("jog_top", [("top", 2.1)]),
+        ("jog_bottom", [("bottom", 2.9)]),
+    ],
+)
+def test_xy_moves_ignore_insert_position_and_readiness(rig, insert, override, kind, expected):
     manager, adapter = rig
     adapter.values["insert"] = insert
     adapter.overrides["insert"] = override
     reference = manager.state(PAGE)["stage_reference"]
-    assert reference["ready_targets"] == {"out_stage": False, "microscope": False}
-    assert reference["message"].startswith("Extract Sample first")
-    for start in (
-        lambda: manager.start_stage(PAGE, "out_stage"),
-        lambda: manager.start_coordinates(PAGE, {"x": 6, "y": 5}),
-        lambda: manager.jog(PAGE, "top", "ccw"),
-        lambda: manager.jog(PAGE, "bottom", "cw"),
-    ):
-        with pytest.raises(ValueError, match="Extract Sample first"):
-            start()
-    assert adapter.moves == []
+    assert reference["ready_targets"] == {"out_stage": True, "microscope": True}
+    assert reference["ready"] is True
+    assert reference["message"] == ""
+    if kind == "stage":
+        manager.start_stage(PAGE, "out_stage")
+    elif kind == "coordinates":
+        manager.start_coordinates(PAGE, {"x": 6, "y": 5})
+    elif kind == "jog_top":
+        manager.jog(PAGE, "top", "ccw")
+    else:
+        manager.jog(PAGE, "bottom", "cw")
+    assert finish(manager)["status"] == "completed"
+    assert [(move["motor"], move["position"]) for move in adapter.moves] == expected
+    assert adapter.values["insert"] == insert
 
 
 def test_xy_already_at_target_does_not_need_insert_out(rig):
@@ -242,29 +255,28 @@ def test_xy_already_at_target_does_not_need_insert_out(rig):
     assert [(move["motor"], move["position"]) for move in adapter.moves] == [("insert", 8)]
 
 
-def test_named_position_from_inserted_extracts_before_xy(rig):
+def test_named_position_from_inserted_moves_bottom_top_insert_directly(rig):
     manager, adapter = rig
     adapter.values["insert"] = 10.0
     manager.start_position(PAGE, "Pickup")
     result = finish(manager)
     assert result["status"] == "completed"
-    assert result["completed_axes"] == result["total_axes"] == 4
+    assert result["completed_axes"] == result["total_axes"] == 3
     assert [(move["motor"], move["position"]) for move in adapter.moves] == [
-        ("insert", 0),
         ("bottom", 5),
         ("top", 6),
         ("insert", 8),
     ]
 
 
-def test_insert_moved_during_sequence_stops_before_next_xy_axis(rig):
+def test_insert_coordinate_change_does_not_block_next_xy_axis(rig):
     manager, adapter = rig
     adapter.after_complete = lambda: adapter.values.update(insert=3.0)
     manager.start_coordinates(PAGE, {"x": 6, "y": 5})
     result = finish(manager)
-    assert result["status"] == "failed"
-    assert result["message"].startswith("Extract Sample first")
-    assert [move["motor"] for move in adapter.moves] == ["bottom"]
+    assert result["status"] == "completed"
+    assert [move["motor"] for move in adapter.moves] == ["bottom", "top"]
+    assert adapter.values["insert"] == 3
 
 
 def test_stage_record_is_draft_only_until_save_and_survives_restart(rig):
@@ -374,8 +386,7 @@ def test_coordinate_targets_use_shared_sequence_without_profiles(
     manager, adapter = rig
     manager.store.delete(manager.store.selection())
     for motor in adapter.values:
-        # X/Y targets read Insert to confirm that it is fully out.
-        if motor not in dict(expected) and not (motor == "insert" and "x" in target):
+        if motor not in dict(expected):
             adapter.overrides[motor] = {"positioning_ready": False, "encoder": "unavailable"}
 
     def no_profiles(*args):
@@ -520,6 +531,7 @@ def test_cleanup_does_not_stop_new_device_lease_holder(rig, lease_lost):
 )
 def test_named_motion_rejects_unready_stale_faulted_or_out_of_range_axis(rig, override):
     manager, adapter = rig
+    adapter.values["insert"] = 10.0
     adapter.overrides["top"] = override
     with pytest.raises(ValueError):
         manager.start_position(PAGE, "Pickup")
@@ -669,6 +681,24 @@ def test_jog_uses_fixed_small_rotations(rig):
     assert finish(manager)["status"] == "completed"
     assert adapter.values["insert"] == pytest.approx(0.1)
     assert len(adapter.moves) == 1
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"telemetry_fresh": False},
+        {"encoder": "unavailable"},
+        {"fault": "tracking"},
+        {"available": False},
+    ],
+)
+def test_xy_jog_requires_fresh_healthy_available_axis(rig, override):
+    manager, adapter = rig
+    adapter.values["insert"] = 10.0
+    adapter.overrides["top"] = override
+    with pytest.raises(ValueError, match="fresh, idle encoder"):
+        manager.jog(PAGE, "top", "ccw")
+    assert adapter.moves == []
 
 
 def test_busy_worker_rejects_other_operations(rig):
@@ -853,6 +883,7 @@ def test_motion_position_rejects_invalid_payloads_without_commands(motion_client
 )
 def test_motion_position_rejects_unready_targets_before_any_axis(motion_client, rig, override):
     manager, adapter = rig
+    adapter.values["insert"] = 10.0
     adapter.overrides["top"] = override
     response = motion_client.post(
         "/motion/stage/position",

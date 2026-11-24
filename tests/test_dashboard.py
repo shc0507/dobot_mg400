@@ -149,9 +149,10 @@ def test_exact_public_shell_and_assets_need_no_token(rig):
 
 
 @pytest.mark.parametrize("action", ["motion", "heat", "gas", "hold"])
-def test_safety_routes_require_json_identity_and_exact_confirmation(rig, action):
+def test_safety_routes_require_json_and_exact_confirmation(rig, action):
     url = "/lab/api/dashboard/" + action
-    assert rig.client.post(url, json={}).status_code == 400
+    if action != "motion":
+        assert rig.client.post(url, json={}).status_code == 400
     headers = {"X-MG400-Client": "operator", "Content-Type": "application/json"}
     for body in ("[]", '{"confirmed":true,"confirmed":false}', '{"confirmed":NaN}'):
         assert rig.client.post(url, data=body, headers=headers).status_code == 400
@@ -171,6 +172,14 @@ def test_safety_routes_require_json_identity_and_exact_confirmation(rig, action)
             assert post(rig, action, body).status_code == 400
     assert not report(rig)["operations"]
     assert all(not device.calls for device in rig.devices.values())
+
+
+def test_motion_stop_accepts_a_missing_identity(rig):
+    response = rig.client.post("/lab/api/dashboard/motion", json={})
+    assert response.status_code == 202
+    identity = response.json["operation_id"]
+    wait_for(lambda: operation(rig, identity)["done"])
+    assert rig.devices["stage"].stop_count >= 1
 
 
 def test_state_is_cached_allowlisted_and_redacts_private_data(rig):

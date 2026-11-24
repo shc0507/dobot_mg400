@@ -10,31 +10,114 @@
 <body data-mode="live"><main>
   <header class="page-header">
     <div><p class="eyebrow">AI CHEMISTRY CONSOLE</p><h1>Agent Portal</h1></div>
-    <div class="header-actions"><span id="portal-mode" class="status-pill live-badge">Live · Read only</span><button id="theme-toggle" type="button">Dark mode</button></div>
+    <div class="header-actions"><span id="portal-mode" class="status-pill live-badge">Live equipment</span><button id="theme-toggle" type="button">Dark mode</button></div>
   </header>
-  <div class="portal-mode-row"><p class="intro">One agent connection. See the data Olares sends, as it arrives.</p><label class="test-toggle"><input type="checkbox" id="enable-tests"> Enable simulation tests</label></div>
+  <p class="intro">Give the agent an instruction, or inspect and send commands yourself.</p>
+  <nav class="workspace-tabs" role="tablist" aria-label="Portal workspace">
+    <button type="button" id="tab-agent" role="tab" aria-selected="true" aria-controls="agent-chat-view" data-workspace="agent">Agent</button>
+    <button type="button" id="tab-manual" role="tab" aria-selected="false" aria-controls="manual-testing" tabindex="-1" data-workspace="manual">Manual testing</button>
+  </nav>
+  <details class="card disclosure agent-approval" id="agent-approval">
+    <summary>Agent connection and control <span id="agent-control-role" class="status-pill">Use an invitation</span></summary>
+    <div class="disclosure-content">
+      <div class="card-heading"><h2 id="agent-control-target">Olares test Console</h2><a id="agent-owner-link" href="http://100.64.0.1:8082/lab/#agent-connect" target="_blank" rel="noopener">Open Console ↗</a></div>
+      <p class="section-note">Use an invitation, connect, then grant operator control from the Console. Clear agent instructions execute immediately while control is granted.</p>
+      <p id="agent-control-error" class="live-error" role="alert" hidden></p>
+      <p id="agent-control-watchdog" class="live-error" role="alert" hidden></p>
+      <form id="agent-pair-form" class="agent-pair-form"><label>Agent name<input id="agent-pair-name" value="My test agent" maxlength="80" autocomplete="off" required></label><label>Single-use invitation<input id="agent-pair-invitation" type="text" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="9" required></label><button type="submit" id="agent-pair">Use invitation</button></form>
+      <div class="agent-control-status"><strong id="agent-control-name">No agent registered</strong><span id="agent-control-session" class="section-note">The data stream works without an operator grant.</span></div>
+      <div class="stream-actions"><button type="button" id="agent-control-connect" disabled>Connect</button><button type="button" id="agent-control-disconnect" disabled>Disconnect</button><button type="button" id="agent-control-release" disabled>Release control</button></div>
+    </div>
+  </details>
+  <section id="agent-stop-panel" class="card agent-stop-panel" aria-label="Device Stop and history"></section>
+  <section id="agent-chat-view" role="tabpanel" aria-labelledby="tab-agent" tabindex="0">
+    <div class="chat-layout">
+      <section class="card chat-card" aria-label="Conversation with the agent">
+        <div class="card-heading"><div><p class="eyebrow">AGENT</p><h2>What would you like to do?</h2></div><span id="chat-source" class="status-pill">Olares · Live equipment</span></div>
+        <p class="section-note">Ask about readings or give a clear instruction. The agent asks when a target or unit is missing.</p>
+        <p id="chat-error" class="live-error" role="alert" hidden></p>
+        <div id="chat-messages" class="chat-messages" role="log" aria-label="Agent conversation" aria-live="polite" aria-relevant="additions text"></div>
+        <details id="chat-process" class="chat-process" open>
+          <summary>Agent activity <span id="chat-phase" class="status-pill">No activity yet</span></summary>
+          <p id="chat-events-empty" class="section-note">Progress, outgoing commands, and results appear here when you send an instruction.</p>
+          <ol id="chat-events" class="chat-events" aria-label="Agent activity history"></ol>
+        </details>
+        <div id="chat-activity" class="chat-activity" role="status">Set up the model to begin.</div>
+        <form id="chat-form" class="chat-composer">
+          <label for="chat-message">Your instruction</label>
+          <textarea id="chat-message" rows="3" maxlength="4000" placeholder="For example: What are the current stage coordinates?" required></textarea>
+          <div class="chat-composer-actions"><span class="section-note">Enter to send · Shift + Enter for a new line</span><button type="button" id="chat-cancel" disabled>Cancel agent task</button><button type="submit" id="chat-send" disabled>Send instruction</button></div>
+        </form>
+      </section>
+      <aside class="chat-sidebar" aria-label="Agent setup and examples">
+        <details id="chat-model-settings" class="card disclosure" open>
+          <summary>OpenAI model <span id="chat-model-status" class="status-pill">Not configured</span></summary>
+          <div class="disclosure-content">
+            <form id="chat-model-form">
+              <label for="chat-model">Model</label><input id="chat-model" type="text" autocomplete="off" spellcheck="false" required>
+              <label for="chat-api-key">API key</label><input id="chat-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter key on this PC">
+              <p class="section-note">The key stays in the local portal process. Leave it blank to keep the current key.</p>
+              <button type="submit" id="chat-model-save">Use model</button>
+            </form>
+            <p class="section-note chat-data-note">Your instructions and relevant Console state are sent to OpenAI. Camera video and Console credentials are not included. Keep API keys out of chat.</p>
+          </div>
+        </details>
+        <section class="card chat-examples" aria-label="Example instructions">
+          <h2>Try an instruction</h2>
+          <button type="button" data-chat-example="What are the current stage coordinates?">Read stage coordinates</button>
+          <button type="button" data-chat-example="Move the X stage to 2 rotations.">Move X to 2 rotations</button>
+          <button type="button" data-chat-example="Move the robot up by 1.25 mm at 1% speed.">Move the robot up 1.25 mm</button>
+          <p class="section-note">Examples fill the message box. Select Send instruction to run them.</p>
+          <button type="button" id="chat-open-manual" class="chat-manual-link">Inspect data and manual controls →</button>
+        </section>
+      </aside>
+    </div>
+  </section>
+  <section id="manual-testing" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
+  <div class="portal-workspace">
   <section id="live-view" aria-label="Live Olares data stream">
     <section class="card live-connection">
-      <div class="card-heading"><div><h2>Olares data stream</h2><a href="http://100.64.0.1:8082/lab/#agent-connect" target="_blank" rel="noopener">100.64.0.1:8082 ↗</a></div><div class="live-controls"><label>Updates per second<select id="live-rate"><option value="1">1 Hz</option><option value="2" selected>2 Hz</option><option value="4">4 Hz</option></select></label><button id="live-connect" type="button">Disconnect</button></div></div>
+      <div class="card-heading"><div><p class="eyebrow">RECEIVE</p><h2>Device state</h2><a href="http://100.64.0.1:8082/lab/#agent-connect" target="_blank" rel="noopener">100.64.0.1:8082 ↗</a></div><div class="live-controls"><label>Updates per second<select id="live-rate"><option value="1">1 Hz</option><option value="2" selected>2 Hz</option><option value="4">4 Hz</option></select></label><button id="live-connect" type="button">Disconnect</button></div></div>
       <div class="live-status-row"><span id="live-status" class="status-pill" role="status">Connecting to Olares…</span><span id="live-metrics">Waiting for the first frame.</span></div>
       <p id="live-error" class="live-error" role="alert" hidden></p>
     </section>
-    <div class="section-head live-section-head"><h2>Devices</h2><span class="section-note">Values keep their source quality. “Outdated” means the reading is no longer current.</span></div>
+    <p class="section-note receive-note">Outdated readings are no longer current. Inspect a card for every received field and unit.</p>
     <p id="live-empty" class="empty-state">Connect LarePass to receive data from Olares.</p>
     <section id="live-devices" class="live-device-grid" aria-label="All received device data"></section>
-    <div class="two-column live-groups">
+    <details class="card disclosure receive-records"><summary>Chips and operations</summary><div class="disclosure-content two-column live-groups">
       <section class="card"><div class="card-heading"><h2>Active samples</h2><span id="live-sample-count" class="status-pill">Not received</span></div><p class="section-note">Chips with work in progress. Missing locations remain unknown.</p><div id="live-samples"></div></section>
       <section class="card"><div class="card-heading"><h2>Operations</h2><span id="live-operation-count" class="status-pill">Not received</span></div><p class="section-note">Current runs and Console operations.</p><div id="live-operations"></div></section>
-    </div>
-    <section class="card live-events-card"><div class="card-heading"><h2>Recent events</h2><span class="section-note">Last 100 received events</span></div><div id="live-events" class="live-events"><p class="empty-state">No events received yet.</p></div></section>
+    </div></details>
+    <details class="card disclosure live-events-card"><summary>Recent events</summary><div class="disclosure-content"><p class="section-note">Last 100 received events</p><div id="live-events" class="live-events"><p class="empty-state">No events received yet.</p></div></div></details>
     <details class="card disclosure live-json"><summary>Full state JSON</summary><div class="disclosure-content"><p class="section-note">The complete last state frame, including all device fields, sample records, operations and message metadata.</p><button id="live-download" type="button" disabled>Download received data</button><pre id="live-raw">Waiting for a state frame.</pre></div></details>
     <details class="card disclosure live-json"><summary>Connection and data agreement</summary><div class="disclosure-content"><dl id="live-agreement"></dl><pre id="live-last-message">Waiting for a message.</pre></div></details>
   </section>
+      <section id="agent-commands" class="card agent-commands" aria-label="Agent commands">
+        <div class="card-heading"><div><p class="eyebrow">SEND</p><h2>Agent request</h2></div><span id="agent-command-mode" class="status-pill">Physical commands</span></div>
+        <p id="agent-command-note" class="section-note">Connect this agent, then grant operator control from the Console.</p>
+        <form id="agent-command-form">
+          <div class="command-selectors"><div><label for="agent-command-device">Device</label><select id="agent-command-device"></select></div><div><label for="agent-command-action">Action</label><select id="agent-command-action"></select></div></div>
+          <p id="agent-command-description" class="section-note">No command catalog received.</p>
+          <div id="agent-command-fields"></div>
+          <div id="agent-command-target" class="target-preview" hidden></div>
+          <p id="agent-command-validation" class="section-note" role="status"></p>
+          <details class="request-inspector"><summary>Request preview</summary><p class="section-note">The request ID is generated on Send. All other fields below are the current request values.</p><pre id="agent-command-request">No action selected.</pre></details>
+          <details class="command-schema"><summary>Advanced JSON and parameter schema</summary><label for="agent-command-params">Parameters (JSON)</label><textarea id="agent-command-params" rows="5" spellcheck="false">{}</textarea><pre id="agent-command-schema">{}</pre><label for="agent-command-preconditions">Preconditions (JSON, optional)</label><textarea id="agent-command-preconditions" rows="3" spellcheck="false">{}</textarea></details>
+          <div class="stream-actions"><button type="submit" id="agent-command-send" disabled>Send command</button><button type="button" id="agent-command-cancel" disabled>Cancel my operation</button><button type="button" id="agent-command-refresh">Refresh history</button></div>
+        </form>
+        <p id="agent-command-error" class="live-error" role="alert" hidden></p>
+        <p id="agent-command-progress" role="status">No commands sent.</p>
+        <details class="command-history"><summary>Recent commands and results</summary><div id="agent-command-history"></div></details>
+        <details class="command-unavailable"><summary id="agent-command-unavailable-count">Unavailable actions</summary><ul id="agent-command-unavailable"></ul></details>
+      </section>
+  </div>
+  <details class="card disclosure optional-tests"><summary>Optional simulation tests</summary><div class="disclosure-content"><label class="test-toggle"><input type="checkbox" id="enable-tests"> Enable simulation tests</label>
+      <div class="agent-simulated-test"><div><span class="status-pill">SIMULATED</span><h3>Handover test</h3><p class="section-note">Run a step, then take control in the Console. The agent must lose permission to run later steps.</p></div><div><p id="agent-control-test" role="status">No test running.</p><div class="stream-actions"><button type="button" id="agent-control-start" disabled>Start test</button><button type="button" id="agent-control-step" disabled>Run next step</button><button type="button" id="agent-control-stop">Stop test</button></div></div></div>
   <section id="advanced-tests" hidden aria-label="Optional simulated agent tests">
   <p class="section-note">Simulation only. The live Olares connection is paused. Use these tests when you need to compare two readers or check a data format change.</p>
   <nav class="portal-tabs" aria-label="Test pages"><button type="button" data-panel="stream-tests" aria-pressed="true">Samples &amp; stream</button><button type="button" data-panel="format-tests" aria-pressed="false">Data format tests</button></nav>
   <section id="stream-tests" aria-label="Sample tracking and message stream">
-    <p class="section-note">Two independent connections receive the same simulated Console data. Reports change chip records only. No equipment moves.</p>
+    <p class="section-note">These readings come from the simulated command controller. Reports change chip records only. No equipment moves.</p>
     <p id="stream-error" role="alert" hidden></p>
     <div class="test-controls">
       <section class="card">
@@ -72,8 +155,9 @@ chip-002</textarea></label></div>
     <section class="two-column technical"><details class="card disclosure"><summary>Received message JSON</summary><div class="disclosure-content"><pre id="stream-raw">Waiting for the stream.</pre></div></details><details class="card disclosure"><summary>Connection activity</summary><div class="disclosure-content"><div id="stream-activity"></div></div></details></section>
   </section>
   <section id="format-tests" hidden>
+  <p class="section-note">Separate format fixtures. These example values do not show the simulated command controller and do not change when commands run.</p>
   <ol class="flow" aria-label="How the test works">
-    <li><span class="step-number" aria-hidden="true">1</span><div><strong>Simulated Console</strong><p>Sends changing positions and temperatures.</p></div></li>
+    <li><span class="step-number" aria-hidden="true">1</span><div><strong>Format fixture</strong><p>Sends example positions and temperatures.</p></div></li>
     <li><span class="step-number" aria-hidden="true">2</span><div><strong>Two agent versions</strong><p>Read the messages using different scripts.</p></div></li>
     <li><span class="step-number" aria-hidden="true">3</span><div><strong>Compare results</strong><p>See which data each version understands.</p></div></li>
   </ol>
@@ -81,7 +165,7 @@ chip-002</textarea></label></div>
   <p id="error" role="alert" hidden></p>
   <section class="test-controls" aria-label="Simulation controls">
     <article class="card source-card">
-      <div class="card-heading"><h2>Simulated Console</h2><span id="source-status" class="status-pill" role="status">Waiting for readings</span></div>
+      <div class="card-heading"><h2>Format fixture</h2><span id="source-status" class="status-pill" role="status">Waiting for readings</span></div>
       <p class="section-note">An outdated reading is older than 3 seconds.</p>
       <div class="control-grid">
         <div class="control-item"><button type="button" data-action="pause" aria-describedby="pause-help">Pause updates</button><p id="pause-help">Stop new samples. Existing readings age.</p></div>
@@ -115,6 +199,8 @@ chip-002</textarea></label></div>
   </section>
   </section>
   </section>
-  <footer>This portal receives data only. It does not control equipment. Simulation tests stay separate from Olares.</footer>
-</main><script src="/assets/portal.js"></script><script src="/assets/stream-portal.js"></script><script src="/assets/live-portal.js"></script></body>
+  </div></details>
+  </section>
+  <footer>Live commands operate physical equipment. Simulation uses local simulated equipment.</footer>
+</main><script src="/assets/portal.js"></script><script src="/assets/stream-portal.js"></script><script src="/assets/portal-visuals.js"></script><script src="/assets/live-portal.js"></script><script src="/assets/command-form.js"></script><script src="/assets/command-portal.js"></script><script src="/assets/stop-panel.js"></script><script src="/assets/control-portal.js"></script><script src="/assets/chat-portal.js"></script></body>
 </html>

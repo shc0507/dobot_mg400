@@ -61,6 +61,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | 带新 `recording_id` 的 `start_recording` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
+| `vision locate markers\|chips CAMERA TOUCH_Z` | 对腕部相机发送 `read_markers` 或 `detect`，带当前法兰位姿和 `touch_z_mm`。每个标记或检测结果得到 `robot_mm`。`TOUCH_Z` 是工具尖端接触它们下方表面时的法兰 Z。机械臂须保持静止 |
 
 只在操作员把 50x 物镜在避让位置对焦后，才运行 `microscope zero`。不要用它从失败的命令中恢复：在其他高度置零会移动对焦限位。
 

@@ -1,12 +1,18 @@
 import importlib.util
 import json
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
 import pytest
+from PIL import Image
 
 from vision import wrist_camera
+from vision.service import VisionService, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -137,6 +143,92 @@ def test_pixels_map_to_arm_coordinates_on_a_surface_and_from_2_views():
     assert wrist_camera.locate(model, pixels, poses)[2] is None
     with pytest.raises(ValueError, match="no camera height"):
         wrist_camera.surface_points(model, pixels[:1], poses[0], -70.0)
+
+
+FIXED = "/dev/v4l/by-path/fake-camera-1"
+WRIST = "/dev/v4l/by-id/usb-HDMI_USB_Camera_2023121018-video-index0"
+POSE = [100.0, -230.0, 120.0, 0.0]
+
+
+@pytest.fixture
+def wrist_service(tmp_path):
+    model = {**simulated_model(), "image_size": [3840, 2160]}
+    # 1 marker at arm (150, -180), on a surface that the tip touches at flange z -70.
+    pixel = simulated_pixel(model, np.array([150.0, -180.0, -105.0]), POSE)
+    frames = SimpleNamespace(
+        camera_count=2,
+        configuration=SimpleNamespace(devices=(FIXED, WRIST)),
+        read=Mock(return_value=Image.new("RGB", (3840, 2160))),
+    )
+    service = VisionService(
+        demo=True,
+        frames=frames,
+        localizer_factory=lambda: SimpleNamespace(
+            predict=lambda image: (image, {"detections": [{"center_xy": pixel.tolist()}]})
+        ),
+        marker_detector=lambda _image: [{"id": 18, "center_px": pixel.tolist()}],
+        wrist_model=lambda: model,
+        calibration_directory=tmp_path,
+    )
+    service.start()
+    yield service
+    service.close(wait_s=1)
+
+
+def run_command(service, **body):
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "wrist-test"}
+    assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    response = client.post("/api/command", headers=headers, json=body)
+    if response.status_code != 202:
+        return response.status_code, response.json
+    deadline = time.monotonic() + 5
+    while service.snapshot()["busy"] and time.monotonic() < deadline:
+        threading.Event().wait(0.001)
+    receipt = service.snapshot()["last_command"]
+    return receipt["result"], receipt.get("output")
+
+
+def test_marker_command_gives_arm_coordinates_for_the_wrist_camera(wrist_service):
+    body = {"action": "read_markers", "camera": 2}
+    result, output = run_command(wrist_service, **body, flange_mm=POSE, touch_z_mm=-70.0)
+    assert result == "ok" and output["camera_device"] == WRIST
+    assert output["markers"][0]["id"] == 18 and output["calibrated"] is True
+    assert output["markers"][0]["robot_mm"] == pytest.approx({"x": 150.0, "y": -180.0}, abs=0.01)
+    result, output = run_command(wrist_service, **body)
+    assert result == "ok" and "robot_mm" not in output["markers"][0]
+    assert output["calibrated"] is False
+
+
+def test_detect_command_gives_arm_coordinates_for_the_wrist_camera(wrist_service):
+    body = {"action": "detect", "camera": 2}
+    result, output = run_command(wrist_service, **body, flange_mm=POSE, touch_z_mm=-70.0)
+    assert result == "ok" and output["calibrated"] is True
+    assert output["detections"][0]["robot_mm"] == pytest.approx({"x": 150.0, "y": -180.0}, abs=0.01)
+    result, output = run_command(wrist_service, **body)
+    assert result == "ok" and "robot_mm" not in output["detections"][0]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"camera": 1, "flange_mm": POSE, "touch_z_mm": -70.0},  # not the wrist camera
+        {"camera": 2, "flange_mm": POSE},
+        {"camera": 2, "touch_z_mm": -70.0},
+        {"camera": 2, "flange_mm": POSE[:3], "touch_z_mm": -70.0},
+        {"camera": 2, "flange_mm": POSE, "touch_z_mm": "low"},
+    ],
+)
+@pytest.mark.parametrize("action", ["read_markers", "detect"])
+def test_commands_refuse_incomplete_arm_arguments(wrist_service, arguments, action):
+    status, body = run_command(wrist_service, action=action, **arguments)
+    assert status == 400 and "Arm coordinates need" in body["error"]
+
+
+def test_marker_command_fails_when_the_surface_is_above_the_lens(wrist_service):
+    body = {"action": "read_markers", "camera": 2, "flange_mm": POSE, "touch_z_mm": 500.0}
+    result, _ = run_command(wrist_service, **body)
+    assert result != "ok"
 
 
 def test_a_new_fit_keeps_the_stored_camera_height(tmp_path, monkeypatch, capsys):

@@ -174,6 +174,10 @@ def _parser():
         elif device == "vision":
             for name in ("detect", "markers", "labels"):
                 verb(verbs, name, sends=True).add_argument("camera", type=int)
+            locate = verb(verbs, "locate", sends=True)
+            locate.add_argument("what", choices=["markers", "chips"])
+            locate.add_argument("camera", type=int)
+            locate.add_argument("touch_z", type=float)
 
     verbs = group("camera")
     still = verb(verbs, "still")
@@ -202,23 +206,29 @@ def _parser():
     return parser
 
 
-def _robot_pose(agent):
-    """Return the robot state with a known ``actual`` pose, or a failure dict."""
+def robot_state(agent):
+    """Return (robot state with a known ``actual`` pose, None), or (None, failure)."""
     # The pose is unknown while the arm moves and until the next feedback sample.
     deadline = agent.clock() + POSE_WAIT_S
     while True:
         current = agent.state("robot")
         if not current.get("ok"):
-            return current
+            return None, current
         state = current.get("state") or {}
         actual = state.get("actual")
         if isinstance(actual, list) and len(actual) == 4 and None not in actual:
-            return state
+            return state, None
         if agent.clock() >= deadline:
-            return failure(
+            return None, failure(
                 "busy", "The current pose is unknown while the arm moves.", device="robot"
             )
         agent.sleep(0.1)
+
+
+def current_pose(agent):
+    """Return (flange pose, None), or (None, failure) when the robot gives no pose."""
+    state, failed = robot_state(agent)
+    return (None, failed) if failed else (state["actual"], None)
 
 
 def _collision(agent, state, target):
@@ -264,9 +274,9 @@ def _shortcut(agent, args):
         if verb == "move":
             target = [args.x, args.y, args.z, args.r]
             if args.relative or not args.no_collision_check:
-                state = _robot_pose(agent)
-                if "actual" not in state:
-                    return state
+                state, failed = robot_state(agent)
+                if failed:
+                    return failed
                 actual = state["actual"]
             if args.relative:
                 target = [a + b for a, b in zip(actual, target, strict=True)]
@@ -350,6 +360,13 @@ def _shortcut(agent, args):
                 params["run_name"] = args.name
             return "start_recording", params
     if group == "vision":
+        if verb == "locate":
+            # The wrist camera moves with the arm: its frame needs the flange pose.
+            actual, failed = current_pose(agent)
+            if failed:
+                return failed
+            params = {"camera": args.camera, "flange_mm": actual, "touch_z_mm": args.touch_z}
+            return ("read_markers" if args.what == "markers" else "detect"), params
         action = {"detect": "detect", "markers": "read_markers", "labels": "read_labels"}[verb]
         return action, {"camera": args.camera}
     raise UsageError(f"Unknown command: {group} {verb}")

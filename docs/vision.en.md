@@ -511,6 +511,41 @@ An incomplete or failed check raises `TrayCheckError`. Inspect `TrayCheckError.r
 In `observe_slots`, the error message names each slot that did not pass, with its failures, missing evidence, and residuals.
 Do not treat incomplete evidence as permission for motion. Normal robot limits, clearance checks, leases, and zone rules still apply.
 
+## Wrist camera calibration
+
+The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays level and turns with J1 only. The tool rotation R does not move the camera.
+
+`config/cameras/wrist.json` stores the calibration for `3840x2160` frames:
+
+- The camera matrix and the 8 distortion coefficients of the OpenCV rational model.
+- The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
+- `arm_lateral_scale`: multiply the reported arm x and y by this factor to get the real position. It applies from X -79 to 41 and from Y -316 to -236.
+- The fit error in pixels.
+
+`vision.wrist_camera.load()` reads the file. No service uses the calibration at this time.
+Calibrate again after a change of the lens focus, the camera mount, or the capture size.
+
+### Calibrate with the printed board
+
+1. Write the board: `uv run python scripts/wrist_camera_calibrate.py board work/wrist-camera/board.pdf`. Print it on A4 at 100%.
+2. Measure the long side of the printed pattern, from edge to edge of the 11 squares. It is 264 mm at 100%.
+3. Attach the print to a stiff backing and put it on the tray table. The board must not move during the run. Do not move the stage during the run.
+4. Park the arm at X -39, Y -236, Z 163.8, within 5 mm. The board must be 160 to 190 mm below the camera. The script checks these 2 conditions and refuses to start if one is not met.
+5. Make sure that the space around the arm is clear. From the start pose, the arm moves from -40 to 80 mm in X, from 0 to -80 mm in Y, and from 0 to -38 mm in Z, at speed 15.
+6. Run `uv run python scripts/wrist_camera_calibrate.py run --board-mm 264` with the measured length. Monitor the arm. `sudo labctl robot stop` stops it.
+7. Commit the new `config/cameras/wrist.json`.
+
+The script takes control of the robot with the session `wrist-calibration`. It records 50 poses, moves the arm back to the start pose, and releases the robot.
+It stores the result only if the fit error is at most 1 pixel.
+It writes the recorded poses and board corners to `work/wrist-camera/run.json`.
+To repeat the fit without motion, run `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`.
+
+### Limits of the wrist calibration
+
+- The board points are in the middle of the image. The left edge and the area where the arm is in view have no points.
+- Each board corner is a free point, so the board does not have to be flat. The measured length gives the scale.
+- The fit uses the Z steps of the arm as true distances.
+
 ## Stop and shutdown
 
 Any client can call `POST api/stop` without holding the lease.

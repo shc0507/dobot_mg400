@@ -226,7 +226,7 @@ def test_explicit_calibration_retains_lower_zero_upper_capture_and_midpoint(stag
     state = transport.motors["bottom"]
     state.position, state.lower_limit, state.upper_limit = 0.5, -0.25, 2
     state.lower_limit_set = state.upper_limit_set = True
-    response = controller.calibrate("bottom", 0.5)
+    response = controller.calibrate("bottom", 0.3)
     assert response["calibration_only_homing"] and not response["lower_home_zero"]
     assert response["auto_calibration"]
     clock.advance(2.5)

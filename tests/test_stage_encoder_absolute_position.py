@@ -238,7 +238,7 @@ def test_target_outside_saved_range_is_rejected_even_if_rounding_would_fit(posit
     assert transport.commands == []
 
 
-@pytest.mark.parametrize("speed", [None, True, "0.25", float("nan"), float("inf"), 0, 0.501])
+@pytest.mark.parametrize("speed", [None, True, "0.25", float("nan"), float("inf"), 0, 0.601])
 def test_invalid_absolute_speed_never_sends_commands(positioned, speed):
     controller, transport, _ = positioned
     with pytest.raises(ValueError):

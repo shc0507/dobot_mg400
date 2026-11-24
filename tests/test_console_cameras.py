@@ -131,7 +131,7 @@ def status(rig):
 
 def test_routes_need_no_token_and_cameras_load_from_the_proxy(rig):
     assert rig.client.get(BASE + "status").status_code == 200
-    # camera1 to camera4 are not relayed: the browser loads them from the proxy.
+    # camera1 to camera5 are not relayed: the browser loads them from the proxy.
     assert rig.client.get(BASE + "stream/camera1").status_code == 404
     assert rig.client.get(BASE + "snapshot/camera1").status_code == 404
     assert rig.client.get(BASE + "stream/camera9").status_code == 404

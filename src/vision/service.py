@@ -322,8 +322,8 @@ class VisionService:
             frames if frames is not None else (DemoSource(fixture_dir) if demo else Go2RTCSource())
         )
         self.camera_count = getattr(self.frames, "camera_count", 4)
-        if type(self.camera_count) is not int or not 0 <= self.camera_count <= 4:
-            raise ValueError("Frame source camera_count must be an integer from 0 through 4.")
+        if type(self.camera_count) is not int or not 0 <= self.camera_count <= 5:
+            raise ValueError("Frame source camera_count must be an integer from 0 through 5.")
         self.weights, self.device, self.gpu_fraction = weights, device, gpu_fraction
         self.fixture_dir = Path(fixture_dir)
         self._factory = localizer_factory

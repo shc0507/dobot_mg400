@@ -56,7 +56,7 @@ The proxy has only these routes:
 | `/lab/` | `127.0.0.1:8772`, with the fixed base path `/lab/` |
 | `/camera/<view>.mp4`, `/camera/<view>.mjpeg`, `/camera/<view>.jpg`, `/camera/<view>.full.jpg`, `/camera/microscope.png`, `/camera/fps.json` | `127.0.0.1:1985`, after removing only `/camera` |
 
-`<view>` is `camera1` to `camera4`. For `/camera/<view>.mp4` and `/camera/<view>.mjpeg`, `<view>` can also be `microscope`.
+`<view>` is `camera1` to `camera5`. For `/camera/<view>.mp4` and `/camera/<view>.mjpeg`, `<view>` can also be `microscope`.
 The proxy redirects the root path `/` to the Lab Console at `/lab/` with `302`. It redirects `/camera` and `/lab` to the same path with a trailing slash with `308`. Other paths return `404`. See the [Lab Console](dashboard.en.md#lab-console).
 The camera routes forward only video streams and single frames. The Cameras workspace of the console uses them.
 The proxy does not forward the robot, stage, thermal, furnace, microscope, or vision services.
@@ -208,9 +208,9 @@ Rename `start-terminal.sh.disabled` to its original name to restore the old term
 
 Lab USB devices use 2 hubs on controller `0000:80:14.0`.
 The original self-powered hub uses USB 2 root port `12` and USB 3 root port `3`.
-It carries `camera1`, the thermal camera, and the other lab devices.
+It carries `camera1`, the thermal camera, and the other lab devices. The wrist camera (`camera5`) is on its USB 3 side.
 The second hub uses USB 2 root port `6` for `camera2`, `camera3`, and `camera4`.
-All 4 USB webcams connect at 480 Mbit/s. Both hubs use the same host controller.
+`camera1` to `camera4` connect at 480 Mbit/s. The wrist camera connects at 5000 Mbit/s. Both hubs use the same host controller.
 
 Keep the Toupcam camera on the original hub's USB 3 side. Never reset the original hub.
 A reset disconnects its motor, furnace, gas, and camera connections together.
@@ -221,7 +221,8 @@ The Angetube Live Camera (`camera1`) reports serial number `HU1234567898`.
 The camera on `12.1.2` sees the stage from above. The camera on `6.4` looks along the Insert rail, with the tray behind it.
 The microscope side camera (`camera3`) uses `6.1` and watches the objective turret.
 The tray camera (`camera4`) uses `6.3`.
-After changing a hub, identify each camera before assigning its path. Keep all 4 list entries to preserve stream numbering.
+The wrist camera (`camera5`) is on the wrist of the robot arm, with its lens down. It reports serial number `2023121018`, so its stable name uses `/dev/v4l/by-id/` and does not change with the port.
+After changing a hub, identify each camera before assigning its path. Keep all 5 list entries to preserve stream numbering.
 go2rtc owns the side camera, and the microscope reads its shared `camera3` stream.
 
 | Device | VID:PID | Stable identity | Hub port | Service |
@@ -235,6 +236,7 @@ go2rtc owns the side camera, and the microscope reads its shared `camera3` strea
 | AC410 Insert rail camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera` |
 | AC410 microscope side camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera`, shared through go2rtc |
 | AC410 tray camera | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0` | `6.3` | `camera` |
+| ELP-USB4KCAM30H-H120 wrist camera | `32e4:3415` | `/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0` | `3.1.4` | `camera` |
 | ToupTek USB 3 camera | `0547:1375` (USB 3), `0547:1376` (USB 2) | Toupcam SDK, no serial number | `3.2.4` | `microscope`, shared with furnace recordings |
 
 Use the full serial paths for controllers.
@@ -263,8 +265,8 @@ Templates do not select device paths in service settings. Keep those paths consi
 
 ## Cameras
 
-Configure 1 to 4 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct USB port paths.
-Stream names follow device order, from `camera1` through `camera4`. Empty settings disable cameras.
+Configure 1 to 5 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct USB port paths. The wrist camera uses its `/dev/v4l/by-id/` name.
+Stream names follow device order, from `camera1` through `camera5`. Empty settings disable cameras.
 Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device.
 The software accepts only the following mode list, based on the AC410 cameras (`camera2` to `camera4`). The selected camera must also advertise the mode:
 
@@ -277,20 +279,20 @@ The software accepts only the following mode list, based on the AC410 cameras (`
 
 Before configuring a replacement camera, query its MJPEG modes with `v4l2-ctl --device <by-path> --list-formats-ext`.
 This command requires the `v4l-utils` package.
-The Angetube Live Camera (`camera1`) supports MJPEG at `3840x2160@30`.
+The Angetube Live Camera (`camera1`) and the wrist camera (`camera5`) support MJPEG at `3840x2160@30`.
 
 With an empty list, ordinary streams use `1280x720@30` and `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 An explicit list overrides these defaults, including the side stream. Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry: when it is set together with `MG400_CAMERA_MODES`, the installer, `labctl`, and the preview service refuse to run.
-The following 4-camera configuration uses the port order in the table above.
-`camera1` uses `3840x2160@30`. The other 3 cameras use `1280x720@30`.
+The following configuration of 5 cameras uses the order in the table above.
+`camera1` uses `3840x2160@30`. The other 4 cameras use `1280x720@30`.
 The side stream `camera3` has the aspect ratio of the `3840x2160` side reference images.
 The stock `uvcvideo` driver lets an AC410 reserve the largest isochronous slot for each mode above `640x480`. A shared USB 2 link then holds only 1 such stream.
 The [USB bandwidth patch](#usb-bandwidth-patch) supports concurrent `1280x720@30` capture settings for all 4 streams. Measure the actual delivered frame rate.
 Before you raise a mode, check the bandwidth with `labctl camera-check` and the kernel log:
 
 ```ini
-MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0
-MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
+MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0,/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0
+MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30,1280x720@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
@@ -320,15 +322,17 @@ Thus the H.265 encoder removes SEI (`-bsf:v filter_units=remove_types=39|40`). T
 NVENC cuts a `3840x2160` frame into 2 slices, and ffmpeg also puts them into 1 packet. Thus a large preview must use go2rtc with the patch `deploy/go2rtc/aggregation-packets.patch`.
 ffmpeg reads and returns the stream through RTSP, which listens only on `127.0.0.1:8554`. If ffmpeg is not installed on the host, the H.264 preview returns 502.
 Single-frame requests to `/camera/<view>.jpg` use the same go2rtc stream, at its configured resolution. They do not switch mode or open another device capture. Some cameras send cut frames first when capture starts. go2rtc with the patch `deploy/go2rtc/v4l2-cut-jpeg.patch` drops frames without a JPEG end marker.
-The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. A camera with a mode above `1280x720` keeps its own mode. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
+The full-resolution still `/camera/<view>.full.jpg` is different: during the still, go2rtc captures only this 1 camera at `4000x3000@15`, and the other views pause. The wrist camera captures at `3840x2160@30`. A camera with a mode above `1280x720` keeps its own mode. It returns 409 while the microscope uses the side stream. It returns 503 if another still does not finish within 45 s. See [Cameras workspace](dashboard.en.md#cameras-workspace).
 
 `camera1` shares the original hub's USB 2 connection with the thermal camera and controllers.
 `camera2`, `camera3`, and `camera4` share the second hub's USB 2 connection.
+`camera5` shares the original hub's USB 3 connection with the Toupcam.
 Large streams can exceed the periodic transfer budget of a shared connection.
 Before simultaneous hardware use, open the required views together during a supervised bandwidth check. Check that several consecutive JPEG images decode completely.
 The tray's approximately 30 mm Micro QR labels need at least 70 pixels across 17 modules.
 At a 1280-pixel image width, a 556 mm tray field provides about 2.3 pixels/mm.
 Keep each camera on its listed USB port. After changing devices or modes, run the installer again, then run `labctl restart camera vision microscope orch`. These services all read the camera modes. If `vision` is disabled, omit `vision` from the command.
+After a stream stop, the wrist camera can refuse the next open, and go2rtc opens a camera again only after a restart. Thus the preview service resets the wrist camera through USB before each go2rtc restart. The reset affects only this 1 camera and does not reset the hub. The udev rule of the camera service lets the service group open its device node under `/dev/bus/usb`.
 After replacing a camera, preserve the original calibration files. Recalibrate its image-coordinate mapping even if the mount stays the same.
 
 Start the camera services:

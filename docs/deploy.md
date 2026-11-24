@@ -470,7 +470,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_PROXY_PORT` | `8080` | 代理端口，范围为 `1024` 到 `65535` |
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
-| `MG400_CAMERA_DEVICES` | 空 | 1 到 4 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
+| `MG400_CAMERA_DEVICES` | 空 | 1 到 5 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
 | `MG400_CAMERA_MODES` | 空 | 每台设备对应 1 个允许的 `WIDTHxHEIGHT@FPS` 模式，顺序与设备相同 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
 | `MG400_VISION_WEIGHTS` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` | 已校验的本地模型权重 |
@@ -481,8 +481,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 按[炉控配置](furnace.md#配置)配置炉温上限和气体映射。
 按[显微镜指南](microscope.md#契约服务)配置设备选择、调焦限位和相机视频流。
 
-摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
-摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
+摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。腕部摄像头使用 `/dev/v4l/by-id/` 下的名称。
+摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera5`。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项。它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。

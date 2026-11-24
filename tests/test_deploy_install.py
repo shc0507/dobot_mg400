@@ -416,10 +416,10 @@ def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, 
     ("devices", "argv", "message"),
     [
         (DEVICES, [], "Pass the go2rtc 1.9.14 binary"),
-        ([*DEVICES, *DEVICES[:2]], [], "must list 1 to 4 devices"),
+        ([*DEVICES, *DEVICES], [], "must list 1 to 5 devices"),
         ([*DEVICES[:2], "/dev/video0&exec=x"], [], "Invalid camera device path"),
     ],
-    ids=["no-binary", "five-cameras", "unsafe-path"],
+    ids=["no-binary", "six-cameras", "unsafe-path"],
 )
 def test_camera_errors_stop_before_any_change(host, capsys, devices, argv, message):
     host.settings.parent.mkdir(parents=True)
@@ -1796,6 +1796,23 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
         f"camera4: v4l2:device?video={devices[3]}&input_format=mjpeg&video_size=1600x1200"
         in rendered
     )
+
+
+def test_fifth_camera_is_the_wrist_camera_by_its_serial(module):
+    wrist = "/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0"
+    devices = [*DEVICES, "/dev/v4l/by-path/offline-tray-video-index0", wrist]
+    configured = module.camera_configuration({"MG400_CAMERA_DEVICES": ",".join(devices)})
+    assert configured.streams[-1] == "camera5" and "camera5" in configured.preloaded
+    assert configured.still_mode(4) == (4000, 3000, 15)
+    assert configured.still_mode(5) == (3840, 2160, 30)
+    rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=True)
+    assert (
+        f"  camera5: v4l2:device?video={wrist}&input_format=mjpeg&video_size=1280x720" in rendered
+    )
+    assert "  camera5_h265: ffmpeg:camera5#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera5: video\n" in rendered
+    with pytest.raises(ValueError, match="Invalid camera device path"):
+        module.camera_devices("/dev/v4l/by-id/usb camera-video-index0")
 
 
 @pytest.mark.parametrize(

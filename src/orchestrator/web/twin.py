@@ -31,7 +31,7 @@ from vision.stage_twin import (
 from vision.stage_twin.marker_registry import MARKER_GROUPS
 
 PROFILE_ROOT = Path("/var/lib/mg400/calibration/twin")
-CAMERA_LABELS = ("Stage", "Insert rail", "Microscope side", "Tray")
+CAMERA_LABELS = ("Stage", "Insert rail", "Microscope side", "Tray", "Wrist")
 _CONSOLE_LOCK = threading.Lock()
 
 

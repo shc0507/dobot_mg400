@@ -8,7 +8,10 @@ import pytest
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "config/udev"
 EXPECTED = {
-    "camera": [("video4linux", "f326", "1306", "HU12321178")],
+    "camera": [
+        ("video4linux", "f326", "1306", "HU12321178"),
+        ("usb", "32e4", "3415", "2023121018"),
+    ],
     "furnace": [("tty", "0403", "6015", "DU0DT9G8"), ("tty", "0403", "6001", "ABBCE4JW")],
     "microscope": [
         ("tty", "2341", "0043", "035353433353512070D1"),

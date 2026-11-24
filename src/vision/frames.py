@@ -22,10 +22,10 @@ _MAX_PIXELS = 16_000_000
 
 def validate_camera(camera: int, count: int = 4) -> int:
     """Return a configured camera number; reject other types and values."""
-    if type(count) is not int or not 0 <= count <= 4:
-        raise ValueError("Configured camera count must be an integer from 0 through 4.")
+    if type(count) is not int or not 0 <= count <= 5:
+        raise ValueError("Configured camera count must be an integer from 0 through 5.")
     if type(camera) is not int or not 1 <= camera <= count:
-        raise ValueError("camera must identify a configured stream from camera1 to camera4.")
+        raise ValueError("camera must identify a configured stream from camera1 to camera5.")
     return camera
 
 

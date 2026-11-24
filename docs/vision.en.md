@@ -143,7 +143,7 @@ Calibration uses 3 leased commands:
 
 | Command | Parameters and result |
 | --- | --- |
-| `read_markers` | `camera`. Returns `markers` with `id`, `center_px`, and `corners_px`, plus `camera`, `calibrated=false`, `coordinate_system`, `image_size`, `camera_device`, `frame_sha256`, and `read_at`. `camera_device` is `null` when the camera has no stable port path. |
+| `read_markers` | `camera`. Returns `markers` with `id`, `center_px`, and `corners_px`, plus `camera`, `calibrated=false`, `coordinate_system`, `image_size`, `camera_device`, `frame_sha256`, and `read_at`. `camera_device` is `null` when the camera has no stable port path. For the wrist camera, the optional `flange_mm` (the flange pose `[x, y, z, r]`) and `touch_z_mm` add `arm_xy_mm` to each marker: the arm x and y of the marker center, for markers on 1 level surface. See [Wrist camera calibration](#wrist-camera-calibration). |
 | `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, `scan_r_deg`, and `tool_dz_mm`. Fits and stores the model through the owned lease. Returns `camera`, `calibrated=true`, and the stored model as `calibration`. |
 | `check_calibration` | `camera`, `flange_mm`, and optional `limit_px`. Returns the marker 4 check from the same frame. |
 
@@ -523,7 +523,7 @@ The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays
 - `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
 - The fit error in pixels.
 
-`vision.wrist_camera.load()` reads the file. No service uses the calibration at this time.
+`vision.wrist_camera.load()` reads the file. The `read_markers` command of the vision service uses it for the wrist camera.
 `surface_points()` gives the arm x and y of image points on a level surface. `locate()` gives the arm x and y and the touch Z of 1 point that 2 or more poses see. The touch Z is the flange Z at which the tip of the cup touches the surface.
 For `surface_points()`, use a pose with the lens 170 mm or more above the surface. A view from a shorter distance can be 2 mm off.
 Calibrate again after a change of the lens focus, the camera mount, or the capture size.

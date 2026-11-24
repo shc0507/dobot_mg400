@@ -309,6 +309,34 @@ def test_robot_move_waits_for_its_command_id_and_uses_the_relative_pose():
     ]
 
 
+def test_vision_locate_sends_the_flange_pose_with_the_marker_command():
+    still = robot_state(None, actual=[278.0, -9.4, 100.0, -30.7])
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "vision", "holder": "h"}),
+            "api/console/state/robot": states(still),
+            "api/console/command/vision": (202, {"command_id": "7"}),
+        }
+    )
+    code, result = run_cli(["vision", "locate", "5", "-68.75", "--no-wait"], agent)
+    assert code == 0 and result["outcome"] == "accepted"
+    params = {"camera": 5, "flange_mm": [278.0, -9.4, 100.0, -30.7], "touch_z_mm": -68.75}
+    assert http.sent("api/console/command/vision") == [{"action": "read_markers", "params": params}]
+
+
+def test_vision_locate_sends_nothing_without_a_known_pose():
+    moving = robot_state(None, actual=[None] * 4)
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "vision", "holder": "h"}),
+            "api/console/state/robot": states(moving),
+        }
+    )
+    code, result = run_cli(["vision", "locate", "5", "-68.75"], agent)
+    assert code == 1 and result["error"]["code"] == "busy"
+    assert http.sent("api/console/command/vision") == []
+
+
 def test_relative_move_waits_briefly_for_a_known_pose():
     moving = robot_state(None, actual=[None] * 4)
     agent, http = make(

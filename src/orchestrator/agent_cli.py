@@ -168,6 +168,9 @@ def _parser():
         elif device == "vision":
             for name in ("detect", "markers", "labels"):
                 verb(verbs, name, sends=True).add_argument("camera", type=int)
+            locate = verb(verbs, "locate", sends=True)
+            locate.add_argument("camera", type=int)
+            locate.add_argument("touch_z", type=float)
 
     verbs = group("camera")
     still = verb(verbs, "still")
@@ -196,6 +199,24 @@ def _parser():
     return parser
 
 
+def current_pose(agent):
+    """Return (flange pose, None), or (None, failure) when the robot gives no pose."""
+    # The pose is unknown while the arm moves and until the next feedback sample.
+    deadline = agent.clock() + POSE_WAIT_S
+    while True:
+        current = agent.state("robot")
+        if not current.get("ok"):
+            return None, current
+        actual = (current.get("state") or {}).get("actual")
+        if isinstance(actual, list) and len(actual) == 4 and None not in actual:
+            return actual, None
+        if agent.clock() >= deadline:
+            return None, failure(
+                "busy", "The current pose is unknown while the arm moves.", device="robot"
+            )
+        agent.sleep(0.1)
+
+
 def _shortcut(agent, args):
     """Return (action, params) for a command shortcut, or a failure dict."""
     group, verb = args.group, args.verb
@@ -207,22 +228,9 @@ def _shortcut(agent, args):
         if verb == "move":
             target = [args.x, args.y, args.z, args.r]
             if args.relative:
-                # The pose is unknown while the arm moves and until the next feedback sample.
-                deadline = agent.clock() + POSE_WAIT_S
-                while True:
-                    current = agent.state("robot")
-                    if not current.get("ok"):
-                        return current
-                    actual = (current.get("state") or {}).get("actual")
-                    if isinstance(actual, list) and len(actual) == 4 and None not in actual:
-                        break
-                    if agent.clock() >= deadline:
-                        return failure(
-                            "busy",
-                            "The current pose is unknown while the arm moves.",
-                            device="robot",
-                        )
-                    agent.sleep(0.1)
+                actual, failed = current_pose(agent)
+                if failed:
+                    return failed
                 target = [a + b for a, b in zip(actual, target, strict=True)]
             params = {"targets": dict(zip("xyzr", target, strict=True))}
             if args.speed is not None:
@@ -300,6 +308,13 @@ def _shortcut(agent, args):
                 params["run_name"] = args.name
             return "start_recording", params
     if group == "vision":
+        if verb == "locate":
+            # The wrist camera moves with the arm: its markers need the flange pose.
+            actual, failed = current_pose(agent)
+            if failed:
+                return failed
+            params = {"camera": args.camera, "flange_mm": actual, "touch_z_mm": args.touch_z}
+            return "read_markers", params
         action = {"detect": "detect", "markers": "read_markers", "labels": "read_labels"}[verb]
         return action, {"camera": args.camera}
     raise UsageError(f"Unknown command: {group} {verb}")

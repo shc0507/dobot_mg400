@@ -61,6 +61,7 @@ Shortcuts:
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | `start_recording` with a new `recording_id` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
+| `vision locate CAMERA TOUCH_Z` | `read_markers` for the wrist camera, with the current flange pose and `touch_z_mm`. Each marker gets `arm_xy_mm`. `TOUCH_Z` is the flange Z at which the tool tip touches the surface of the markers. Keep the arm still |
 
 Run `microscope zero` only after an operator puts the 50x objective in focus at the clearance position. Do not use it to recover from a failed command: zero at another height moves the focus limits.
 

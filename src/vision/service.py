@@ -22,6 +22,7 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease
+from vision import wrist_camera
 from vision.calibration import (
     DEFAULT_DIRECTORY,
     DRIFT_LIMIT_PX,
@@ -301,6 +302,7 @@ class VisionService:
         torch_loader=None,
         qr_detector=detect_qr_codes,
         marker_detector=detect_markers,
+        wrist_model=wrist_camera.load,
         calibration_directory=DEFAULT_DIRECTORY,
         calibration_options=None,
         clock=time.monotonic,
@@ -330,6 +332,7 @@ class VisionService:
         self._torch_loader = torch_loader or (lambda: importlib.import_module("torch"))
         self._qr = qr_detector
         self._markers = marker_detector
+        self._wrist_model = wrist_model
         self.calibrations = CalibrationStore(calibration_directory)
         self._calibration_options = calibration_settings(calibration_options)
         devices = getattr(getattr(self.frames, "configuration", None), "devices", ())
@@ -426,6 +429,17 @@ class VisionService:
             "default": DRIFT_LIMIT_PX,
             "description": "Maximum distance from the detected to the expected marker 4 center.",
         }
+        wrist = copy.deepcopy(params)
+        wrist["properties"].update(
+            flange_mm=copy.deepcopy(drift["properties"]["flange_mm"]),
+            touch_z_mm={
+                "type": "number",
+                "minimum": -1_000_000,
+                "maximum": 1_000_000,
+                "description": "Wrist camera only, with flange_mm: the flange Z at which the "
+                "tool tip touches the surface. Adds robot_mm to each marker or detection.",
+            },
+        )
         slots = copy.deepcopy(params)
         slots["properties"].update(
             tray={"type": "object", "description": "Bounded tray model data, never a file path."},
@@ -450,9 +464,9 @@ class VisionService:
             on_lease_expiry="cancel the controlling client's inference and discard late results",
             commands=(
                 {
-                    "detect": command(params),
+                    "detect": command(wrist),
                     "read_labels": command(labels),
-                    "read_markers": command(params),
+                    "read_markers": command(wrist),
                     "calibrate_camera": command(calibration),
                     "check_calibration": command(drift),
                     "observe_slots": command(slots),
@@ -547,6 +561,18 @@ class VisionService:
         while not self._quit.wait(0.1):
             self.lease.poll()
 
+    def _wrist_points(self, image, items, args):
+        """Add robot_mm, the arm x and y of each center, for items on 1 level surface."""
+        model = self._wrist_model()
+        if list(image.size) != model["image_size"]:
+            raise ValueError("Live image size differs from the wrist camera calibration.")
+        if not items:
+            return
+        centers = [item.get("center_px", item.get("center_xy")) for item in items]
+        points = wrist_camera.surface_points(model, centers, args["flange_mm"], args["touch_z_mm"])
+        for item, (x, y) in zip(items, points):
+            item["robot_mm"] = {"x": float(x), "y": float(y)}
+
     def _nominal_distance(self, tool_dz_mm):
         """The tag sits above the flange and the tip below it: D = tag height + tool dz."""
         if type(tool_dz_mm) not in (int, float) or not math.isfinite(tool_dz_mm):
@@ -570,6 +596,8 @@ class VisionService:
             }
         if action == "check_calibration":
             allowed |= {"flange_mm", "limit_px"}
+        if action in {"read_markers", "detect"}:
+            allowed |= {"flange_mm", "touch_z_mm"}
         if action == "observe_slots":
             allowed |= {"tray", "targets", "axis"}
         if (
@@ -635,6 +663,19 @@ class VisionService:
                     "Drift checking requires a configured stable camera port identity."
                 )
             camera_device(self._devices[camera - 1])
+        if {"flange_mm", "touch_z_mm"} & set(args) and action != "check_calibration":
+            flange, touch = args.get("flange_mm"), args.get("touch_z_mm")
+            if (
+                not isinstance(flange, list)
+                or len(flange) != 4
+                or any(
+                    type(v) not in (int, float) or not math.isfinite(v) for v in [*flange, touch]
+                )
+            ):
+                raise ValueError("Arm coordinates need flange_mm [x, y, z, r] and touch_z_mm.")
+            device = self._devices[camera - 1] if camera <= len(self._devices) else ""
+            if not device.startswith("/dev/v4l/by-id/"):
+                raise ValueError("Arm coordinates need the wrist camera.")
         region = args.get("region")
         if "region" in args and (
             not isinstance(region, (list, tuple))
@@ -908,6 +949,10 @@ class VisionService:
             else:
                 with self._lock:
                     self._calibrated_cameras.discard(job["camera"])
+        if "flange_mm" in job["args"] and job["action"] in {"read_markers", "detect"}:
+            # The wrist camera moves with the arm: the caller gives the pose of this frame.
+            self._wrist_points(image, result.get("detections", result.get("markers")), job["args"])
+            result["calibrated"] = True
         return self._bounded_result(result), annotated
 
     @contextmanager

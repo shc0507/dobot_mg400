@@ -11,7 +11,7 @@ The proxy uses `/lab/` and redirects `/` to `/lab/`. On Olares, connect the VPN 
 The console is the only operator web page.
 
 - Row 1 of the header shows the console name, the workspace tabs, the **Chip passport** link, the devices that this page controls and the language switch. Hover over the console name to see the deployed commit. The controlled devices show only while this page holds 1 or more devices. Row 2 is the status strip. **STOP ALL MOTION** is the tall button at the right of the header and spans the 2 rows.
-- The workspaces are **Overview**, **Motion**, **Cameras**, **Furnace**, **Sample Transfer**, **Twin** and **Position Finder (legacy)**. The legacy workspace is last and starts disabled. Sample Transfer uses live encoder rotations and saved named positions.
+- The workspaces are **Overview**, **Motion**, **Cameras**, **Furnace**, **Sample Transfer**, **Twin**, **Agent Connect** and **Optional**. The Optional tab is last and contains Position Finder (legacy), which starts disabled. Sample Transfer uses live encoder rotations and saved named positions.
 - The language switch changes between English and 中文. The browser keeps the selected language.
 - Select **Dark mode** or **Light mode** beside the language switch to change the dashboard appearance. Light mode is the default. The browser saves the choice for this Console address.
 - The status strip shows 1 chip for each service: a dot and a text. The **Runs** chip shows only while a run exists. A state that needs attention (for example stale, fault or unavailable) has a colored background. A status older than 3 seconds shows as stale.
@@ -122,7 +122,7 @@ Control socket: the page sends arm keys, stage holds and hold releases over 1 We
 
 ### Position Finder (legacy) workspace
 
-**Position Finder (legacy)** is the last workspace tab. It starts disabled. Use its activation toggle to open **Monitor** and **Calibration**. Turning it off stops sampling and preview requests and releases temporary image data. Saved calibration profiles remain on disk. Enabling it does not connect Motion or Sample Transfer to its measurements.
+**Optional** is the last workspace tab. It contains **Position Finder (legacy)**, which starts disabled. Use its activation toggle to open **Monitor** and **Calibration**. Turning it off stops sampling and preview requests and releases temporary image data. Saved calibration profiles remain on disk. Enabling it does not connect Motion or Sample Transfer to its measurements.
 
 When enabled, Position Finder estimates stage positions from camera images. The monitor image, detected markers, and axis readings come from the same frame.
 The camera dropdown lists the configured shared optical cameras from `camera1` through `camera4`. It selects the overhead stage camera `camera1` by default.
@@ -137,7 +137,7 @@ Create a calibration profile in the console:
 1. Open **Calibration**. Select the camera. Click **New profile**.
 2. Enter the profile name and travel.
 3. Move the stage manually in the Motion workspace.
-4. When the stage is stationary, return to Position Finder (legacy). Capture an endpoint.
+4. When the stage is stationary, return to Position Finder (legacy) in Optional. Capture an endpoint.
 5. Capture 2 endpoints for each of the 3 axes, for 6 endpoints in total.
 6. Click **Save calibration**. The console automatically selects the saved profile for monitoring.
 
@@ -256,7 +256,7 @@ For a local dashboard preview on Windows or Linux, run this command from the rep
 uv run --no-default-groups --group vision --group stage python scripts/console_preview.py
 ```
 
-Open `http://127.0.0.1:8790/lab/#motion`. The preview uses the real dashboard assets and requires no VPN or Olares connection. Open `#position-finder` and use the activation toggle to inspect the legacy monitor and calibration with synthetic camera images.
+Open `http://127.0.0.1:8790/lab/#motion`. The preview uses the real dashboard assets and requires no VPN or Olares connection. Open **Optional** (`#position-finder`). Use the activation toggle to inspect the legacy monitor and calibration with synthetic camera images.
 
 Open `http://127.0.0.1:8790/lab/#process` to preview turret calibration. Camera3 uses a synthetic `1280 × 720` image. **Start calibration**, objective capture and profile operations use a local simulator. They require no physical microscope control. Profiles persist under `work/console-preview/calibration/microscope/turret_profiles/`.
 

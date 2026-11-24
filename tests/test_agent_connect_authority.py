@@ -1,5 +1,6 @@
 """Approval and handover tests never contact equipment."""
 
+import hashlib
 import json
 import re
 import secrets
@@ -387,6 +388,191 @@ def test_reconnect_disconnect_and_revocation_invalidate_work(rig):
     assert sender["client_id"] == paired["client_id"]
     assert sender["role"] == "expired"
     assert sender["verified"] is True
+
+
+def test_last_connection_time_persists_across_reconnect_and_restart(tmp_path):
+    path = tmp_path / "authority.db"
+    clock = Clock()
+    first = Authority(path, clock=clock, wall_clock=clock.wall)
+    try:
+        paired = first.pair(first.create_invitation(first.human)["invitation"], "PC")
+        assert first.snapshot(first.human)["clients"][0]["last_connected_at"] is None
+        clock.now = 20
+        connected = first.connect(paired["credential"])
+        assert connected["state"]["clients"][0]["last_connected_at"] == 1020
+        clock.now = 25
+        reconnected = first.connect(paired["credential"])
+        assert reconnected["state"]["clients"][0]["last_connected_at"] == 1025
+        assert first._store.clients()[paired["client_id"]]["last_connected_at"] == 1025
+        assert_error(401, first.authenticate, connected["session_token"])
+    finally:
+        first.close()
+    clock.now = 100
+    second = Authority(path, clock=clock, wall_clock=clock.wall)
+    try:
+        state = second.snapshot(second.human)
+        assert state["clients"][0]["last_connected_at"] == 1025
+        assert state["clients"][0]["connected"] is False
+        assert state["sessions"] == [] and state["operator"] is None
+        connected = second.connect(paired["credential"])
+        assert connected["state"]["clients"][0]["last_connected_at"] == 1100
+    finally:
+        second.close()
+
+
+def test_heartbeat_status_and_release_do_not_change_last_connection_time(rig, monkeypatch):
+    authority, clock = rig
+    paired, _reply, agent = agent_connect(authority)
+    epoch = authority.grant(authority.human, agent.id)["control_epoch"]
+
+    def unexpected_save(_client):
+        pytest.fail("Reading or renewing a session must not save a connection time.")
+
+    monkeypatch.setattr(authority._store, "save", unexpected_save)
+    for _ in range(3):
+        clock.now += HEARTBEAT_INTERVAL_S
+        state = authority.heartbeat(agent)
+        assert state["sessions"][0]["last_seen_at"] == clock.wall()
+        assert state["clients"][0]["last_connected_at"] == 1000
+        authority.credential_status(paired["credential"])
+        assert authority.snapshot(authority.human)["clients"][0]["last_connected_at"] == 1000
+    authority.release(agent, epoch)
+    authority.disconnect(agent)
+    assert authority.snapshot(authority.human)["clients"][0]["last_connected_at"] == 1000
+    assert authority._store.clients()[paired["client_id"]]["last_connected_at"] == 1000
+
+
+@pytest.mark.parametrize("denial", ["invalid", "pending", "revoked"])
+def test_denied_connection_does_not_change_last_connection_time(rig, denial):
+    authority, clock = rig
+    paired, _reply, _agent = agent_connect(authority)
+    if denial == "revoked":
+        authority.revoke(authority.human, paired["client_id"])
+    elif denial == "pending":
+        client = dict(authority._clients[paired["client_id"]], status="pending", approved_at=None)
+        authority._store.save(client)
+        authority._clients[client["id"]] = client
+    before = authority._store.clients()
+    clock.now = 5
+    credential = "invalid" if denial == "invalid" else paired["credential"]
+    assert_error(403 if denial == "pending" else 401, authority.connect, credential)
+    assert authority._store.clients() == before
+    assert authority.snapshot(authority.human)["clients"][0]["last_connected_at"] == 1000
+
+
+@pytest.mark.parametrize("already_connected", [False, True])
+def test_connection_save_failure_preserves_timestamp_and_session(rig, already_connected):
+    authority, clock = rig
+    paired = authority.pair(authority.create_invitation(authority.human)["invitation"], "PC")
+    if already_connected:
+        reply = authority.connect(paired["credential"])
+        agent = authority.authenticate(reply["session_token"])
+        authority.grant(authority.human, agent.id)
+    before = authority.snapshot(authority.human)
+    saved = authority._store.clients()
+    authority._store.connection.execute(
+        "CREATE TRIGGER reject_connection_time BEFORE INSERT ON agent_connect_client_connections "
+        "BEGIN SELECT RAISE(ABORT, 'connection time save failed'); END"
+    )
+    clock.now = 5
+    with pytest.raises(sqlite3.IntegrityError, match="connection time save failed"):
+        authority.connect(paired["credential"])
+    state = authority.snapshot(authority.human)
+    assert state["clients"] == before["clients"]
+    assert state["operator"] == before["operator"]
+    assert state["control_epoch"] == before["control_epoch"]
+    assert authority._store.clients() == saved
+    assert [row["id"] for row in state["sessions"]] == [row["id"] for row in before["sessions"]]
+    if already_connected:
+        assert authority.authenticate(reply["session_token"]) is agent
+        authority.check(agent, before["control_epoch"])
+    with pytest.raises(sqlite3.IntegrityError, match="connection time save failed"):
+        authority.revoke(authority.human, paired["client_id"])
+    assert authority._store.clients() == saved
+    assert authority.snapshot(authority.human)["clients"] == before["clients"]
+
+
+def test_legacy_database_keeps_credentials_and_accepts_old_client_writes(tmp_path):
+    path = tmp_path / "authority.db"
+    credentials = [secrets.token_urlsafe(32) for _ in range(3)]
+    statuses = ["approved", "pending", "revoked"]
+    rows = [
+        (
+            f"legacy-{index}",
+            f"Legacy PC {index}",
+            hashlib.sha256(credential.encode("ascii")).hexdigest(),
+            status,
+            "ABCDEF",
+            100,
+            110 if status != "pending" else None,
+            120 if status == "revoked" else None,
+        )
+        for index, (credential, status) in enumerate(zip(credentials, statuses, strict=True))
+    ]
+    with sqlite3.connect(path) as database:
+        database.execute(
+            "CREATE TABLE agent_connect_authority_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        database.execute("INSERT INTO agent_connect_authority_meta VALUES ('version', '1')")
+        database.execute(
+            "CREATE TABLE agent_connect_clients ("
+            "id TEXT PRIMARY KEY, name TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, "
+            "status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'revoked')), "
+            "matching_code TEXT NOT NULL, created_at REAL NOT NULL, "
+            "approved_at REAL, revoked_at REAL)"
+        )
+        database.executemany(
+            "INSERT INTO agent_connect_clients VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+        )
+    clock = Clock()
+    authority = Authority(path, clock=clock, wall_clock=clock.wall)
+    try:
+        assert all(
+            client["last_connected_at"] is None
+            for client in authority.snapshot(authority.human)["clients"]
+        )
+        for credential, status in zip(credentials, statuses, strict=True):
+            assert authority.credential_status(credential)["status"] == status
+        assert_error(403, authority.connect, credentials[1])
+        assert_error(401, authority.connect, credentials[2])
+        with sqlite3.connect(path) as database:
+            assert (
+                database.execute("SELECT * FROM agent_connect_clients ORDER BY rowid").fetchall()
+                == rows
+            )
+            assert database.execute(
+                "SELECT value FROM agent_connect_authority_meta WHERE key='version'"
+            ).fetchone() == ("1",)
+        connected = authority.connect(credentials[0])
+        assert connected["state"]["clients"][0]["last_connected_at"] == 1000
+    finally:
+        authority.close()
+    with sqlite3.connect(path) as database:
+        legacy_insert = "INSERT INTO agent_connect_clients VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+        legacy_insert += (
+            "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
+            "approved_at=excluded.approved_at, revoked_at=excluded.revoked_at"
+        )
+        database.execute(legacy_insert, rows[0])
+        database.execute(
+            legacy_insert,
+            ("older-new", "Older PC", "older-hash", "approved", "ABCDEF", 200, 200, None),
+        )
+        assert len(database.execute("PRAGMA table_info(agent_connect_clients)").fetchall()) == 8
+    restored = Authority(path)
+    try:
+        clients = {row["id"]: row for row in restored.snapshot(restored.human)["clients"]}
+        assert clients["legacy-0"]["last_connected_at"] == 1000
+        assert clients["older-new"]["last_connected_at"] is None
+        restored._store.delete("legacy-0")
+        assert (
+            restored._store.connection.execute(
+                "SELECT * FROM agent_connect_client_connections WHERE client_id='legacy-0'"
+            ).fetchone()
+            is None
+        )
+    finally:
+        restored.close()
 
 
 @pytest.mark.parametrize("legacy_activation", [None, "0", "1", "ignored legacy value"])

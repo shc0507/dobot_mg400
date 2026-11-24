@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from labkit.errors import ServiceError
 
 from .actions import validate
+from .chat_adaptation import ConsoleAdaptation
 from .command_store import TERMINAL, canonical
 from .control_portal import REQUEST_ID, STOP_TARGETS
 
@@ -62,8 +63,11 @@ def command_identity(status):
 
 
 class ChatAgent:
-    def __init__(self, control, reader, model):
+    def __init__(self, control, reader, model, *, profiles=None, adaptation=None):
         self.control, self.reader, self.model = control, reader, model
+        self.profiles = profiles
+        self.adaptation = adaptation or ConsoleAdaptation()
+        self.adaptation_errors = {source: None for source in ("live", "mock")}
         self.lock = threading.RLock()
         self.messages = {source: deque(maxlen=60) for source in ("live", "mock")}
         self.activity = {source: deque(maxlen=120) for source in ("live", "mock")}
@@ -88,8 +92,12 @@ class ChatAgent:
         with self.lock:
             job = self.current
             active = job if job and job.source == source and not job.done.is_set() else None
+            adaptation = self.adaptation.public()
+            if self.adaptation_errors[source]:
+                adaptation.update(status="update_required", message=self.adaptation_errors[source])
             return {
                 "model": self.model.status(),
+                "adaptation": adaptation,
                 "busy": bool(job and not job.done.is_set()),
                 "messages": list(copy.deepcopy(self.messages[source])),
                 "activity": list(copy.deepcopy(self.activity[source])),
@@ -113,8 +121,40 @@ class ChatAgent:
         with self.lock:
             if self.current and not self.current.done.is_set():
                 raise ServiceError(409, "Wait for the current request before changing the model.")
+            if self.profiles and self.profiles.status()["active_profile_id"]:
+                raise ServiceError(
+                    409, "Deactivate the saved profile before using temporary settings."
+                )
             self.model.configure(api_key=api_key, model=model)
         return self.status()
+
+    def profile_status(self):
+        if self.profiles is None:
+            raise ServiceError(503, "Saved API profiles are unavailable in this portal.")
+        return self.profiles.status()
+
+    def change_profile(self, action, data):
+        from .model_profiles import ModelProfileError
+
+        with self.lock:
+            self.profile_status()
+            if self.current and not self.current.done.is_set():
+                raise ServiceError(
+                    409, "Wait for the current request before changing API profiles."
+                )
+            previous = self.profiles.status()["active_profile_id"]
+            try:
+                if action == "add":
+                    result = self.profiles.add(**data)
+                elif action == "activate":
+                    result = self.profiles.activate(data["profile_id"])
+                else:
+                    result = self.profiles.delete(data["profile_id"])
+                if action == "activate" or result["active_profile_id"] != previous:
+                    self.model.configure_profile(self.profiles.active())
+            except ModelProfileError as error:
+                raise ServiceError(400, str(error)) from None
+            return result
 
     def submit(self, source, message, request_id):
         self.source(source)
@@ -148,7 +188,7 @@ class ChatAgent:
             if self.closed:
                 raise ServiceError(503, "The local agent is shutting down.")
             if not self.model.status()["configured"]:
-                raise ServiceError(400, "Add your OpenAI API key in Model connection first.")
+                raise ServiceError(400, "Add and activate an API profile in Model APIs first.")
             if self.current and not self.current.done.is_set():
                 raise ServiceError(409, "Wait for the current request or cancel it.")
             job = ChatJob(source, request_id, message)
@@ -169,6 +209,12 @@ class ChatAgent:
     def _context(self, job):
         status = self.control.status(job.source)
         catalog = checked_catalog(self.control.read_commands(job.source, "commands/catalog"))
+        try:
+            knowledge = self.adaptation.context(catalog)
+        except ServiceError as error:
+            self.adaptation_errors[job.source] = error.message
+            raise
+        self.adaptation_errors[job.source] = None
         context = self.reader.read(job.source)
         command_boot = (context["discovery"].get("control") or {}).get("command_boot_id")
         if command_boot and command_boot != status.get("boot_id"):
@@ -195,6 +241,7 @@ class ChatAgent:
                 "read_contract_id": context["contract_id"],
                 "commands": catalog["actions"],
                 "choices": choices,
+                "project_knowledge": knowledge,
             },
         )
 
@@ -203,7 +250,9 @@ class ChatAgent:
             self._activity(job, "reading", "Reading current Console state, units and commands.")
             before, catalog, context = self._context(job)
             self._check_cancelled(job)
-            self._activity(job, "interpreting", "Interpreting your instruction with OpenAI.")
+            self._activity(
+                job, "interpreting", "Interpreting your instruction with the active model."
+            )
             decision = self.model.interpret(context)
             self._check_cancelled(job)
             kind = decision["kind"]

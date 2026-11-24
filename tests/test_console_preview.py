@@ -45,7 +45,7 @@ def client(tmp_path, monkeypatch):
 
 def test_real_shell_and_workspace_polls_stay_offline(client):
     shell = client.get("/lab/").get_data(as_text=True)
-    assert "AI Chemistry Console" in shell and "Position Finder (legacy)" in shell
+    assert "AI Chemistry Console" in shell and "Optional" in shell
     assert 'data-title-en="Furnace"' in shell and "Furnace + microscope" not in shell
     assert 'id="ws-sample-transfer"' in shell and 'data-title-en="Sample Transfer"' in shell
     assert 'src="/lab/console-static/sample-transfer.js"' in shell

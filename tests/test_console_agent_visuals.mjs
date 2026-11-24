@@ -58,6 +58,62 @@ test("stage axes use each received rotation range without inventing missing limi
   assert.ok(stageAxes(null).every(axis => axis.position === null && axis.value === undefined));
 });
 
+test("stage ranges use canonical values and explain each native calibration state", () => {
+  const state = device();
+  state.cached_state = { values: { motors: state.values.axes.map(axis => ({ id: axis.id, lower_limit_set: true, upper_limit_set: true, calibration: "done" })) } };
+  Object.assign(state.values.axes[0], { position_rotations: 4.322998046875, lower_limit_rotations: 0, upper_limit_rotations: 8.64306640625, quality: "unknown", reference_valid: null, motion_ready: true });
+  for (const index of [1, 2]) {
+    Object.assign(state.values.axes[index], { lower_limit_rotations: null, upper_limit_rotations: null });
+    Object.assign(state.cached_state.values.motors[index], { lower_limit_set: false, upper_limit_set: false, lower_limit: -244140.625, upper_limit: 244140.625, calibration: "none" });
+  }
+  const [x, y, insert] = stageAxes(state);
+  assert.equal(x.min, 0); assert.equal(x.max, 8.64306640625); assert.match(x.status, /Calibration complete/); assert.match(x.status, /Reference unverified/);
+  for (const axis of [y, insert]) {
+    assert.equal(axis.min, null); assert.equal(axis.max, null); assert.equal(axis.bounds, false); assert.equal(axis.position, null);
+    assert.equal(axis.status, "Limits not set · Not calibrated");
+  }
+  state.values.axes[0].upper_limit_rotations = 9;
+  assert.equal(stageAxes(state)[0].max, 9);
+  Object.assign(state.cached_state.values.motors[0], { upper_limit_set: false, calibration: "none" });
+  const cleared = stageAxes(state)[0];
+  assert.equal(cleared.max, null); assert.equal(cleared.bounds, false); assert.equal(cleared.position, null); assert.match(cleared.status, /Maximum not set/);
+  assert.ok(stageAxes(state, 4).every(axis => axis.status.includes("Outdated reading") && axis.position === null));
+});
+
+test("stage faults remain explicit and remove current markers", () => {
+  const state = device();
+  state.values.axes[0].fault = "tracking";
+  const fault = stageAxes(state)[0];
+  assert.equal(fault.position, null); assert.equal(fault.quality, "Fault: tracking"); assert.match(fault.status, /Fault: tracking/);
+  assert.match(stageAxes(state, 4)[0].status, /Outdated reading.*Fault: tracking/);
+  state.values.axes[0].fault = "none";
+  assert.equal(stageAxes(state)[0].position, .25);
+});
+
+test("stage table shows current position and each bound when another axis has no range", () => {
+  const previous = globalThis.document;
+  const make = tag => ({ tag, textContent: "", children: [], style: {}, attributes: {}, append(...items) { this.children.push(...items); }, setAttribute(key, value) { this.attributes[key] = value; } });
+  globalThis.document = { createElement: make, createElementNS: (_, tag) => make(tag) };
+  const descendants = node => [node, ...node.children.flatMap(descendants)];
+  try {
+    const state = device(); state.values.axes[1].lower_limit_rotations = null;
+    const nodes = descendants(deviceVisual("stage", state));
+    const wrapper = nodes.find(node => node.className === "stage-axis-table");
+    assert.equal(wrapper.tag, "div"); assert.equal(wrapper.children[0].tag, "table");
+    const rows = descendants(wrapper).filter(node => node.tag === "tr").map(row => row.children.map(cell => cell.textContent));
+    assert.deepEqual(rows[0], ["Axis", "Current (rot)", "Min (rot)", "Max (rot)", "Status"]);
+    assert.deepEqual(rows[1], ["X", "0", "-1", "3", "Current"]);
+    assert.deepEqual(rows[2], ["Y", "0", "Unknown", "3", "Limits unavailable"]);
+    assert.equal(rows[3][0], "Insert"); assert.equal(rows[3][2], "-1");
+    assert.ok(!nodes.some(node => node.tag === "circle"));
+    assert.ok(nodes.some(node => node.textContent === "Y limits unavailable"));
+    state.values.axes[0].lower_limit_rotations = null;
+    assert.ok(descendants(deviceVisual("stage", state)).some(node => node.textContent === "X/Y limits unavailable"));
+    state.values.axes[0].position_rotations = null;
+    assert.ok(descendants(deviceVisual("stage", state)).some(node => node.textContent === "XY position unavailable"));
+  } finally { globalThis.document = previous; }
+});
+
 test("stale, disconnected, uncalibrated and out-of-range axes never draw current markers", () => {
   assert.ok(stageAxes(device(), 4).every(axis => axis.position === null));
   const disconnected = device(); disconnected.values.connected = false;

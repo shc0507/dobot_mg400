@@ -25,6 +25,12 @@
     const text = String(value || "").trim(), code = text.replace(/[-\s]/g, "").toUpperCase();
     return /^[A-Z0-9]{8}$/.test(code) ? `${code.slice(0, 4)}-${code.slice(4)}` : text;
   }
+  function lastConnected(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return { text: "Not recorded", iso: null };
+    const date = new Date(value * 1000);
+    if (Number.isNaN(date.valueOf())) return { text: "Not recorded", iso: null };
+    return { text: date.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }), iso: date.toISOString() };
+  }
   function legacyCopy(text, doc) {
     let input;
     const previous = doc?.activeElement;
@@ -61,8 +67,10 @@
     return node;
   }
   class OwnerPanel {
-    constructor(container, { request, changed = () => {} }) {
+    constructor(container, { request, changed = () => {}, testContainer = null, stopContainer = null, messageContainer = null }) {
       this.container = container; this.request = request; this.changed = changed;
+      this.testContainer = testContainer; this.stopContainer = stopContainer;
+      this.messageContainer = messageContainer;
       this.status = null; this.invitation = null; this.error = ""; this.busy = false; this.reading = false; this.generation = 0;
       this.copying = false; this.copyMessage = "";
       this.stopPanel = null; this.stopSource = "live";
@@ -95,20 +103,37 @@
         element("div", { class: "aoc-invitation-row" }, n.invitationCode, n.copy), n.copyStatus,
         element("p", { class: "aoc-help", text: "Use this invitation in the PC portal to grant connection access. Grant operator control separately." }));
       n.clients = element("div", { class: "aoc-clients" });
+      n.clientCount = element("span", { class: "aoc-help aoc-client-count" });
       n.stopPanel = element("section", { class: "aoc-card aoc-connections agent-stop-panel", "aria-label": "Device Stop and history" });
       n.test = element("div", { class: "aoc-test-progress", role: "status" });
       n.start = this.button("Start test", "simulate", () => ({ control_epoch: this.status?.control_epoch }));
       n.step = this.button("Run next step", "simulate/step", () => ({ operation_id: this.status?.simulation?.id || this.status?.simulation?.operation_id, control_epoch: this.status?.control_epoch }));
       n.stop = this.button("Stop test", "simulate/stop"); n.stop.className = "aoc-stop";
-      const operator = element("section", { class: "aoc-card" }, element("h2", { text: "Operator control" }),
-        element("div", { class: "aoc-operator" }, element("span", { class: "aoc-help", text: "Current operator" }), n.operator, n.version),
-        element("div", { class: "aoc-actions" }, n.take, n.release, n.invite), n.invitation);
+      const operator = element("section", { class: "aoc-card aoc-control-card" }, element("h2", { text: "Operator control" }),
+        element("div", { class: "aoc-operator" }, element("span", { class: "aoc-help", text: "Current operator" }), n.operator),
+        element("div", { class: "aoc-actions" }, n.take, n.release));
+      const details = element("details", { class: "aoc-control-details" }, element("summary", { text: "Connection details" }), n.version);
+      operator.append(details);
+      const connections = element("section", { class: "aoc-card aoc-connection-card" },
+        element("div", { class: "aoc-card-heading" }, element("div", {}, element("h2", { text: "Agent connections" }), n.clientCount), n.invite),
+        n.invitation, n.clients);
       const simulation = element("section", { class: "aoc-card" }, element("span", { class: "aoc-badge", text: "SIMULATED" }), element("h2", { text: "Test a handover" }),
         element("p", { class: "aoc-help", text: "Start a test, then take control from the other window. Pending steps must stop. No equipment moves." }),
         n.test, element("div", { class: "aoc-actions" }, n.start, n.step, n.stop));
       this.container.classList.add("agent-owner-control");
-      this.container.replaceChildren(n.boundary,
-        n.error, n.warningPanel, element("div", { class: "aoc-grid" }, operator, simulation), n.stopPanel, element("section", { class: "aoc-card aoc-connections" }, element("h2", { text: "Agent connections" }), n.clients));
+      n.connections = element("div", { class: "aoc-grid" }, operator, connections);
+      this.container.replaceChildren(n.boundary, n.connections);
+      if (this.messageContainer) {
+        this.messageContainer.classList.add("agent-owner-control");
+        this.messageContainer.replaceChildren(n.error, n.warningPanel);
+      } else this.container.insertBefore(element("div", {}, n.error, n.warningPanel), n.connections);
+      if (this.stopContainer) { this.stopContainer.classList.add("agent-owner-control"); this.stopContainer.replaceChildren(n.stopPanel); }
+      else this.container.append(n.stopPanel);
+      if (this.testContainer) { this.testContainer.classList.add("agent-owner-control"); this.testContainer.replaceChildren(simulation); }
+      else {
+        n.testing = element("details", { class: "aoc-testing" }, element("summary", { text: "Testing" }), simulation);
+        this.container.append(n.testing);
+      }
       this.render();
     }
     render() {
@@ -130,7 +155,8 @@
       n.copy.disabled = this.copying || !this.invitation;
       n.copyStatus.textContent = this.copyMessage; n.copyStatus.hidden = !this.copyMessage;
       const clients = state.manager ? (this.status?.clients || []).filter(client => client.status !== "revoked") : [];
-      n.clients.replaceChildren(...(clients.length ? clients.map(client => this.clientRow(client, state)) : [element("p", { class: "aoc-help", text: state.manager ? "No agents registered." : "Waiting for connection controls." })]));
+      n.clientCount.textContent = `${clients.length} ${clients.length === 1 ? "agent" : "agents"}`;
+      this.renderClients(clients, state);
       const simulation = state.simulation;
       const title = !simulation ? "No test running" : state.running ? "Waiting for the next step" : simulation.status === "completed" ? "Test completed" : "Test cancelled";
       n.test.replaceChildren(...[element("strong", { text: title }), simulation ? element("span", { class: "aoc-help", text: `Steps completed: ${simulation.completed_steps ?? simulation.step ?? 0} / ${simulation.total_steps ?? 3}` }) : null,
@@ -142,15 +168,60 @@
       this.stopPanel?.setContext(this.stopSource, this.status);
     }
     clientRow(client, state) {
-      const id = client.id || client.client_id;
-      const sessions = (this.status?.sessions || []).filter(session => session.client_id === id && session.connected !== false);
-      const pending = client.status === "pending", approved = client.status === "approved";
-      return element("article", { class: "aoc-client" }, element("div", { class: "aoc-client-info" },
-        element("strong", { text: client.name || id }), element("span", { class: "aoc-help", text: pending ? "Use a new invitation" : approved ? "Access granted" : "Access revoked" }),
-        approved ? element("span", { class: "aoc-help", text: sessions.length ? "Connected" : "Not connected" }) : null),
-      element("div", { class: "aoc-actions" },
-        ...(approved ? sessions : []).map(session => this.rowButton("Grant control", "grant", { session_id: session.id || session.session_id }, (state.operator?.id || state.operator?.session_id) === (session.id || session.session_id))),
-        client.status !== "revoked" ? this.rowButton("Revoke access", "revoke", { client_id: id }) : null));
+      const id = client.id || client.client_id, nodes = {};
+      nodes.name = element("strong"); nodes.access = element("span", { class: "aoc-help" });
+      nodes.connection = element("span", { class: "aoc-badge" }); nodes.role = element("span", { class: "aoc-badge" });
+      nodes.lastConnected = element("span");
+      nodes.actions = element("div", { class: "aoc-actions aoc-client-actions" }); nodes.grants = new Map();
+      nodes.revoke = this.rowButton("Revoke access", "revoke", { client_id: id });
+      nodes.revoke.className = "aoc-revoke"; nodes.actions.append(nodes.revoke);
+      const row = element("article", { class: "aoc-client" }, element("div", { class: "aoc-client-info" },
+        element("div", { class: "aoc-client-heading" }, nodes.name, nodes.connection, nodes.role), nodes.access,
+        element("p", { class: "aoc-last-connected aoc-help" }, element("span", { text: "Last connected: " }), nodes.lastConnected)), nodes.actions);
+      row.clientNodes = nodes; this.updateClientRow(row, client, state); return row;
+    }
+    updateClientRow(row, client, state) {
+      const n = row.clientNodes, id = client.id || client.client_id, approved = client.status === "approved";
+      const sessions = approved ? (this.status?.sessions || []).filter(session => session.client_id === id && session.connected !== false) : [];
+      const operatorId = state.operator?.id || state.operator?.session_id;
+      n.name.textContent = client.name || id;
+      n.access.textContent = client.status === "pending" ? "Use a new invitation" : approved ? "Access granted" : "Access revoked";
+      n.connection.textContent = sessions.length ? "Connected" : "Not connected";
+      n.connection.className = "aoc-badge" + (sessions.length ? " aoc-connected" : ""); n.connection.hidden = !approved;
+      const controls = sessions.some(session => (session.id || session.session_id) === operatorId);
+      n.role.textContent = controls ? "Operator" : "Observer"; n.role.hidden = !sessions.length;
+      n.role.className = "aoc-badge" + (controls ? " aoc-current-operator" : "");
+      const connected = lastConnected(client.last_connected_at);
+      n.lastConnected.textContent = connected.text; n.lastConnected.setAttribute("title", connected.iso || "");
+      const ids = new Set();
+      for (const session of sessions) {
+        const sessionId = session.id || session.session_id; ids.add(sessionId);
+        let button = n.grants.get(sessionId);
+        if (!button) { button = this.rowButton("Grant control", "grant", { session_id: sessionId }); n.grants.set(sessionId, button); n.actions.insertBefore(button, n.revoke); }
+        button.disabled = this.busy || operatorId === sessionId;
+        button.setAttribute("aria-label", `Grant control to ${client.name || id}${sessions.length > 1 ? ` (${sessionId})` : ""}`);
+      }
+      for (const [sessionId, button] of n.grants) if (!ids.has(sessionId)) { button.remove(); n.grants.delete(sessionId); }
+      n.revoke.disabled = this.busy; n.revoke.hidden = client.status === "revoked";
+    }
+    renderClients(clients, state) {
+      if (!this.clientRows) this.clientRows = new Map();
+      const ids = new Set(clients.map(client => client.id || client.client_id));
+      for (const [id, row] of this.clientRows) if (!ids.has(id)) { row.remove(); this.clientRows.delete(id); }
+      if (!clients.length) {
+        if (!this.emptyClients) this.emptyClients = element("p", { class: "aoc-help aoc-empty" });
+        this.emptyClients.textContent = state.manager ? "No agents registered." : "Waiting for connection controls.";
+        if (this.nodes.clients.children[0] !== this.emptyClients) this.nodes.clients.replaceChildren(this.emptyClients);
+        return;
+      }
+      this.emptyClients?.remove();
+      for (const [index, client] of clients.entries()) {
+        const id = client.id || client.client_id;
+        let row = this.clientRows.get(id);
+        if (!row) { row = this.clientRow(client, state); this.clientRows.set(id, row); }
+        else this.updateClientRow(row, client, state);
+        if (this.nodes.clients.children[index] !== row) this.nodes.clients.insertBefore(row, this.nodes.clients.children[index] || null);
+      }
     }
     rowButton(text, action, body, disabled = false) {
       const button = this.button(text, action, () => body); button.disabled = disabled || this.busy; return button;
@@ -193,7 +264,7 @@
     start() { if (!this.timer) { this.refresh(); this.timer = setInterval(() => this.refresh(), 2000); this.stopPanel?.start(); } }
     stop() { this.generation++; clearInterval(this.timer); this.timer = null; this.stopPanel?.stop(); }
   }
-  const exports = { stateView, formatInvitation, copyInvitation, OwnerPanel, mount: (container, options) => new OwnerPanel(container, options) };
+  const exports = { stateView, formatInvitation, lastConnected, copyInvitation, OwnerPanel, mount: (container, options) => new OwnerPanel(container, options) };
   if (typeof module !== "undefined") module.exports = exports;
   root.AgentOwnerPanel = exports;
 })(typeof window === "undefined" ? globalThis : window);

@@ -226,7 +226,7 @@
     const link = el("a"); link.href = URL.createObjectURL(blob); link.download = "olares-received-data.json"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   };
   $("enable-tests").onchange = () => {
-    const enabled = $("enable-tests").checked; $("live-view").hidden = enabled; $("advanced-tests").hidden = !enabled;
+    const enabled = $("enable-tests").checked; $("advanced-tests").hidden = !enabled;
     document.body.dataset.mode = enabled ? "MOCK" : "live";
     $("portal-mode").textContent = enabled ? "Simulation · No hardware" : "Live equipment";
     dispatchEvent(new CustomEvent("portal-test-mode", { detail: enabled ? document.querySelector('[data-panel][aria-pressed="true"]').dataset.panel : null }));

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 const require = createRequire(import.meta.url);
-const { ChatClient, ActivityTimeline, activity, phaseLabel, tabFromHash } = require("../src/orchestrator/agent_connect/static/chat-portal.js");
+const { ChatClient, ActivityTimeline, ProfileForm, activity, phaseLabel, tabFromHash, providerName, profileView, isLiteralStop, adapterSummary } = require("../src/orchestrator/agent_connect/static/chat-portal.js");
 const ready = () => ({ model: { configured: true, model: "test-model" }, busy: false, messages: [], active: null });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 function client(request) { const value = new ChatClient({ request, createId: () => "message-1" }); value.status = ready(); return value; }
@@ -70,6 +70,189 @@ test("settings send the key only to the local settings route, without retaining 
   assert.deepEqual(calls[0], { path: "settings", body: { model: "test-model", api_key: "private-key" } });
   assert.equal(JSON.stringify(instance.status).includes("private-key"), false);
   assert.equal(JSON.stringify(instance.pending).includes("private-key"), false);
+});
+
+const profileList = () => ({ profiles: [{ id: "saved-1", name: "Lab model", provider: "anthropic", model: "test-model", base_url: "https://api.anthropic.com", has_key: true }], active_profile_id: null, storage_available: true, storage_message: "Keys use protected storage on this PC." });
+
+test("saving a profile sends its key once and does not activate it or send an instruction", async () => {
+  const calls = [], saved = profileList();
+  const instance = client(async (path, body) => { calls.push({ path, body }); return path === "profiles" ? saved : ready(); });
+  assert.equal(await instance.addProfile({ name: " Lab model ", provider: "anthropic", model: " test-model ", base_url: " ", api_key: "private-key" }), true);
+  assert.deepEqual(calls[0], { path: "profiles", body: { name: "Lab model", route: "direct", provider: "anthropic", model: "test-model", base_url: "", api_key: "private-key" } });
+  assert.deepEqual(instance.profiles, saved);
+  assert.equal(JSON.stringify(instance).includes("private-key"), false);
+  assert.deepEqual(calls.map(call => call.path), ["profiles", "status"]);
+});
+
+test("Token Station saves the route and prefixed model with compatibility provider metadata", async () => {
+  const calls = [], saved = profileList();
+  const instance = client(async (path, body) => { calls.push({ path, body }); return path === "profiles" ? saved : ready(); });
+  assert.equal(await instance.addProfile({ name: " Gateway ", route: "token_station", provider: "anthropic", model: " vendor/model-1 ", base_url: " https://physics.bytefuture.ai/v1 ", api_key: "test-key" }), true);
+  assert.deepEqual(calls[0], { path: "profiles", body: { name: "Gateway", route: "token_station", provider: "openai", model: "vendor/model-1", base_url: "https://physics.bytefuture.ai/v1", api_key: "test-key" } });
+  assert.equal(JSON.stringify(instance).includes("test-key"), false);
+  assert.deepEqual(calls.map(call => call.path), ["profiles", "status"]);
+});
+
+function profileForm() {
+  const fields = Object.fromEntries(["route", "provider", "providerLabel", "model", "baseUrl", "endpoint", "endpointTitle", "endpointNote"].map(name => [name, { value: "" }]));
+  fields.route.value = "direct"; fields.provider.value = "openai";
+  return new ProfileForm(fields);
+}
+
+test("route changes show Token Station defaults and preserve custom endpoint and model input", () => {
+  const form = profileForm();
+  assert.equal(form.baseUrl.placeholder, "https://api.openai.com/v1");
+  assert.equal(form.provider.hidden, false);
+  form.provider.value = "anthropic"; form.provider.onchange();
+  form.route.value = "token_station"; form.route.onchange();
+  assert.equal(form.provider.hidden, true); assert.equal(form.providerLabel.hidden, true); assert.equal(form.provider.disabled, true);
+  assert.equal(form.baseUrl.value, "https://physics.bytefuture.ai/v1");
+  assert.equal(form.model.placeholder, "openai/gpt-6.1-sol");
+  assert.equal(form.endpoint.open, true);
+  form.model.value = "vendor/my-model"; form.baseUrl.value = "https://models.example.test/v1";
+  form.route.value = "direct"; form.route.onchange();
+  assert.equal(form.provider.value, "anthropic");
+  assert.equal(form.provider.hidden, false); assert.equal(form.providerLabel.hidden, false); assert.equal(form.provider.disabled, false);
+  assert.equal(form.baseUrl.placeholder, "https://api.anthropic.com/v1");
+  assert.equal(form.baseUrl.value, "https://models.example.test/v1");
+  assert.equal(form.model.value, "vendor/my-model");
+  form.provider.value = "gemini"; form.provider.onchange();
+  assert.equal(form.baseUrl.placeholder, "https://generativelanguage.googleapis.com/v1beta");
+  assert.equal(form.baseUrl.value, "https://models.example.test/v1");
+  form.route.value = "token_station"; form.route.onchange();
+  assert.equal(form.baseUrl.value, "https://models.example.test/v1");
+  assert.equal(form.model.value, "vendor/my-model");
+});
+
+test("route changes replace an unchanged default endpoint and form reset restores direct fields", () => {
+  const form = profileForm();
+  form.baseUrl.value = "https://api.openai.com/v1/";
+  form.route.value = "token_station"; form.route.onchange();
+  assert.equal(form.baseUrl.value, "https://physics.bytefuture.ai/v1");
+  form.route.value = "direct"; form.route.onchange();
+  assert.equal(form.baseUrl.value, "");
+  form.route.value = "token_station"; form.route.onchange();
+  form.route.value = "direct"; form.provider.value = "openai"; form.baseUrl.value = ""; form.model.value = ""; form.update();
+  assert.equal(form.provider.disabled, false); assert.equal(form.provider.hidden, false);
+  assert.equal(form.baseUrl.value, ""); assert.equal(form.baseUrl.placeholder, "https://api.openai.com/v1");
+  assert.equal(form.model.placeholder, "Model ID");
+});
+
+test("profile presentation labels legacy profiles as direct and always shows Token Station endpoints", () => {
+  assert.deepEqual(profileView({ provider: "anthropic", base_url: "https://api.anthropic.com/v1/" }), { name: "Anthropic", description: "Direct provider · Anthropic", endpoint: "" });
+  assert.deepEqual(profileView({ route: "token_station", provider: "openai" }), { name: "Token Station", description: "Token Station", endpoint: "https://physics.bytefuture.ai/v1" });
+  assert.equal(profileView({ route: "token_station", provider: "gemini", base_url: "https://gateway.example.test/v1" }).endpoint, "https://gateway.example.test/v1");
+});
+
+test("activation, deactivation, and deletion use explicit profile routes only", async () => {
+  const calls = [], instance = client(async (path, body) => { calls.push({ path, body }); return path === "status" ? ready() : profileList(); });
+  await instance.activateProfile("saved-1");
+  await instance.activateProfile(null);
+  await instance.deleteProfile("saved-1");
+  assert.deepEqual(calls.filter(call => call.path !== "status"), [
+    { path: "profiles/activate", body: { profile_id: "saved-1" } },
+    { path: "profiles/activate", body: { profile_id: null } },
+    { path: "profiles/delete", body: { profile_id: "saved-1" } },
+  ]);
+});
+
+test("profile mutations cannot run during chat or overlap another mutation", async () => {
+  const task = deferred(), calls = [], instance = client(async path => { calls.push(path); return path === "status" ? ready() : task.promise; });
+  instance.status.busy = true;
+  assert.equal(await instance.activateProfile("saved-1"), false);
+  assert.deepEqual(calls, []);
+  instance.status.busy = false;
+  const first = instance.activateProfile("saved-1");
+  assert.equal(instance.busy, true);
+  assert.equal(await instance.deleteProfile("saved-1"), false);
+  assert.equal(await instance.send("Read stage coordinates."), false);
+  task.resolve(profileList()); await first;
+  assert.equal(instance.profileSaving, false);
+  assert.deepEqual(calls, ["profiles/activate", "status"]);
+});
+
+test("a stale profiles read cannot replace a completed mutation", async () => {
+  const stale = deferred(), saved = profileList();
+  const instance = client(async path => path === "profiles" ? stale.promise : path === "status" ? ready() : saved);
+  const read = instance.refreshProfiles();
+  await instance.activateProfile("saved-1");
+  stale.resolve({ profiles: [], active_profile_id: null }); await read;
+  assert.deepEqual(instance.profiles, saved);
+});
+
+test("a profile change waits for matching model status before another instruction", async () => {
+  const status = deferred(), calls = [], saved = { ...profileList(), active_profile_id: "saved-1" };
+  const instance = client(async path => { calls.push(path); return path === "status" ? status.promise : saved; });
+  await instance.activateProfile("saved-1");
+  assert.equal(instance.modelReady, false);
+  assert.equal(await instance.send("Read stage coordinates."), false);
+  status.resolve({ ...ready(), model: { configured: true, model: "test-model", profile_id: "saved-1" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(instance.modelReady, true);
+  instance.profiles = { ...saved, active_profile_id: null };
+  assert.equal(instance.modelReady, false);
+  assert.deepEqual(calls, ["profiles/activate", "status"]);
+});
+
+test("model status changes from another tab refresh the saved profile list", async () => {
+  const saved = { ...profileList(), active_profile_id: "saved-1" }, calls = [];
+  const instance = client(async path => { calls.push(path); return saved; });
+  instance.profiles = profileList();
+  instance.apply({ ...ready(), model: { configured: true, profile_id: "saved-1" } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ["profiles"]);
+  assert.equal(instance.profiles.active_profile_id, "saved-1");
+  assert.equal(instance.modelReady, true);
+});
+
+test("literal Stop remains available without a model and during an adapter update", async () => {
+  const calls = [], instance = client(async (path, body) => { calls.push({ path, body }); return ready(); });
+  instance.status = { model: { configured: false }, busy: true, adaptation: { status: "update_required" } };
+  instance.profileSaving = true;
+  assert.equal(instance.canSend("Read stage coordinates."), false);
+  for (const text of [" Stop!! ", "stop all", "stop all motion", "STOP ROBOT.", "stop stage", "stop microscope", "stop furnace", "stop gas"]) {
+    assert.equal(isLiteralStop(text), true); assert.equal(instance.canSend(text), true);
+  }
+  for (const text of ["", "stop gas 0", "move and stop", "stopwatch"]) assert.equal(isLiteralStop(text), false);
+  assert.equal(await instance.send("Stop robot!"), true);
+  assert.equal(calls[0].path, "message");
+  assert.equal(calls[0].body.message, "Stop robot!");
+});
+
+test("literal Stop can interrupt inference without a late response clearing its pending state", async () => {
+  const first = deferred(), stop = deferred(); let count = 0;
+  const instance = client(async path => path === "message" ? (++count === 1 ? first.promise : stop.promise) : ready());
+  const normal = instance.send("Read stage coordinates.");
+  const stopping = instance.send("Stop");
+  first.resolve(ready()); assert.equal(await normal, false);
+  assert.equal(instance.sending, true);
+  stop.resolve(ready()); assert.equal(await stopping, true);
+  assert.equal(instance.sending, false);
+});
+
+test("profile errors keep the saved list and do not repeat the mutation", async () => {
+  const calls = [], instance = client(async path => { calls.push(path); if (path === "status") return ready(); throw new Error("Protected storage is unavailable."); });
+  const saved = profileList(); instance.profiles = saved;
+  assert.equal(await instance.deleteProfile("saved-1"), false);
+  assert.equal(instance.profiles, saved);
+  assert.equal(instance.profileError, "Protected storage is unavailable.");
+  assert.equal(instance.profileSaving, false);
+  assert.deepEqual(calls, ["profiles/delete", "status"]);
+});
+
+test("adapter readiness and links use reviewed repository documents", () => {
+  const pending = adapterSummary(null);
+  assert.equal(pending.label, "Checking");
+  assert.equal(pending.documents.length, 3);
+  assert.ok(pending.documents.every(doc => doc.url.startsWith("https://github.com/shc0507/dobot_mg400/blob/main/docs/agent-connect/")));
+  const changed = adapterSummary({ status: "update_required", message: "Review changed position units.", documents: [{ title: "Unsafe", url: "javascript:alert(1)" }] });
+  assert.equal(changed.label, "Update required");
+  assert.equal(changed.warning, true);
+  assert.equal(changed.message, "Review changed position units.");
+  assert.deepEqual(changed.documents, pending.documents);
+  assert.equal(adapterSummary({ status: "ready" }).label, "Ready");
+  assert.match(activity({ ...ready(), adaptation: { status: "update_required" } }), /needs an update/);
+  assert.deepEqual(["openai", "anthropic", "gemini"].map(providerName), ["OpenAI", "Anthropic", "Gemini"]);
 });
 
 test("hiding the page stops UI polling without canceling server work", () => {
@@ -157,18 +340,28 @@ test("activity follows server history trimming and separates live from simulated
   assert.equal(view.summary.textContent, "No activity yet");
 });
 
-test("workspace hashes preserve manual deep links and Agent is the default", () => {
-  for (const hash of ["#manual", "#manual-testing", "#agent-commands", "#live-view"]) assert.equal(tabFromHash(hash), "manual");
+test("workspace hashes route incoming data to Digital Twin and keep command links in Manual testing", () => {
+  for (const hash of ["#digital-twin", "#live-view", "#live-devices", "#live-samples", "#live-operations", "#live-events", "#live-raw", "#live-agreement"]) assert.equal(tabFromHash(hash), "digital-twin");
+  for (const hash of ["#manual", "#manual-testing", "#agent-commands"]) assert.equal(tabFromHash(hash), "manual");
   for (const hash of ["", "#agent", "#unknown"]) assert.equal(tabFromHash(hash), "agent");
 });
 
-test("shared control and Stop stay outside both workspaces; manual controls keep their IDs", () => {
+test("shared control and Stop stay outside all workspaces; incoming data stays separate from manual tools", () => {
   const html = fs.readFileSync(new URL("../src/orchestrator/agent_connect/static/portal.html", import.meta.url), "utf8");
   assert.ok(html.indexOf('id="agent-stop-panel"') < html.indexOf('id="agent-chat-view"'));
   assert.ok(html.indexOf('id="agent-approval"') < html.indexOf('id="agent-chat-view"'));
   assert.match(html, /id="manual-testing"[^>]+hidden/);
-  for (const id of ["agent-command-form", "agent-command-send", "live-devices", "enable-tests", "advanced-tests"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /id="digital-twin"[^>]+aria-labelledby="tab-digital-twin"[^>]+hidden/);
+  const twin = html.slice(html.indexOf('<section id="digital-twin"'), html.indexOf('<section id="manual-testing"'));
+  const manual = html.slice(html.indexOf('<section id="manual-testing"'));
+  for (const id of ["live-view", "live-devices", "live-samples", "live-operations", "live-events", "live-raw", "live-agreement", "live-last-message", "live-download"]) {
+    assert.match(twin, new RegExp(`id="${id}"`)); assert.doesNotMatch(manual, new RegExp(`id="${id}"`));
+  }
+  for (const id of ["agent-command-form", "agent-command-send", "enable-tests", "advanced-tests"]) {
+    assert.match(manual, new RegExp(`id="${id}"`)); assert.doesNotMatch(twin, new RegExp(`id="${id}"`));
+  }
   assert.match(html, /id="chat-api-key" type="password"/);
+  assert.match(html, /id="chat-route"><option value="direct">Direct provider<\/option><option value="token_station">Token Station<\/option>/);
   assert.match(html, /data-workspace="manual"/);
   const source = fs.readFileSync(new URL("../src/orchestrator/agent_connect/static/chat-portal.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /localStorage|sessionStorage|innerHTML/);

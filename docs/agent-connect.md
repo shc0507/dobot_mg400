@@ -2,6 +2,8 @@
 
 智能体连接发布设备缓存数据，并在明确授予操作权后提供目录命令。控制接口使用版本 6、阶段 8。8082 正式 Console 启用真机命令，包括受支持的加热炉命令。只读数据流、普通命令和紧急 Stop 使用独立路径。
 
+接入其他智能体时，使用[外部智能体接入文档](agent-connect/README.md)。由人使用[根 README](../README.md#连接外部智能体) 的提示词启动适配。先读项目知识，再读通信契约。修改并检查外部连接器后才运行。运行时发现只检查兼容性并提供当前值，不触发自主代码修改。本页说明现有门户和 Console 的操作。
+
 ## 本地连接页
 
 在 LarePass 中启用 VPN。在仓库根目录运行：
@@ -12,17 +14,47 @@ uv run python scripts/agent_portal.py
 
 命令在 `http://127.0.0.1:8792/` 打开 Agent Portal。Live equipment 来源连接 `http://100.64.0.1:8082`。如果 VPN 或数据源不可用，页面显示错误。页面不会换成模拟数据。
 
-**Agent** 页接受问题和指令。打开 **OpenAI model**，输入 API 密钥，选择 **Use model**。默认模型是 `gpt-6.2-sol`，也可输入支持 Responses 结构化输出的其他模型。密钥只保存在进程内存中。`OPENAI_API_KEY` 可提供初始密钥。重启后，页面输入的密钥会清除。指令、近期对话、已核验的 Console 状态和当前命令目录会发送给 OpenAI。不发送摄像头视频或 Console 凭据。
+Agent 页接受问题和指令。打开 Model APIs 后，按以下步骤配置：
 
-连接并明确授予操作权后，清晰指令立即执行。缺少目标或单位时，智能体会提问。每条指令可执行 1 个目录动作，包括已有的组合动作。位移台坐标使用圈数。机器人 X/Y/Z 使用毫米，R 使用度。智能体显示 Console 返回的结果。结果未知时，保留请求 ID，不自动重发运动命令。**Cancel agent task** 取消待处理的解释，并请求取消自己的命令。两个页签均保留 Stop 控件。
+1. 在 API route 中选择 Direct provider 或 Token Station。
+2. 输入配置名称、模型 ID 和 API 密钥。
+3. 使用 Direct provider 时，选择提供方。
+4. Base URL 留空时使用默认地址，也可填入自定义地址。
+5. 选择 Save profile。
+
+配置将 `route` 保存为 `direct` 或 `token_station`。没有 `route` 的配置使用 `direct`。Direct provider 使用所选提供方的原生 API：
+
+| 提供方 | API 与输出 |
+| --- | --- |
+| OpenAI | Responses，使用结构化输出。 |
+| Anthropic | Messages，使用结构化输出。 |
+| Gemini | GenerateContent，使用 JSON schema。 |
+
+Token Station 隐藏提供方选项，使用 Chat Completions 协议。保留模型 ID 的提供方前缀，例如 `openai/gpt-6.1-sol`。默认基础地址为 `https://physics.bytefuture.ai/v1`。默认请求地址为 `https://physics.bytefuture.ai/v1/chat/completions`。请求使用 `POST`、`Authorization: Bearer <api_key>`、`model`、`messages` 和 `stream: true`。
+
+使用 Token Station 时，智能体收集完整的服务器发送事件（SSE）响应。核验决策 JSON 后，才提交命令。部分输出不会触发命令。若数据流截断或报告错误，智能体不提交命令。
+
+选择 Activate，启用已保存的配置。保存配置不会自动启用。Deactivate 停用模型并保留配置。Delete 删除配置。删除当前配置后，没有启用的模型。真机和模拟来源共用 1 个当前配置。
+
+Windows DPAPI 为当前 Windows 用户加密全部保存内容。加密内容包括 API 密钥和配置资料。默认文件为 `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/model-profiles.json`，位于 Git 仓库外。重启 Portal 后，恢复已保存的配置及当前选择。如果 Windows 凭据保护不可用，不能保存配置，也不使用明文存储。默认配置模式不自动读取 `OPENAI_API_KEY`。
+
+修改配置或重启 Portal 不会自动探测 API，也不会发送设备命令。提交请求后，指令和近期对话发送到当前 API 地址。请求还包含已审阅的项目知识、已核验的 Console 状态和当前命令目录。不发送摄像头视频或 Console 凭据。
+
+运行时，本地智能体加载已审阅的项目知识。使用状态前，先检查当前只读契约。对受支持的动作，核对已审阅的参数结构、修订版本、默认值和设备。若不匹配，必须由人指示编码智能体更新代码，普通命令才能恢复。本地智能体不会自主修改代码。
+
+连接并明确授予操作权后，清晰指令立即执行。缺少目标或单位时，智能体会提问。每条指令可执行 1 个目录动作，包括已有的组合动作。位移台坐标使用圈数。机器人 X/Y/Z 使用毫米，R 使用度。智能体显示 Console 返回的结果。结果未知时，保留请求 ID，不自动重发运动命令。**Cancel agent task** 取消待处理的解释，并请求取消自己的命令。Portal 各页签均保留 Stop 控件。
 
 实时活动列表每 1 秒更新。它显示状态读取、指令解释、参数核验、命令提交和 Console 结果。每条已提交命令均显示完整 JSON 请求正文和请求 ID。指令解释提供简短的动作说明，不展示模型的私有推理。活动只保存在进程内存中，真机和模拟来源分别保存。
 
-**Manual testing** 页保留设备图、实时读数、参数表单和可选模拟。切换页签不会断开智能体。只有明确提交的指令或手动命令才会请求设备操作。打开页面、设置模型和授予控制权均不会启动设备。
+Digital Twin 页显示实时 Console 状态。Manual testing 页包含命令表单、目标预览和可选模拟。切换页签不会断开智能体。只有明确提交的指令或手动命令才会请求设备操作。打开页面、设置模型和授予控制权均不会启动设备。
 
 本地服务器把 Olares 只读 WebSocket 转发为服务器发送事件（SSE）。它订阅 `devices`、`samples` 和 `operations`。Updates per second 可选 1、2 或 4 Hz，默认 2 Hz。读取区的 Disconnect 只断开数据连接。
 
-Received state 显示位移台位置图、机器人坐标、温度、气体读数、显微镜状态和视觉结果。缺失读数仍为未知。设备详情和 Full state JSON 保留收到的全部字段。主视图下方保留 Active samples、Operations 和最近 100 条事件。浏览器核对不可变数据约定及其摘要后才解码。定义不受支持或摘要不匹配时，停止解码。原始 JSON 仍可查看。
+Digital Twin 显示从 Console 数据流收到的每台设备。它显示位移台位置图、机器人坐标及加热炉温度和气体读数。它还显示热像仪读数、显微镜状态和视觉结果。缺失读数仍为未知。设备详情和 Full state JSON 保留收到的全部字段。设备卡片下方保留 Active samples、Operations 和最近 100 条事件。
+
+位移台位置图使用每个数据帧中的校准下限和上限，单位为转数。每次收到新数据帧，页面更新显示的限位。未设置的原生限位显示为不可用。Portal 不会用协议的数值范围替代它们。若需重新校准，使用[位移台面板](stage-panel.md)中的现有控件。
+
+浏览器核对不可变数据约定及其摘要后才解码。定义不受支持或摘要不匹配时，停止解码。原始 JSON 仍可查看。
 
 在 Manual testing 中，Send command 按设备分组显示动作。表单显示参数、受支持的目标预览和待发送 JSON。目标预览不会移动设备。只有 Send command 提交手动请求。可视化页面使用现有机器接口，不向数据流添加摄像头视频。
 
@@ -45,6 +77,8 @@ Received state 显示位移台位置图、机器人坐标、温度、气体读�
 ### Console 策略
 
 通过 LarePass 打开 `http://100.64.0.1:8082/lab/#agent-connect`。控制约定位于 `/lab/api/agent/control/contract`。它声明 `pairing: {approval: "invitation", operator_grant: "explicit"}`。状态报告 `management_available`。
+
+默认打开 **Connections** 子页，用于邀请、智能体记录和操作权管理。**Testing** 子页包含模拟控件及数据与服务详情。Device Stop 位于两个子页外，始终可用。切换子页不会启动设备。
 
 库构造默认使用 `allow_physical=False`。正式注册通过 `allow_physical=True` 明确启用真机。邀请、授权、命令参数和页面控件都不能改变服务器的这个选择。
 
@@ -101,9 +135,9 @@ Take control 把操作权交给人。Release control 清空操作员。Revoke ac
 
 警告包含发送者，并保留到人工选择 Dismiss warning。此操作向 `POST /lab/api/agent/control/acknowledge-warning` 发送 `{}`。关闭警告不会恢复操作权，也不会删除事件记录。
 
-客户端连接权限保存在 Console 运行目录的 `agent-connect/authority.db`。邀请、会话和授权不持久化。重启 Console 会使会话和授权失效。
+客户端连接权限和 `last_connected_at` 保存在 Console 运行目录的 `agent-connect/authority.db`。该时间戳以 Unix 秒记录最近的成功连接或重连。未记录连接时间时，值为 `null`，历史记录也按此处理。配对、心跳、状态读取、释放操作权和遭拒的连接均不更新它。邀请、会话和授权不持久化。重启 Console 会使会话和授权失效。
 
-PC Portal 只在服务器内存中保留凭据。重启 Portal 后必须使用新邀请。旧版待批准客户端也必须使用新邀请。
+PC Portal 只在服务器内存中保留 Console 连接凭据。即使模型配置仍启用，重启 Portal 后也必须使用新邀请。旧版待批准客户端也必须使用新邀请。
 
 Start test、Run next step 和 Stop test 提供独立的内存交接测试。测试包含 3 个手动步骤，在 Olares 上也只改变内存。Stop test 只停止该测试，不停止设备。
 
@@ -160,7 +194,7 @@ Stop 使用同一控制基础路径：
 | `gas_all` | 停止全部 3 个气路。 |
 | `gas_0`、`gas_1`、`gas_2` | 停止气路 0、1 或 2。 |
 
-Stop 不要求会话、操作员授权、当前版本或约定摘要。它不等待普通命令处理或状态刷新。服务器确定发送者，调用者不能在请求体中指定身份。凭据缺失或未知时，发送者标为未验证。
+Stop 不要求会话、操作员授权、当前版本或约定摘要。它不等待普通命令处理或状态刷新。服务器确定发送者，调用者不能在请求体中指定身份。权限服务可用时，不带 `Authorization` 的请求可归为受信任的人工调用。凭据无法识别或无法确定身份时，发送者标为未验证。智能体有令牌时携带令牌，但不得因缺少访问权限阻止 Stop。
 
 每次明确按下按钮都创建新 ID。同一 ID 和目标的请求共用历史记录，但每次投递仍执行 Stop。详情保留所有传输路径、发送者和设备结果。混合发送者的请求不会继承另一次投递的已验证身份。
 

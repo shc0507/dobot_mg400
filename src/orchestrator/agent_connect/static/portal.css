@@ -55,9 +55,9 @@
 .chat-event summary { color: var(--accent); cursor: pointer; }
 .chat-event pre { margin: 8px 0 0; max-height: 220px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-composer { margin-top: auto; padding-top: 13px; border-top: 1px solid var(--line); }
-.chat-composer textarea, #chat-model-form input { width: 100%; min-width: 0; padding: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--button-line); border-radius: 8px; font: inherit; }
+.chat-composer textarea, #chat-model-form input, #chat-model-form select { width: 100%; min-width: 0; padding: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--button-line); border-radius: 8px; font: inherit; }
 .chat-composer textarea { resize: vertical; min-height: 90px; max-height: 240px; line-height: 1.5; }
-.chat-composer textarea:focus-visible, #chat-model-form input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.chat-composer textarea:focus-visible, #chat-model-form input:focus-visible, #chat-model-form select:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .chat-composer-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
 .chat-composer-actions .section-note { margin: 0 auto 0 0; font-size: 11px; }
 #chat-send { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
@@ -66,8 +66,23 @@
 .chat-sidebar > .card { padding: 20px; }
 .chat-sidebar summary { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-weight: 650; cursor: pointer; }
 #chat-model-form label:not(:first-child) { margin-top: 14px; }
-#chat-model-form input { font-size: 13px; }
+#chat-model-form input, #chat-model-form select { font-size: 13px; }
+#chat-profile-fields { min-width: 0; border: 0; padding: 0; margin: 16px 0 0; }
+#chat-profile-fields:disabled { opacity: .65; }
 #chat-model-save { width: 100%; }
+.chat-active-profile { margin: 0 0 12px; font-size: 13px; overflow-wrap: anywhere; }
+.chat-profile-list { list-style: none; padding: 0; margin: 0; }
+.chat-profile-list > li { padding: 14px 0; border-top: 1px solid var(--line); }
+.chat-profile-list header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow-wrap: anywhere; font-size: 13px; }
+.chat-profile-list p { margin: 6px 0 10px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.chat-profile-endpoint { display: block; margin-top: 5px; font-size: 11px; }
+.chat-profile-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-profile-actions button { padding: 7px 10px; font-size: 12px; }
+.chat-profile-add { padding-top: 14px; border-top: 1px solid var(--line); }
+.chat-endpoint-settings { margin: 16px 0; font-size: 12px; }
+.chat-endpoint-settings label { margin-top: 12px; }
+.chat-adapter-documents { list-style: none; margin: 14px 0; padding: 0; display: grid; gap: 9px; font-size: 12px; }
+.chat-adapter-documents a { overflow-wrap: anywhere; }
 .chat-data-note { padding-top: 14px; margin: 15px 0 0; border-top: 1px solid var(--line); }
 .chat-examples h2 { font-size: 15px; }
 .chat-examples > button { display: block; width: 100%; text-align: left; font-size: 12px; margin-top: 10px; }
@@ -300,7 +315,7 @@ footer { border-top: 1px solid var(--line); margin-top: 29px; padding-top: 20px;
   .section-head h2 { flex-basis: 100%; }
   .section-head select { flex: 1; min-width: 0; }
 }
-/* The portal exposes protocol state and deliberate requests in two areas. */
+/* Live readings and manual requests use separate workspaces. */
 main { width: min(100%, 1540px); padding: 28px 32px; }
 .portal-mode-row { margin: 16px 0 20px; font-size: 13px; }
 .agent-approval { margin-bottom: 16px; }
@@ -318,9 +333,9 @@ main { width: min(100%, 1540px); padding: 28px 32px; }
 .agent-stop-panel button { font-size: 12px; padding: 8px 10px; }
 .agent-stop-panel [data-stop-target="all_motion"] { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); font-weight: 700; }
 .agent-stop-panel .stop-history { margin-top: 7px; font-size: 12px; }
-.portal-workspace { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(340px, 1fr); gap: 22px; align-items: start; }
-.portal-workspace > * { min-width: 0; }
-body[data-mode="MOCK"] .portal-workspace { grid-template-columns: 1fr; }
+.twin-paused { display: none; }
+body[data-mode="MOCK"] .twin-paused { display: block; }
+body[data-mode="MOCK"] #digital-twin .live-controls { display: none; }
 .live-connection { padding: 20px; }
 .live-connection .eyebrow, .agent-commands .eyebrow { margin: 0 0 5px; }
 .live-status-row { margin-top: 14px; padding-top: 12px; gap: 8px; }
@@ -331,6 +346,7 @@ body[data-mode="MOCK"] .portal-workspace { grid-template-columns: 1fr; }
 .live-device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .live-device { padding: 17px; }
 .live-device[data-device="stage"] { grid-column: 1 / -1; }
+.stage-visual > svg { max-width: 400px; justify-self: center; }
 .live-device .card-heading { gap: 6px; }
 .live-device h3 { font-size: 15px; }
 .live-device .section-note { font-size: 11px; margin: 8px 0 12px; }
@@ -347,6 +363,9 @@ body[data-mode="MOCK"] .portal-workspace { grid-template-columns: 1fr; }
 .stage-visual > .visual-note { grid-column: 1 / -1; margin: 0; }
 .stage-visual .visual-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .stage-visual .visual-metrics dd { font-size: 14px; }
+.stage-axis-table { grid-column: 1 / -1; min-width: 0; max-width: 100%; overflow-x: auto; }
+.stage-axis-table table { width: 100%; }
+.stage-axis-table th, .stage-axis-table td { white-space: nowrap; }
 .stage-range { fill: var(--surface-soft); stroke: var(--button-line); stroke-width: 1; }
 .stage-visual text { fill: var(--muted); font: 10px system-ui, sans-serif; }
 .stage-guide { stroke: var(--button-line); stroke-dasharray: 3 3; }
@@ -366,7 +385,7 @@ body[data-mode="MOCK"] .portal-workspace { grid-template-columns: 1fr; }
 .live-groups > .card { border: 0; padding: 0; }
 .live-groups table { max-height: 260px; }
 .agent-commands { margin: 0; padding: 20px; border: 1px solid var(--line); }
-.command-selectors { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.command-selectors { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
 .agent-commands .command-fields { gap: 12px; }
 .request-inspector { font-size: 12px; margin-top: 16px; }
 .request-inspector summary { cursor: pointer; }
@@ -380,6 +399,5 @@ body[data-mode="MOCK"] .portal-workspace { grid-template-columns: 1fr; }
 #agent-command-progress { padding: 12px; background: var(--surface-soft); border-radius: 6px; overflow-wrap: anywhere; }
 .optional-tests { margin-top: 22px; }
 .optional-tests .agent-simulated-test { padding-bottom: 18px; margin-bottom: 18px; }
-@media (max-width: 1120px) { .portal-workspace { grid-template-columns: minmax(0, 1fr) minmax(320px, .85fr); gap: 16px; } .stage-visual { grid-template-columns: 1fr; } .stage-visual > svg { max-width: 320px; justify-self: center; } }
-@media (max-width: 850px) { .portal-workspace { grid-template-columns: 1fr; } .stage-visual { grid-template-columns: 1fr 1fr; } .agent-approval .disclosure-content { grid-template-columns: 1fr; } .agent-approval .disclosure-content > * { grid-column: 1; } .agent-stop-panel { grid-template-columns: 1fr; } .command-selectors { grid-template-columns: 1fr 2fr; } .live-controls label { display: flex; } }
-@media (max-width: 560px) { main { padding: 22px 14px; } .live-device-grid, .stage-visual, .command-selectors { grid-template-columns: 1fr; } .live-device[data-device="stage"] { grid-column: auto; } .stage-visual > svg { max-width: 300px; } .agent-stop-panel > * { grid-column: 1; } .agent-stop-panel button { flex: 1 0 40%; } }
+@media (max-width: 850px) { .agent-approval .disclosure-content { grid-template-columns: 1fr; } .agent-approval .disclosure-content > * { grid-column: 1; } .agent-stop-panel { grid-template-columns: 1fr; } .live-controls label { display: flex; } }
+@media (max-width: 560px) { main { padding: 22px 14px; } .workspace-tabs { gap: 6px; } .workspace-tabs button { min-width: 0; padding: 11px 8px; font-size: 12px; } .live-device-grid, .stage-visual, .command-selectors { grid-template-columns: 1fr; } .live-device[data-device="stage"] { grid-column: auto; } .stage-visual > svg { max-width: 300px; } .agent-stop-panel > * { grid-column: 1; } .agent-stop-panel button { flex: 1 0 40%; } }

@@ -2,6 +2,8 @@
 
 Agent Connect publishes cached device data and provides catalog commands after an explicit operator grant. The control interface uses version 6 and Phase 8. The 8082 production Console enables physical commands, including the supported furnace commands. Read streaming, normal commands and emergency Stop use separate paths.
 
+To integrate a different agent, use the [external agent integration pack](agent-connect/README.md). A human starts adaptation with the prompt in the [root README](../README.en.md#connect-an-external-agent). Read project knowledge first, then the communication contract. Adapt and check the external connector before operation. Runtime discovery checks compatibility and supplies current values; it does not trigger autonomous code changes. This page documents operation of the existing portal and Console.
+
 ## Local portal
 
 Enable the VPN in LarePass. Run the portal from the repository root:
@@ -12,17 +14,47 @@ uv run python scripts/agent_portal.py
 
 The command opens Agent Portal at `http://127.0.0.1:8792/`. The Live equipment source connects to `http://100.64.0.1:8082`. If the VPN or source is unavailable, the portal shows an error. It does not substitute simulated data.
 
-The **Agent** tab accepts questions and instructions. Open **OpenAI model**, enter your API key and select **Use model**. The default model is `gpt-6.2-sol`; you can enter another model that supports structured Responses output. The key stays in process memory. `OPENAI_API_KEY` can supply the initial key. Restarting the portal clears keys entered in the page. Instructions, recent conversation, verified Console state and the current command catalog go to OpenAI. Camera video and Console credentials are excluded.
+The **Agent** tab accepts questions and instructions. Open **Model APIs** to configure a profile:
 
-After connection and an explicit operator grant, clear instructions execute immediately. Missing targets or units cause a clarification question. Each instruction can execute 1 catalog action, including an existing composite action. Stage positions use rotations. Robot X/Y/Z use millimetres; R uses degrees. The agent reports the Console result and retains the request ID when the outcome is unknown. It never resends movement automatically. **Cancel agent task** cancels pending interpretation and requests cancellation of its own command. Stop controls remain available on both tabs.
+1. Select **Direct provider** or **Token Station** in **API route**.
+2. Enter a profile name, model ID and API key.
+3. For **Direct provider**, select the provider.
+4. Leave **Base URL** empty for the default address, or enter a custom base URL.
+5. Select **Save profile**.
+
+Profiles save `route` as `direct` or `token_station`. Profiles without `route` use `direct`. **Direct provider** uses the selected provider's native API:
+
+| Provider | API and output |
+| --- | --- |
+| OpenAI | Responses with structured output. |
+| Anthropic | Messages with structured output. |
+| Gemini | GenerateContent with a JSON schema. |
+
+**Token Station** hides the provider selector and uses the Chat Completions protocol. Keep vendor prefixes in model IDs, for example `openai/gpt-6.1-sol`. Its default base URL is `https://physics.bytefuture.ai/v1`. The default request URL is `https://physics.bytefuture.ai/v1/chat/completions`. Requests use `POST`, `Authorization: Bearer <api_key>`, `model`, `messages` and `stream: true`.
+
+For Token Station, the agent collects the complete server-sent events (SSE) response. It validates the decision JSON before submitting any command. Partial tokens never trigger commands. If the stream is truncated or reports an error, the agent submits no command.
+
+Select **Activate** to use a saved profile. Saving alone does not activate it. **Deactivate** stops model use and retains the profile. Select **Delete** to delete a profile. Deleting the active profile leaves no active model. The 1 active profile applies to both live and simulated sources.
+
+Windows DPAPI encrypts the complete saved payload for the current Windows user, including API keys and profile metadata. The default file is `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/model-profiles.json`, outside Git. Restarting the portal restores saved profiles and the active selection. Without Windows credential protection, profile storage is unavailable. There is no plaintext fallback. The default profile mode does not load `OPENAI_API_KEY` automatically.
+
+Profile changes and portal restarts send no automatic API probe or equipment command. When you submit a request, instructions and recent conversation go to the active API endpoint. The request also includes reviewed project knowledge, verified Console state and the current command catalog. Requests exclude camera video and Console credentials.
+
+At runtime, the local agent loads reviewed project knowledge and checks the current read contract before using state. It compares supported actions with their reviewed schemas, revisions, defaults and devices. A mismatch requires a human-directed coding-agent update before normal commands can resume. The local agent does not change its code autonomously.
+
+After connection and an explicit operator grant, clear instructions execute immediately. Missing targets or units cause a clarification question. Each instruction can execute 1 catalog action, including an existing composite action. Stage positions use rotations. Robot X/Y/Z use millimetres; R uses degrees. The agent reports the Console result and retains the request ID when the outcome is unknown. It never resends movement automatically. **Cancel agent task** cancels pending interpretation and requests cancellation of its own command. Stop controls remain available across the portal tabs.
 
 The live activity list updates every 1 second. It shows state reads, interpretation, validation, command submission and Console results. Each submitted command includes its exact JSON body and request ID. The interpretation gives a brief action explanation; the list does not expose private model reasoning. Activity stays in process memory and is separate for live and simulated sources.
 
-The **Manual testing** tab keeps the device diagrams, live readings, parameter forms and optional simulations. Opening a different tab does not disconnect the agent. Only an explicit instruction or manual command can request equipment operation; opening the page, configuring the model and granting control do not start equipment.
+The **Digital Twin** tab shows the live Console state. **Manual testing** contains command forms, target previews and optional simulations. Opening a different tab does not disconnect the agent. Only an explicit instruction or manual command can request equipment operation. Opening the page, configuring the model and granting control do not start equipment.
 
 The local server relays the read-only Olares WebSocket as server-sent events (SSE). It subscribes to `devices`, `samples` and `operations`. Updates per second selects 1, 2 or 4 Hz. The default is 2 Hz. The reader's Disconnect button stops only the data connection.
 
-Received state shows stage position diagrams, robot coordinates, temperatures, gas readings, microscope state and vision results. Missing readings remain unknown. Device inspectors and Full state JSON retain all received fields. Active samples, Operations and the last 100 events remain available below the main view. The browser checks the immutable data agreement and its digest before decoding. Unsupported definitions or a digest mismatch stop decoding. Raw JSON remains available.
+Digital Twin displays every device received from the Console stream. It shows stage position diagrams, robot coordinates, furnace temperatures, gas readings, thermal camera readings, microscope state and vision results. Missing readings remain unknown. Device inspectors and Full state JSON retain all received fields. Active samples, Operations and the last 100 events remain available below the device cards.
+
+Stage diagrams use the lower and upper calibration limits from each stream frame, in rotations. Each new frame updates the displayed limits. Unset native limits remain unavailable. The portal never replaces them with the protocol's numeric range. To recalibrate, use the existing controls in the [Stage panel](stage-panel.en.md).
+
+The browser checks the immutable data agreement and its digest before decoding. Unsupported definitions or a digest mismatch stop decoding. Raw JSON remains available.
 
 In Manual testing, Send command groups actions by device. The form shows the parameters, a target preview where supported, and the outgoing JSON. A target preview does not move equipment. Only Send command submits a manual request. The visualizer uses the existing machine interfaces and adds no camera video to the data stream.
 
@@ -45,6 +77,8 @@ Public read streaming requires no invitation or operator grant. Console manageme
 ### Console policy
 
 Open `http://100.64.0.1:8082/lab/#agent-connect` through LarePass. The control contract is at `/lab/api/agent/control/contract`. It declares `pairing: {approval: "invitation", operator_grant: "explicit"}`. Status reports `management_available`.
+
+The **Connections** subtab opens by default. Use it for invitations, agent records and operator control. **Testing** contains simulation controls and data and service details. Device Stop remains available outside both subtabs. Switching subtabs does not start equipment.
 
 Library construction defaults to `allow_physical=False`. Production registration opts in with `allow_physical=True`. This server-side choice cannot be changed by an invitation, grant, command parameter or portal control.
 
@@ -101,9 +135,9 @@ The watchdog uses `policy: "warn_only"` and `shutdown_enabled: false`. It adds n
 
 The warning includes the sender and remains visible until a human selects Dismiss warning. This sends `POST /lab/api/agent/control/acknowledge-warning` with `{}`. Dismissal does not restore authority or remove the recorded event.
 
-Client access records persist in `agent-connect/authority.db` under the Console runs directory. Invitations, sessions and grants do not persist. Restarting the Console invalidates sessions and grants.
+Client access records and `last_connected_at` persist in `agent-connect/authority.db` under the Console runs directory. This timestamp records the latest successful connection or reconnection in Unix seconds. It is `null` if no connection time is recorded, including historical records. Pairing, heartbeats, status reads, control release and rejected connections do not update it. Invitations, sessions and grants do not persist. Restarting the Console invalidates sessions and grants.
 
-The PC portal keeps credentials only in server memory. Restarting the portal requires a new invitation. A legacy pending client must use a new invitation.
+The PC portal keeps Console connection credentials only in server memory. Restarting the portal requires a new invitation, even when a model profile remains active. A legacy pending client must use a new invitation.
 
 Start test, Run next step and Stop test provide a separate memory-only handover test. The test has 3 manually triggered steps, including on Olares. Stop test affects only this test. It does not stop equipment.
 
@@ -160,7 +194,7 @@ Send only a request ID and target:
 | `gas_all` | Stop all 3 gas channels. |
 | `gas_0`, `gas_1`, `gas_2` | Stop gas channel 0, 1 or 2. |
 
-Stop requires no session, operator grant, current epoch or contract digest. It does not wait for normal command handling or a status refresh. The server resolves the sender. Callers cannot set a sender in the body. Missing or unknown credentials produce an unverified sender.
+Stop requires no session, operator grant, current epoch or contract digest. It does not wait for normal command handling or a status refresh. The server resolves the sender. Callers cannot set a sender in the body. If authority is available, a request without `Authorization` can be attributed to the trusted human. Unrecognized credentials or unavailable attribution produce an unverified sender. An agent sends its token when available, but missing access must not block Stop.
 
 Each deliberate press creates a new ID. Copies with the same ID and target share a history record, but each delivery still dispatches Stop. Details retain every transport, sender and device outcome. A mixed-sender request does not inherit another delivery's verified identity.
 

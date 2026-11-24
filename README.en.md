@@ -6,6 +6,25 @@ Hardware control project for the Dobot MG400 with a vacuum suction cup.
 Control the hardware through an interactive terminal or the Lab Console.
 The Lab Console is the only operator web page. It also controls the 3-motor stage, the cameras, the furnace, and the microscope.
 
+## Connect an external agent
+
+Start with the [external agent integration pack](docs/agent-connect/README.md). A human prompts the coding agent to read the project knowledge and communication contract, then adapt its own code before operation. The agent-facing files are in English.
+
+Copy this prompt into your coding agent with access to this repository and your external agent's repository:
+
+```text
+Adapt my external agent to this Lab Console in the external agent's own repository.
+Read docs/agent-connect/project-knowledge.md first, then docs/agent-connect/communication-contract.md in the Console repository.
+Use the first file for operating context and the second for the required communication behavior.
+Include the relevant project rules in my agent's runtime instructions.
+Read linked source files only when an implementation detail is unclear. Ask me for missing experimental goals or physical context.
+Implement state reads, compatibility checks, pairing, operator control, commands, result tracking and independent Stop as documented.
+Keep the Console authoritative. Do not change its code to fit my agent.
+Complete adaptation and simulated checks before operation. This task does not authorize equipment commands or live Stop tests.
+At runtime, check definitions and read current values. If the interface is unsupported, report it for human-directed adaptation instead of rewriting code during operation.
+Report the changed files, supported interfaces, checks and remaining gaps. Never put credentials in source files or model prompts.
+```
+
 ## Choose an interface
 
 Choose an operation guide for your task:

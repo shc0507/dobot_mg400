@@ -6,6 +6,25 @@ Dobot MG400 + 真空吸盘的真机控制项目。
 真机可用交互终端或实验室控制台控制。
 实验室控制台是唯一的操作网页，也控制 3 电机位移台、摄像头、炉子和显微镜。
 
+## 连接外部智能体
+
+先使用[外部智能体接入文档](docs/agent-connect/README.md)。由人明确提示编程智能体阅读项目知识和通信契约，再修改外部智能体的代码。完成适配后才运行。面向智能体的文件使用英文。
+
+让编程智能体访问本仓库和外部智能体仓库，然后复制以下提示词：
+
+```text
+Adapt my external agent to this Lab Console in the external agent's own repository.
+Read docs/agent-connect/project-knowledge.md first, then docs/agent-connect/communication-contract.md in the Console repository.
+Use the first file for operating context and the second for the required communication behavior.
+Include the relevant project rules in my agent's runtime instructions.
+Read linked source files only when an implementation detail is unclear. Ask me for missing experimental goals or physical context.
+Implement state reads, compatibility checks, pairing, operator control, commands, result tracking and independent Stop as documented.
+Keep the Console authoritative. Do not change its code to fit my agent.
+Complete adaptation and simulated checks before operation. This task does not authorize equipment commands or live Stop tests.
+At runtime, check definitions and read current values. If the interface is unsupported, report it for human-directed adaptation instead of rewriting code during operation.
+Report the changed files, supported interfaces, checks and remaining gaps. Never put credentials in source files or model prompts.
+```
+
 ## 选择入口
 
 按任务选择一篇操作指南：

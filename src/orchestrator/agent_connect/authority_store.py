@@ -72,6 +72,10 @@ class AuthorityStore:
                 "matching_code TEXT NOT NULL, created_at REAL NOT NULL, "
                 "approved_at REAL, revoked_at REAL)"
             )
+            self.connection.execute(
+                "CREATE TABLE IF NOT EXISTS agent_connect_client_connections ("
+                "client_id TEXT PRIMARY KEY, last_connected_at REAL)"
+            )
 
     def _remove_legacy_owner_code(self):
         """Remove only a generated bootstrap file beside a legacy authority database."""
@@ -108,23 +112,41 @@ class AuthorityStore:
     def clients(self):
         return {
             row["id"]: dict(row)
-            for row in self.connection.execute("SELECT * FROM agent_connect_clients ORDER BY rowid")
+            for row in self.connection.execute(
+                "SELECT clients.*, connections.last_connected_at "
+                "FROM agent_connect_clients clients "
+                "LEFT JOIN agent_connect_client_connections connections "
+                "ON clients.id=connections.client_id "
+                "ORDER BY clients.rowid"
+            )
         }
 
     def save(self, client):
         with self.connection:
             self.connection.execute(
-                "INSERT INTO agent_connect_clients VALUES "
+                "INSERT INTO agent_connect_clients "
+                "(id, name, credential_hash, status, matching_code, "
+                "created_at, approved_at, revoked_at) "
+                "VALUES "
                 "(:id, :name, :credential_hash, :status, :matching_code, "
                 ":created_at, :approved_at, :revoked_at) "
                 "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
                 "approved_at=excluded.approved_at, revoked_at=excluded.revoked_at",
                 client,
             )
+            self.connection.execute(
+                "INSERT INTO agent_connect_client_connections (client_id, last_connected_at) "
+                "VALUES (:id, :last_connected_at) ON CONFLICT(client_id) DO UPDATE "
+                "SET last_connected_at=excluded.last_connected_at",
+                client,
+            )
 
     def delete(self, client_id):
         with self.connection:
             self.connection.execute("DELETE FROM agent_connect_clients WHERE id = ?", (client_id,))
+            self.connection.execute(
+                "DELETE FROM agent_connect_client_connections WHERE client_id = ?", (client_id,)
+            )
 
     def close(self):
         self.connection.close()

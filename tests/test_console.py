@@ -644,7 +644,7 @@ def test_workspace_registry_needs_unique_ids_and_both_titles():
         ("position-finder", 100),
     ]
     legacy = next(item for item in workspaces if item.id == "position-finder")
-    assert legacy.title == {"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"}
+    assert legacy.title == {"en": "Optional", "zh": "可选"}
     assert callable(legacy.register) and legacy.script and legacy.style
     with pytest.raises(ValueError):
         Workspace(id="Bad Id", order=1, title={"en": "x", "zh": "x"})

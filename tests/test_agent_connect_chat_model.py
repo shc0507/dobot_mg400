@@ -49,10 +49,22 @@ def interpreter(value):
     return OpenAIInterpreter(transport, api_key="secret-test-key"), calls
 
 
+def status(configured, model=DEFAULT_MODEL):
+    return {
+        "configured": configured,
+        "provider": "openai",
+        "route": "direct",
+        "profile_id": "",
+        "name": "",
+        "model": model,
+        "base_url": "https://api.openai.com/v1",
+    }
+
+
 def test_missing_key_never_calls_transport():
     calls = []
     model = OpenAIInterpreter(lambda *args, **kwargs: calls.append(args))
-    assert model.status() == {"configured": False, "model": DEFAULT_MODEL}
+    assert model.status() == status(False)
     with pytest.raises(ServiceError, match="API key") as error:
         model.interpret({"user_message": "Move Top to 2 rotations."})
     assert error.value.status == 409 and calls == []
@@ -67,7 +79,7 @@ def test_key_stays_in_memory_and_blank_config_keeps_it(monkeypatch):
         return response("answer", "", {}, message="The stage reading is unavailable.")
 
     model = OpenAIInterpreter(transport)
-    assert model.configure("", "example-model") == {"configured": True, "model": "example-model"}
+    assert model.configure("", "example-model") == status(True, "example-model")
     model.interpret({"user_message": "Where is the stage?"})
     assert calls == ["env-secret"]
     assert "env-secret" not in json.dumps(model.status())
@@ -75,13 +87,13 @@ def test_key_stays_in_memory_and_blank_config_keeps_it(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "key,model_name", [(None, "x"), ("key\n", "x"), ("key", ""), ("key", "a/b")]
+    "key,model_name", [(None, "x"), ("key\n", "x"), ("key", ""), ("key", "a//b")]
 )
 def test_invalid_config_preserves_previous_values(key, model_name):
     model, _ = interpreter(response())
     with pytest.raises(ServiceError):
         model.configure(key, model_name)
-    assert model.status() == {"configured": True, "model": DEFAULT_MODEL}
+    assert model.status() == status(True)
 
 
 def test_structured_request_keeps_context_and_returns_typed_parameters():

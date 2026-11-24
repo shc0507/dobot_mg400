@@ -1,21 +1,31 @@
-"""Interpret one lab request with OpenAI. This module sends no device commands."""
+"""Interpret one lab request with a model. This module sends no device commands."""
 
+import http.client
 import json
 import math
 import os
-import re
 import threading
 import urllib.error
 import urllib.request
 
 from labkit.errors import ServiceError
 
+from .chat_completions_stream import read_stream
+from .chat_providers import build_payload, extract_text, request_parts
+from .model_profiles import (
+    DEFAULT_BASE_URLS,
+    ModelProfileError,
+    normalize_base_url,
+    validate_model,
+    validate_provider,
+    validate_route,
+)
+
 DEFAULT_MODEL = "gpt-6.2-sol"
 API_URL = "https://api.openai.com/v1/responses"
 TIMEOUT_S = 45
 MAX_RESPONSE_BYTES = 131072
 MAX_CONTEXT_BYTES = 262144
-MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 INSTRUCTIONS = """You interpret requests for a laboratory Console.
 Return one decision. The application validates and executes it separately.
@@ -76,7 +86,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if fp is not None:
             fp.close()
-        raise ServiceError(502, "OpenAI redirected the request. No command was sent.")
+        raise ServiceError(502, "The model endpoint redirected the request. No command was sent.")
 
 
 def _invalid_json(_value):
@@ -107,65 +117,52 @@ def _finite_values(value):
             _finite_values(item)
 
 
-def _request(payload, *, api_key):
+def _request(
+    payload, *, api_key, provider="openai", base_url=None, model=DEFAULT_MODEL, route="direct"
+):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    url, headers = request_parts(
+        provider, model, normalize_base_url(provider, base_url, route=route), api_key, route=route
+    )
     req = urllib.request.Request(
-        API_URL,
+        url,
         data=json.dumps(payload, allow_nan=False).encode(),
-        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
         with opener.open(req, timeout=TIMEOUT_S) as response:
+            if route == "token_station":
+                return read_stream(
+                    response, loads=_loads, max_bytes=MAX_RESPONSE_BYTES, timeout_s=TIMEOUT_S
+                )
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
-            raise ServiceError(502, "The OpenAI response is too large. No command was sent.")
+            raise ServiceError(502, "The model response is too large. No command was sent.")
         return _loads(raw)
     except urllib.error.HTTPError as error:
         messages = {
-            400: "OpenAI refused the model request. Check the selected model.",
-            401: "OpenAI rejected the API key. Enter a valid key in Model connection.",
-            403: "The OpenAI account cannot access this model. Check model access.",
-            404: "OpenAI could not find this model. Check the model name and account access.",
-            429: "OpenAI reached an account or rate limit. Check billing and try again later.",
+            400: "The model API refused the request. Check the model and endpoint.",
+            401: "The model API rejected the API key. Check the active model profile.",
+            403: "The model API denied access. Check the API key and model access.",
+            404: "The model API could not find this model or endpoint. Check the active profile.",
+            429: "The model API reached an account or rate limit. Check billing and try later.",
         }
         error.close()
         raise ServiceError(
-            502, messages.get(error.code, "OpenAI could not complete the request.")
+            502, messages.get(error.code, "The model API could not complete the request.")
         ) from None
-    except (OSError, ValueError, RecursionError):
-        raise ServiceError(502, "The OpenAI request failed. No command was sent.") from None
+    except (OSError, http.client.HTTPException, ValueError, RecursionError):
+        raise ServiceError(502, "The model request failed. No command was sent.") from None
 
 
-def _decision(response):
-    if not isinstance(response, dict) or response.get("status") != "completed":
-        raise ValueError("Incomplete model response.")
-    output = response.get("output")
-    if not isinstance(output, list):
-        raise ValueError("Missing model output.")
-    texts = []
-    for item in output:
-        if not isinstance(item, dict):
-            raise ValueError("Invalid model item.")
-        if item.get("type") == "reasoning":
-            continue
-        if item.get("type") != "message" or item.get("role") != "assistant":
-            raise ValueError("Unexpected model item.")
-        if item.get("status") not in (None, "completed"):
-            raise ValueError("Incomplete model message.")
-        content = item.get("content")
-        if not isinstance(content, list):
-            raise ValueError("Missing model content.")
-        for part in content:
-            if not isinstance(part, dict) or part.get("type") != "output_text":
-                raise ValueError("Model refusal or unexpected content.")
-            texts.append(part.get("text"))
-    if len(texts) != 1 or not isinstance(texts[0], str):
-        raise ValueError("Expected one model decision.")
-    value = _loads(texts[0])
+def _decision(response, provider="openai", *, route="direct"):
+    value = _loads(extract_text(provider, response, route=route))
     if not isinstance(value, dict) or set(value) != set(DECISION_SCHEMA["required"]):
         raise ValueError("Invalid decision fields.")
-    if value["kind"] not in DECISION_SCHEMA["properties"]["kind"]["enum"]:
+    if not isinstance(value["kind"], str) or (
+        value["kind"] not in DECISION_SCHEMA["properties"]["kind"]["enum"]
+    ):
         raise ValueError("Unknown decision kind.")
     if not isinstance(value["message"], str) or not 1 <= len(value["message"].strip()) <= 4096:
         raise ValueError("Invalid decision message.")
@@ -181,74 +178,173 @@ def _decision(response):
         raise ValueError("An answer cannot contain a command.")
     if value["kind"] == "command" and not value["action"].strip():
         raise ValueError("A command needs an action ID.")
-    if value["kind"] == "stop" and (value["action"] != "stop" or set(params) != {"target"}):
-        raise ValueError("A Stop needs a target.")
+    if value["kind"] == "stop":
+        targets = {
+            "robot",
+            "stage",
+            "microscope",
+            "all_motion",
+            "furnace",
+            "gas_all",
+            "gas_0",
+            "gas_1",
+            "gas_2",
+        }
+        if (
+            value["action"] != "stop"
+            or set(params) != {"target"}
+            or not isinstance(params["target"], str)
+            or params["target"] not in targets
+        ):
+            raise ValueError("A Stop needs a valid target.")
     return {key: value[key] for key in ("kind", "message", "action")} | {"params": params}
 
 
 class OpenAIInterpreter:
     def __init__(self, transport=None, *, api_key=None, model=DEFAULT_MODEL):
         self._lock = threading.Lock()
-        self._key = ""
-        self._model = DEFAULT_MODEL
-        self._transport = transport or _request
+        self._profile = None
+        self._transport = transport
         self.configure(os.environ.get("OPENAI_API_KEY", "") if api_key is None else api_key, model)
 
     def status(self):
         with self._lock:
-            return {"configured": bool(self._key), "model": self._model}
+            profile = self._profile or {}
+            return {
+                "configured": bool(profile.get("api_key")),
+                "provider": profile.get("provider", ""),
+                "route": profile.get("route", "direct"),
+                "profile_id": profile.get("id", ""),
+                "name": profile.get("name", ""),
+                "model": profile.get("model", ""),
+                "base_url": profile.get("base_url", ""),
+            }
 
     def configure(self, api_key, model):
+        """Keep the legacy OpenAI configuration interface."""
+        api_key = self._validate_key(api_key)
+        try:
+            model = validate_model(model)
+        except ModelProfileError:
+            raise ServiceError(400, "Enter a valid OpenAI model name.") from None
+        with self._lock:
+            current = self._profile or {}
+            if (
+                not api_key
+                and current.get("route", "direct") == "direct"
+                and current.get("provider") == "openai"
+                and current.get("base_url") == DEFAULT_BASE_URLS["openai"]
+            ):
+                api_key = current.get("api_key", "")
+            self._profile = {
+                "provider": "openai",
+                "route": "direct",
+                "model": model,
+                "base_url": DEFAULT_BASE_URLS["openai"],
+                "api_key": api_key,
+                "id": "",
+                "name": "",
+            }
+        return self.status()
+
+    @staticmethod
+    def _validate_key(api_key):
         if (
             not isinstance(api_key, str)
             or len(api_key) > 4096
-            or any(ord(char) < 32 or ord(char) == 127 for char in api_key)
+            or any(not 32 <= ord(char) < 127 for char in api_key)
         ):
             raise ServiceError(400, "Enter an API key without control characters.")
-        if not isinstance(model, str) or not MODEL_NAME.fullmatch(model.strip()):
-            raise ServiceError(400, "Enter a valid OpenAI model name.")
+        return api_key.strip()
+
+    def configure_profile(self, profile):
+        """Replace the active configuration. None clears all active profile fields."""
+        replacement = None
+        if profile is not None:
+            if not isinstance(profile, dict):
+                raise ServiceError(400, "Choose a valid model profile.")
+            try:
+                provider = validate_provider(profile.get("provider"))
+                route = validate_route(profile.get("route", "direct"))
+                replacement = {
+                    "provider": provider,
+                    "route": route,
+                    "model": validate_model(profile.get("model")),
+                    "base_url": normalize_base_url(provider, profile.get("base_url"), route=route),
+                    "api_key": self._validate_key(profile.get("api_key", "")),
+                    "id": profile.get("id", ""),
+                    "name": profile.get("name", ""),
+                }
+                if any(
+                    not isinstance(replacement[field], str)
+                    or len(replacement[field]) > 128
+                    or any(ord(char) < 32 or ord(char) == 127 for char in replacement[field])
+                    for field in ("id", "name")
+                ):
+                    raise ValueError("Invalid profile name or ID.")
+            except (ModelProfileError, ValueError):
+                raise ServiceError(400, "Choose a valid model profile.") from None
         with self._lock:
-            if api_key.strip():
-                self._key = api_key.strip()
-            self._model = model.strip()
+            self._profile = replacement
         return self.status()
 
     def interpret(self, context):
         with self._lock:
-            key, model = self._key, self._model
+            profile = dict(self._profile or {})
+        key = profile.get("api_key")
         if not key:
-            raise ServiceError(409, "Enter an OpenAI API key in Model connection first.")
+            raise ServiceError(409, "Choose a model profile with an API key first.")
         try:
             if not isinstance(context, dict):
                 raise ValueError("Context must be an object.")
-            content = json.dumps(context, allow_nan=False, separators=(",", ":"))
-            if len(content.encode()) > MAX_CONTEXT_BYTES:
+            knowledge = context.get("project_knowledge", "")
+            if not isinstance(knowledge, str):
+                raise ValueError("Project knowledge must be text.")
+            content = json.dumps(
+                {key: value for key, value in context.items() if key != "project_knowledge"},
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            if len(content.encode()) + len(knowledge.encode()) > MAX_CONTEXT_BYTES:
                 raise ValueError("Context is too large.")
         except (ValueError, TypeError, RecursionError):
             raise ServiceError(400, "The agent context is invalid or too large.") from None
-        payload = {
-            "model": model,
-            "store": False,
-            "max_output_tokens": 4096,
-            "input": [
-                {"role": "developer", "content": INSTRUCTIONS},
-                {"role": "user", "content": content},
-            ],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "console_decision",
-                    "strict": True,
-                    "schema": DECISION_SCHEMA,
-                }
-            },
-        }
+        instructions = INSTRUCTIONS + (
+            "\nProject operating context:\n" + knowledge if knowledge else ""
+        )
+        payload = build_payload(
+            profile["provider"],
+            profile["model"],
+            instructions,
+            content,
+            DECISION_SCHEMA,
+            route=profile["route"],
+        )
         try:
-            response = self._transport(payload, api_key=key)
-            return _decision(response)
+            if self._transport is None:
+                response = _request(
+                    payload,
+                    api_key=key,
+                    provider=profile["provider"],
+                    base_url=profile["base_url"],
+                    model=profile["model"],
+                    route=profile["route"],
+                )
+            else:
+                response = self._transport(payload, api_key=key)
+            return _decision(response, profile["provider"], route=profile["route"])
         except ServiceError:
-            raise
-        except (OSError, ValueError, TypeError, KeyError, RecursionError):
+            if self._transport is None:
+                raise
+            raise ServiceError(502, "The model request failed. No command was sent.") from None
+        except (
+            OSError,
+            http.client.HTTPException,
+            ValueError,
+            TypeError,
+            KeyError,
+            RecursionError,
+        ):
             raise ServiceError(
                 502, "The model did not return one valid decision. No command was sent."
             ) from None

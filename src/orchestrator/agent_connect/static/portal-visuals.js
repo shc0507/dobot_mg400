@@ -8,7 +8,11 @@
     const axes = device?.values?.axes || [];
     return [ ["top", "X"], ["bottom", "Y"], ["insert", "Insert"] ].map(([id, label]) => {
       const source = axes.find(axis => axis.id === id) || {};
-      const min = source.lower_limit_rotations, max = source.upper_limit_rotations, value = source.position_rotations;
+      const native = device?.cached_state?.values?.motors?.find(axis => axis.id === id) || {};
+      const lowerSet = source.lower_limit_set ?? native.lower_limit_set, upperSet = source.upper_limit_set ?? native.upper_limit_set;
+      const min = lowerSet === false ? null : source.lower_limit_rotations, max = upperSet === false ? null : source.upper_limit_rotations, value = source.position_rotations;
+      const calibration = source.calibration ?? native.calibration, fault = source.fault ?? native.fault;
+      const faulted = Boolean(fault && fault !== "none");
       const unit = source.unit, rotationUnit = unit === "rotation";
       const bounds = rotationUnit && finite(min) && finite(max) && max > min;
       const recent = age => finite(age) && age >= 0 && age + elapsed <= 3;
@@ -16,9 +20,12 @@
       const verified = source.quality === "valid" && source.reference_valid === true;
       const unverified = source.quality === "unknown" && source.reference_valid == null && source.motion_ready === true;
       const inside = bounds && finite(value) && value >= min && value <= max;
-      const position = fresh && (verified || unverified) && inside ? (value - min) / (max - min) : null;
-      const quality = !Object.keys(source).length ? "Not received" : !rotationUnit ? "Unsupported unit" : source.reference_valid === false || source.quality === "uncalibrated" ? "Not calibrated" : !fresh || !(verified || unverified) ? "Outdated or unknown" : !finite(value) ? "Position unknown" : !bounds ? "Limits unavailable" : !inside ? "Outside limits" : unverified ? "Reference unverified" : "Current";
-      return { id, label, value, unit, min, max, bounds, fresh, unverified, position, quality };
+      const position = fresh && !faulted && (verified || unverified) && inside ? (value - min) / (max - min) : null;
+      const quality = !Object.keys(source).length ? "Not received" : !rotationUnit ? "Unsupported unit" : faulted ? `Fault: ${typeof fault === "object" ? fault.message || fault.code || "Reported" : fault}` : source.reference_valid === false || source.quality === "uncalibrated" ? "Not calibrated" : !fresh || !(verified || unverified) ? "Outdated or unknown" : !finite(value) ? "Position unknown" : !bounds ? "Limits unavailable" : !inside ? "Outside limits" : unverified ? "Reference unverified" : "Current";
+      const rangeStatus = lowerSet === false && upperSet === false ? "Limits not set" : lowerSet === false ? "Minimum not set" : upperSet === false ? "Maximum not set" : !bounds ? "Limits unavailable" : "";
+      const calibrationStatus = ({ none: "Not calibrated", lower: "Calibrating: minimum", upper: "Calibrating: maximum", center: "Calibrating: center", done: "Calibration complete", cancelled: "Calibration cancelled", failed: "Calibration failed" })[calibration];
+      const status = [...new Set([!fresh ? "Outdated reading" : "", rangeStatus, calibrationStatus, quality === "Current" || quality === rangeStatus || quality === "Limits unavailable" && rangeStatus ? "" : quality].filter(Boolean))].join(" · ") || "Current";
+      return { id, label, value, unit, min, max, bounds, fresh, unverified, position, quality, status };
     });
   }
   function observationQuality(observation, elapsed = 0) {
@@ -45,6 +52,17 @@
     for (const [label, value] of items) { const entry = node("div"); entry.append(node("dt", label), node("dd", value)); result.append(entry); }
     return result;
   }
+  function stageTable(axes) {
+    const wrapper = node("div", undefined, "stage-axis-table"), table = node("table"), head = node("tr"), body = node("tbody");
+    for (const label of ["Axis", "Current (rot)", "Min (rot)", "Max (rot)", "Status"]) { const cell = node("th", label); cell.setAttribute("scope", "col"); head.append(cell); }
+    const header = node("thead"); header.append(head); table.append(header, body);
+    for (const axis of axes) {
+      const row = node("tr"), name = node("th", axis.label); name.setAttribute("scope", "row"); row.append(name);
+      for (const value of [axis.value, axis.min, axis.max]) row.append(node("td", axis.unit === "rotation" ? number(value) : "Unknown"));
+      row.append(node("td", axis.status)); body.append(row);
+    }
+    wrapper.append(table); return wrapper;
+  }
   function stageDiagram(axes) {
     const root = node("div", undefined, "stage-visual"), plot = svgNode("svg", { viewBox: "0 0 280 180", role: "img", "aria-label": "Stage X and Y in received rotation limits. Dashed markers have an unverified reference. No physical geometry is inferred." });
     plot.append(svgNode("rect", { x: 36, y: 12, width: 218, height: 130, rx: 3, class: "stage-range" }));
@@ -54,11 +72,16 @@
     if (x.position !== null && y.position !== null) {
       const cx = 36 + 218 * x.position, cy = 142 - 130 * y.position;
       plot.append(svgNode("line", { x1: cx, x2: cx, y1: 12, y2: 142, class: "stage-guide" }), svgNode("line", { x1: 36, x2: 254, y1: cy, y2: cy, class: "stage-guide" }), svgNode("circle", { cx, cy, r: 5, class: x.unverified || y.unverified ? "stage-point stage-point-unverified" : "stage-point" }));
-    } else { const missing = svgNode("text", { x: 145, y: 78, "text-anchor": "middle" }); missing.textContent = "XY position unavailable"; plot.append(missing); }
+    } else {
+      const missing = svgNode("text", { x: 145, y: 78, "text-anchor": "middle" });
+      const missingLimits = [x, y].filter(axis => !axis.bounds).map(axis => axis.label);
+      missing.textContent = missingLimits.length && [x, y].every(axis => axis.unit === "rotation" && finite(axis.value)) ? `${missingLimits.join("/")} limits unavailable` : "XY position unavailable";
+      plot.append(missing);
+    }
     const rail = node("div", undefined, "stage-insert"), track = node("div", undefined, "axis-track");
     if (insert.position !== null) { const marker = node("span", undefined, insert.unverified ? "axis-marker axis-marker-unverified" : "axis-marker"); marker.style.left = `${insert.position * 100}%`; marker.title = insert.quality; track.append(marker); }
     rail.append(node("span", "Insert · rotations", "axis-label"), track, node("div", insert.bounds ? `${number(insert.min)} — ${number(insert.max)}` : "Calibrated limits unavailable", "axis-bounds"));
-    root.append(plot, rail, metrics(axes.map(axis => [axis.label, axis.unit === "rotation" ? number(axis.value, "rot") : "Unknown"])), node("p", axes.filter(axis => axis.quality !== "Current").map(axis => `${axis.label}: ${axis.quality}`).join(" · ") || "Received position within calibrated limits", "visual-note")); return root;
+    root.append(plot, rail, metrics(axes.map(axis => [axis.label, axis.unit === "rotation" ? number(axis.value, "rot") : "Unknown"])), stageTable(axes), node("p", axes.filter(axis => axis.quality !== "Current").map(axis => `${axis.label}: ${axis.quality}`).join(" · ") || "Received position within calibrated limits", "visual-note")); return root;
   }
   function deviceVisual(name, device, elapsed = 0) {
     const result = node("div", undefined, "device-visual");

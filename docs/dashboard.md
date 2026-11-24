@@ -11,7 +11,7 @@
 控制台是唯一的操作网页。
 
 - 页头第 1 行显示控制台名称、工作区标签、**Chip passport** 链接、本页控制的设备和语言切换。鼠标悬停在控制台名称上显示部署的提交。本页控制 1 台或多台设备时，才显示所控制的设备。第 2 行是状态条。**STOP ALL MOTION** 是页头右侧的高按钮，跨越这 2 行。
-- 工作区为 **Overview**、**Motion**、**Cameras**、**Furnace**、**Sample Transfer**、**Twin** 和 **Position Finder (legacy)**。旧版工作区排在最后，默认关闭。Sample Transfer 使用实时编码器转数和已存命名位置。
+- 工作区为 **Overview**、**Motion**、**Cameras**、**Furnace**、**Sample Transfer**、**Twin**、**Agent Connect** 和 **Optional**。Optional 页签排在最后，其中的 Position Finder (legacy) 默认关闭。Sample Transfer 使用实时编码器转数和已存命名位置。
 - 语言切换在 English 和中文之间切换。浏览器保存所选语言。
 - 在语言按钮旁选择 **Dark mode** 或 **Light mode**，切换控制台外观。默认使用浅色模式。浏览器按控制台地址保存所选模式。
 - 状态条为每个服务显示 1 个标签：圆点和文字。有运行时才显示 **Runs** 标签。需要注意的状态（例如过期、故障、不可用）带底色。状态超过 3 秒即显示过期。
@@ -122,7 +122,7 @@
 
 ### 位置查找（旧版）工作区
 
-**Position Finder (legacy)** 排在工作区标签末尾，默认关闭。用启用开关打开 **Monitor** 和 **Calibration**。关闭后停止采样和预览请求，并释放临时图像数据。已存校准配置仍保留在磁盘上。启用它不会把测量值接入 Motion 或 Sample Transfer。
+**Optional** 排在工作区标签末尾。其中的 **Position Finder (legacy)** 默认关闭。用启用开关打开 **Monitor** 和 **Calibration**。关闭后停止采样和预览请求，并释放临时图像数据。已存校准配置仍保留在磁盘上。启用它不会把测量值接入 Motion 或 Sample Transfer。
 
 启用后，Position Finder 从相机图像估算位移台位置。监视图像、检测标记和轴读数来自同一帧。
 相机下拉框列出已配置的共享光学相机 `camera1` 至 `camera4`，默认选位移台俯视相机 `camera1`。
@@ -137,7 +137,7 @@
 1. 打开 **Calibration**。选择相机。点击 **New profile**。
 2. 填写配置名称和行程。
 3. 在 Motion 工作区手动移动位移台。
-4. 位移台静止后，返回 Position Finder (legacy)。采集端点。
+4. 位移台静止后，返回 Optional 中的 Position Finder (legacy)。采集端点。
 5. 依次采集 3 个轴各自的 2 个端点，共 6 个端点。
 6. 点击 **Save calibration**。控制台自动选择所保存的配置来监视位移。
 
@@ -256,7 +256,7 @@ Twin 工作区显示 3D 台面模型及机器人、显微镜转盘和炉子的�
 uv run --no-default-groups --group vision --group stage python scripts/console_preview.py
 ```
 
-打开 `http://127.0.0.1:8790/lab/#motion`。预览使用实际控制台资源，不连接 VPN 或 Olares。打开 `#position-finder` 并打开启用开关，即可用模拟图像检查旧版监控和校准。
+打开 `http://127.0.0.1:8790/lab/#motion`。预览使用实际控制台资源，不连接 VPN 或 Olares。打开 **Optional**（`#position-finder`）。打开启用开关，用模拟图像检查旧版监控和校准。
 
 打开 `http://127.0.0.1:8790/lab/#process` 可预览转盘校准。Camera3 使用 `1280 × 720` 模拟图像。**Start calibration**、逐物镜记录和配置操作使用本地模拟服务，不要求实际显微镜控制权。配置保存在 `work/console-preview/calibration/microscope/turret_profiles/`。
 

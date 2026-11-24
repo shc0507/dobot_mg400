@@ -136,6 +136,6 @@ def register(blueprint, service):
 WORKSPACE = Workspace(
     id="position-finder",
     order=100,
-    title={"en": "Position Finder (legacy)", "zh": "位置查找（旧版）"},
+    title={"en": "Optional", "zh": "可选"},
     register=register,
 )

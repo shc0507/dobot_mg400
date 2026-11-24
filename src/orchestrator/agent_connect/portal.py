@@ -24,6 +24,7 @@ def create_portal_app(
     control_transport=None,
     interpreter=None,
     chat_reader=None,
+    model_profiles=None,
 ):
     transport = transport or LocalTransport()
     clients = {
@@ -41,7 +42,14 @@ def create_portal_app(
     control = register_control_portal(app, control_transport, live_reader=live_transport.read)
     from .chat_routes import register_chat
 
-    register_chat(app, control, live_transport.read, model=interpreter, reader=chat_reader)
+    register_chat(
+        app,
+        control,
+        live_transport.read,
+        model=interpreter,
+        reader=chat_reader,
+        profiles=model_profiles,
+    )
 
     @app.get("/")
     def index():

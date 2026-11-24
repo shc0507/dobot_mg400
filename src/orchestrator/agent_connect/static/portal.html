@@ -15,6 +15,7 @@
   <p class="intro">Give the agent an instruction, or inspect and send commands yourself.</p>
   <nav class="workspace-tabs" role="tablist" aria-label="Portal workspace">
     <button type="button" id="tab-agent" role="tab" aria-selected="true" aria-controls="agent-chat-view" data-workspace="agent">Agent</button>
+    <button type="button" id="tab-digital-twin" role="tab" aria-selected="false" aria-controls="digital-twin" tabindex="-1" data-workspace="digital-twin">Digital Twin</button>
     <button type="button" id="tab-manual" role="tab" aria-selected="false" aria-controls="manual-testing" tabindex="-1" data-workspace="manual">Manual testing</button>
   </nav>
   <details class="card disclosure agent-approval" id="agent-approval">
@@ -51,15 +52,37 @@
       </section>
       <aside class="chat-sidebar" aria-label="Agent setup and examples">
         <details id="chat-model-settings" class="card disclosure" open>
-          <summary>OpenAI model <span id="chat-model-status" class="status-pill">Not configured</span></summary>
+          <summary>Model APIs <span id="chat-model-status" class="status-pill" role="status">Loading</span></summary>
           <div class="disclosure-content">
-            <form id="chat-model-form">
-              <label for="chat-model">Model</label><input id="chat-model" type="text" autocomplete="off" spellcheck="false" required>
-              <label for="chat-api-key">API key</label><input id="chat-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter key on this PC">
-              <p class="section-note">The key stays in the local portal process. Leave it blank to keep the current key.</p>
-              <button type="submit" id="chat-model-save">Use model</button>
-            </form>
-            <p class="section-note chat-data-note">Your instructions and relevant Console state are sent to OpenAI. Camera video and Console credentials are not included. Keep API keys out of chat.</p>
+            <p id="chat-active-profile" class="chat-active-profile">Loading saved profiles…</p>
+            <p id="chat-profile-error" class="live-error" role="alert" hidden></p>
+            <p id="chat-profile-storage" class="section-note" role="status"></p>
+            <ul id="chat-profile-list" class="chat-profile-list" aria-label="Saved model API profiles"></ul>
+            <p id="chat-profile-empty" class="section-note" hidden>No saved profiles.</p>
+            <details id="chat-profile-add" class="chat-profile-add" open>
+              <summary>Add profile</summary>
+              <form id="chat-model-form" autocomplete="off">
+                <fieldset id="chat-profile-fields">
+                  <label for="chat-profile-name">Name</label><input id="chat-profile-name" type="text" maxlength="80" autocomplete="off" required>
+                  <label for="chat-route">API route</label><select id="chat-route"><option value="direct">Direct provider</option><option value="token_station">Token Station</option></select>
+                  <label id="chat-provider-label" for="chat-provider">Provider</label><select id="chat-provider"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option></select>
+                  <label for="chat-model">Model</label><input id="chat-model" type="text" autocomplete="off" spellcheck="false" required>
+                  <label for="chat-api-key">API key</label><input id="chat-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Enter key on this PC" required>
+                  <details id="chat-endpoint-settings" class="chat-endpoint-settings"><summary id="chat-endpoint-title">Custom endpoint</summary><label for="chat-base-url">Base URL (optional)</label><input id="chat-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://api.openai.com/v1"><p id="chat-endpoint-note" class="section-note">Leave this blank to use the provider default.</p></details>
+                  <button type="submit" id="chat-model-save">Save profile</button>
+                </fieldset>
+              </form>
+            </details>
+            <p class="section-note chat-data-note">Activate a saved profile to use it. Activation sends no model request or equipment command.</p>
+            <p class="section-note">Instructions and relevant Console state go to the active API endpoint. Camera video and Console credentials are excluded. Keep API keys out of chat.</p>
+          </div>
+        </details>
+        <details id="chat-adapter" class="card disclosure">
+          <summary>Console adapter <span id="chat-adapter-status" class="status-pill">Checking</span></summary>
+          <div class="disclosure-content">
+            <p id="chat-adapter-message" class="section-note" role="status">Waiting for adapter status.</p>
+            <ul id="chat-adapter-documents" class="chat-adapter-documents" aria-label="Console adapter documents"></ul>
+            <p class="section-note">Compatible definitions refresh at runtime. Changed semantics need a human adapter update.</p>
           </div>
         </details>
         <section class="card chat-examples" aria-label="Example instructions">
@@ -68,13 +91,13 @@
           <button type="button" data-chat-example="Move the X stage to 2 rotations.">Move X to 2 rotations</button>
           <button type="button" data-chat-example="Move the robot up by 1.25 mm at 1% speed.">Move the robot up 1.25 mm</button>
           <p class="section-note">Examples fill the message box. Select Send instruction to run them.</p>
-          <button type="button" id="chat-open-manual" class="chat-manual-link">Inspect data and manual controls →</button>
+          <button type="button" id="chat-open-manual" class="chat-manual-link">Open manual controls →</button>
         </section>
       </aside>
     </div>
   </section>
-  <section id="manual-testing" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
-  <div class="portal-workspace">
+  <section id="digital-twin" role="tabpanel" aria-labelledby="tab-digital-twin" tabindex="0" hidden>
+  <p class="twin-paused section-note" role="status">Live updates are paused during simulation. Last received data remains below. Disable simulation in <a href="#manual">Manual testing</a> to resume live updates.</p>
   <section id="live-view" aria-label="Live Olares data stream">
     <section class="card live-connection">
       <div class="card-heading"><div><p class="eyebrow">RECEIVE</p><h2>Device state</h2><a href="http://100.64.0.1:8082/lab/#agent-connect" target="_blank" rel="noopener">100.64.0.1:8082 ↗</a></div><div class="live-controls"><label>Updates per second<select id="live-rate"><option value="1">1 Hz</option><option value="2" selected>2 Hz</option><option value="4">4 Hz</option></select></label><button id="live-connect" type="button">Disconnect</button></div></div>
@@ -92,6 +115,8 @@
     <details class="card disclosure live-json"><summary>Full state JSON</summary><div class="disclosure-content"><p class="section-note">The complete last state frame, including all device fields, sample records, operations and message metadata.</p><button id="live-download" type="button" disabled>Download received data</button><pre id="live-raw">Waiting for a state frame.</pre></div></details>
     <details class="card disclosure live-json"><summary>Connection and data agreement</summary><div class="disclosure-content"><dl id="live-agreement"></dl><pre id="live-last-message">Waiting for a message.</pre></div></details>
   </section>
+  </section>
+  <section id="manual-testing" role="tabpanel" aria-labelledby="tab-manual" tabindex="0" hidden>
       <section id="agent-commands" class="card agent-commands" aria-label="Agent commands">
         <div class="card-heading"><div><p class="eyebrow">SEND</p><h2>Agent request</h2></div><span id="agent-command-mode" class="status-pill">Physical commands</span></div>
         <p id="agent-command-note" class="section-note">Connect this agent, then grant operator control from the Console.</p>
@@ -110,7 +135,6 @@
         <details class="command-history"><summary>Recent commands and results</summary><div id="agent-command-history"></div></details>
         <details class="command-unavailable"><summary id="agent-command-unavailable-count">Unavailable actions</summary><ul id="agent-command-unavailable"></ul></details>
       </section>
-  </div>
   <details class="card disclosure optional-tests"><summary>Optional simulation tests</summary><div class="disclosure-content"><label class="test-toggle"><input type="checkbox" id="enable-tests"> Enable simulation tests</label>
       <div class="agent-simulated-test"><div><span class="status-pill">SIMULATED</span><h3>Handover test</h3><p class="section-note">Run a step, then take control in the Console. The agent must lose permission to run later steps.</p></div><div><p id="agent-control-test" role="status">No test running.</p><div class="stream-actions"><button type="button" id="agent-control-start" disabled>Start test</button><button type="button" id="agent-control-step" disabled>Run next step</button><button type="button" id="agent-control-stop">Stop test</button></div></div></div>
   <section id="advanced-tests" hidden aria-label="Optional simulated agent tests">

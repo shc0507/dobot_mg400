@@ -24,23 +24,33 @@ def mock_read(path):
     return json.loads(raw)
 
 
-def register_chat(app, control, live_reader, *, model=None, reader=None):
+def register_chat(app, control, live_reader, *, model=None, reader=None, profiles=None):
+    if profiles is None and model is None:
+        from .model_profiles import ModelProfileStore
+
+        profiles = ModelProfileStore()
+    model = model or OpenAIInterpreter(api_key="" if profiles is not None else None)
+    if profiles is not None and profiles.status()["storage_available"]:
+        active = profiles.active()
+        if active is not None:
+            model.configure_profile(active)
     chat = ChatAgent(
         control,
         reader or ChatContextReader({"live": live_reader, "mock": mock_read}),
-        model or OpenAIInterpreter(),
+        model,
+        profiles=profiles,
     )
     app.extensions["agent_portal_chat"] = chat
     atexit.register(chat.close)
     prefix = "/api/agent-chat"
 
-    def body(fields):
+    def body(fields, optional=()):
         if request.content_length is not None and request.content_length > 16384:
             raise ServiceError(413, "The local chat request is too large.")
         value = request.get_json(silent=True)
         if request.mimetype != "application/json" or not isinstance(value, dict):
             raise ServiceError(400, "Send a JSON object.")
-        if set(value) != set(fields):
+        if not set(fields) <= set(value) or set(value) - set(fields) - set(optional):
             raise ServiceError(400, "Send only the documented chat fields.")
         return value
 
@@ -74,6 +84,25 @@ def register_chat(app, control, live_reader, *, model=None, reader=None):
     def settings():
         data = body({"api_key", "model"})
         return jsonify(chat.configure(data["api_key"], data["model"]))
+
+    @app.get(prefix + "/profiles")
+    def profiles_status():
+        response = jsonify(chat.profile_status())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post(prefix + "/profiles")
+    def add_profile():
+        data = body({"name", "provider", "model", "base_url", "api_key"}, optional={"route"})
+        return jsonify(chat.change_profile("add", data)), 201
+
+    @app.post(prefix + "/profiles/activate")
+    def activate_profile():
+        return jsonify(chat.change_profile("activate", body({"profile_id"})))
+
+    @app.post(prefix + "/profiles/delete")
+    def delete_profile():
+        return jsonify(chat.change_profile("delete", body({"profile_id"})))
 
     @app.post(prefix + "/message")
     def message():

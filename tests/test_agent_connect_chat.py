@@ -254,6 +254,7 @@ def test_context_does_not_contain_connection_credentials(rig):
         "read_contract_id",
         "commands",
         "choices",
+        "project_knowledge",
     }
 
 

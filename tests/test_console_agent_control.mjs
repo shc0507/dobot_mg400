@@ -44,10 +44,13 @@ const staticFile = name => readFileSync(new URL(`../src/orchestrator/agent_conne
 function domNode(tag = "div") {
   return {
     tag, children: [], textContent: "", value: "", hidden: false, disabled: false, events: {},
+    classList: { add() {} },
     setAttribute(name, value) { this[name] = value; },
     addEventListener(name, callback) { this.events[name] = callback; },
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; },
+    append(...children) { for (const child of children) { child.remove(); child.parent = this; this.children.push(child); } },
+    insertBefore(child, before) { child.remove(); child.parent = this; this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, child); },
+    replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); },
+    remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; },
   };
 }
 function descendants(node) { return [node, ...node.children.flatMap(descendants)]; }
@@ -119,7 +122,7 @@ test("only the Console offers an explicit warning dismissal", () => {
   const context = { document: { createElement: domNode } };
   runInNewContext(staticFile("control-owner.js"), context);
   const panel = Object.create(context.AgentOwnerPanel.OwnerPanel.prototype), calls = [];
-  panel.container = { classList: { add() {} }, replaceChildren() {} };
+  panel.container = domNode();
   panel.busy = false;
   panel.status = { management_available: true, equipment_mode: "physical", watchdog: { active: { sender: { name: "Agent A" } } } };
   panel.action = (path, body) => calls.push({ path, body });
@@ -338,7 +341,7 @@ test("Console connections hide revoked clients without changing the saved status
   const context = { document: { createElement: domNode } };
   runInNewContext(staticFile("control-owner.js"), context);
   const panel = Object.create(context.AgentOwnerPanel.OwnerPanel.prototype);
-  panel.container = { classList: { add() {} }, replaceChildren() {} };
+  panel.container = domNode();
   panel.status = {
     management_available: true,
     clients: [
@@ -357,6 +360,90 @@ test("Console connections hide revoked clients without changing the saved status
   panel.render();
   assert.equal(panel.nodes.clients.children.length, 1);
   assert.equal(panel.nodes.clients.children[0].textContent, "No agents registered.");
+});
+
+function ownerFixture({ external = false } = {}) {
+  const context = { document: { createElement: domNode } };
+  runInNewContext(staticFile("control-owner.js"), context);
+  const panel = Object.create(context.AgentOwnerPanel.OwnerPanel.prototype), calls = [];
+  panel.container = domNode(); panel.busy = false;
+  if (external) { panel.testContainer = domNode(); panel.stopContainer = domNode(); panel.messageContainer = domNode(); }
+  panel.status = {
+    management_available: true, equipment_mode: "physical",
+    clients: [{ id: "a", name: "Agent A", status: "approved", created_at: 1000, last_connected_at: null }],
+    sessions: [{ id: "s", client_id: "a", connected: true }],
+  };
+  panel.action = (path, body) => calls.push({ path, body });
+  panel.build(); return { panel, calls };
+}
+
+test("last connection uses persisted Unix seconds and never substitutes registration time", () => {
+  for (const value of [null, undefined, "1795543200", NaN, Infinity, -1, 1e20]) {
+    assert.deepEqual(owner.lastConnected(value), { text: "Not recorded", iso: null });
+  }
+  assert.equal(owner.lastConnected(0).iso, "1970-01-01T00:00:00.000Z");
+  const value = Date.parse("2026-11-24T15:00:00Z") / 1000;
+  assert.equal(owner.lastConnected(value).iso, "2026-11-24T15:00:00.000Z");
+  const { panel } = ownerFixture(), row = panel.nodes.clients.children[0];
+  assert.equal(row.clientNodes.lastConnected.textContent, "Not recorded");
+  panel.status.clients[0].last_connected_at = value;
+  panel.render();
+  assert.equal(row.clientNodes.lastConnected.title, "2026-11-24T15:00:00.000Z");
+  assert.notEqual(row.clientNodes.lastConnected.textContent, "Not recorded");
+});
+
+test("polling preserves connection rows, action buttons and disclosure state", () => {
+  const { panel, calls } = ownerFixture();
+  const row = panel.nodes.clients.children[0], grant = row.clientNodes.grants.get("s"), revoke = row.clientNodes.revoke;
+  panel.nodes.testing.open = true;
+  panel.status.sessions[0].last_seen_at = 1234;
+  panel.status.clients[0].name = "Agent A updated";
+  panel.render();
+  assert.equal(panel.nodes.clients.children[0], row);
+  assert.equal(row.clientNodes.grants.get("s"), grant);
+  assert.equal(row.clientNodes.revoke, revoke);
+  assert.equal(row.clientNodes.name.textContent, "Agent A updated");
+  assert.equal(row.clientNodes.role.textContent, "Observer");
+  assert.equal(panel.nodes.testing.open, true);
+  panel.status.operator = { id: "s", name: "Agent A updated", kind: "agent" }; panel.render();
+  assert.equal(row.clientNodes.role.textContent, "Operator");
+  assert.equal(grant.disabled, true);
+  panel.status.sessions[0].connected = false; panel.render();
+  assert.equal(row.clientNodes.connection.textContent, "Not connected");
+  assert.equal(row.clientNodes.role.hidden, true);
+  assert.equal(row.clientNodes.grants.size, 0);
+  assert.equal(row.clientNodes.revoke, revoke);
+  assert.deepEqual(calls, []);
+});
+
+test("separate Testing and Stop containers keep Stop outside both connection and test content", () => {
+  const { panel, calls } = ownerFixture({ external: true });
+  assert.equal(panel.nodes.stopPanel.parent, panel.stopContainer);
+  assert.equal(descendants(panel.container).includes(panel.nodes.start), false);
+  assert.equal(descendants(panel.testContainer).includes(panel.nodes.start), true);
+  assert.equal(descendants(panel.testContainer).includes(panel.nodes.stopPanel), false);
+  assert.equal(panel.nodes.testing, undefined);
+  panel.error = "Test request failed";
+  panel.status.watchdog = { active: { sender: { name: "Agent A" } } };
+  panel.container.hidden = true;
+  panel.render();
+  assert.equal(panel.nodes.error.parent, panel.messageContainer);
+  assert.equal(panel.nodes.error.hidden, false);
+  assert.equal(panel.nodes.warningPanel.parent, panel.messageContainer);
+  assert.equal(panel.nodes.warningPanel.hidden, false);
+  assert.equal(panel.messageContainer.hidden, false);
+  assert.equal(panel.container.hidden, true);
+  assert.equal(panel.stopContainer.hidden, false);
+  assert.equal(panel.testContainer.hidden, false);
+  assert.deepEqual(calls, []);
+});
+
+test("standalone management keeps testing collapsed and Device Stop available", () => {
+  const { panel } = ownerFixture();
+  assert.equal(panel.nodes.testing.tag, "details");
+  assert.notEqual(panel.nodes.testing.open, true);
+  assert.equal(panel.nodes.stopPanel.parent, panel.container);
+  assert.equal(descendants(panel.nodes.testing).includes(panel.nodes.stopPanel), false);
 });
 
 

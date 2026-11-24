@@ -159,11 +159,18 @@ class Authority:
             raise ServiceError(401, "Connect with a current approved session.")
         return session
 
-    def _new_session(self, client_id, name):
+    def _new_session(self, client):
         token = secrets.token_urlsafe(32)
         now = self.clock()
-        principal = Principal("agent", uuid.uuid4().hex, client_id, name)
-        session = _Session(principal, _hash(token), now + SESSION_TIMEOUT_S, now, self.wall_clock())
+        connected_at = self.wall_clock()
+        principal = Principal("agent", uuid.uuid4().hex, client["id"], client["name"])
+        session = _Session(principal, _hash(token), now + SESSION_TIMEOUT_S, now, connected_at)
+        client = dict(client, last_connected_at=connected_at)
+        self._store.save(client)
+        self._clients[client["id"]] = client
+        for key, previous in list(self._sessions.items()):
+            if previous.principal.client_id == client["id"]:
+                self._remove_session(key, "agent_reconnected")
         self._sessions[principal.id] = session
         self._tokens[session.token_hash] = principal.id
         return {
@@ -278,6 +285,7 @@ class Authority:
                 "created_at": now,
                 "approved_at": now,
                 "revoked_at": None,
+                "last_connected_at": None,
             }
             self._store.save(client)
             self._clients[client["id"]] = client
@@ -335,10 +343,7 @@ class Authority:
                 raise ServiceError(401, "The agent credential is invalid or revoked.")
             if client["status"] != "approved":
                 raise ServiceError(403, "Use a new invitation to connect this agent.")
-            for key, session in list(self._sessions.items()):
-                if session.principal.client_id == client["id"]:
-                    self._remove_session(key, "agent_reconnected")
-            return self._new_session(client["id"], client["name"])
+            return self._new_session(client)
 
     def grant(self, human, session_id):
         with self.lock:

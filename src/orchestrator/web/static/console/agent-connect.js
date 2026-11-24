@@ -1,33 +1,27 @@
 (function () {
   "use strict";
   const { LabConsole } = window;
-  const view = { api: null, root: null, timer: null, busy: false, body: null, error: null, owner: null };
+  const DOCS = "https://github.com/shc0507/dobot_mg400/blob/main/";
+  const view = { api: null, root: null, timer: null, busy: false, body: null, error: null, owner: null,
+    visible: false, tab: "connections", tabs: {}, panels: {} };
   const i18n = {
     en: {
       "ac.title": "Agent Connect", "ac.mode": "Connection and control", "ac.source": "Shared device cache",
-      "ac.phase0": "Phase 0 · Local mock portal", "ac.phase1": "Phase 1 · Service observations",
-      "ac.phase2": "Phase 2 · Chip locations and evidence", "ac.phase3": "Phase 3 · Read-only message stream",
-      "ac.phase4": "Phase 4 · Connection and handover", "ac.phase5": "Phase 5 · Simulated commands",
-      "ac.phase6": "Phase 6 · Simulated Stop and recovery",
-      "ac.phase7": "Phase 7 · Live data and release identity", "ac.phase8": "Phase 8 · Live control",
-      "ac.phase9": "Phase 9 · Connection-loss warning", "ac.note": "Grant operator control to enable agent commands. Equipment limits remain active.",
+      "ac.connectionsTab": "Connections", "ac.testingTab": "Testing", "ac.tabs": "Agent Connect views",
+      "ac.guide": "Connect your agent", "ac.guideNote": "Give these guides to your coding agent before connecting.",
+      "ac.prompt": "Setup prompt", "ac.knowledge": "Project knowledge", "ac.contract": "Communication contract",
       "ac.diagnostics": "Data and service details", "ac.loading": "Loading connection controls…",
       "ac.stream": "Message stream", "ac.connections": "Connected readers", "ac.events": "Saved events for reconnect", "ac.discovery": "Open the data agreement discovery", "ac.samples": "Browse chip records (JSON)",
-      "ac.local": "On your PC, run python scripts/agent_portal.py. Open http://127.0.0.1:8792/.",
       "ac.service": "Service", "ac.state": "Cache state", "ac.age": "Cache age", "ac.instance": "Process instance",
       "ac.details": "Observed fields", "ac.missing": "Not published", "ac.wait": "Waiting for cache diagnostics.",
     },
     zh: {
       "ac.title": "智能体连接", "ac.mode": "连接与控制", "ac.source": "共用设备缓存",
-      "ac.phase0": "阶段 0 · 本地模拟测试页", "ac.phase1": "阶段 1 · 服务观测数据",
-      "ac.phase2": "阶段 2 · 芯片位置与证据", "ac.phase3": "阶段 3 · 只读消息流",
-      "ac.phase4": "阶段 4 · 连接与交接", "ac.phase5": "阶段 5 · 模拟命令",
-      "ac.phase6": "阶段 6 · 模拟停止与恢复",
-      "ac.phase7": "阶段 7 · 实时数据与版本", "ac.phase8": "阶段 8 · 真机控制",
-      "ac.phase9": "阶段 9 · 断连警告", "ac.note": "授予操作权限后，代理可发送命令。设备限位保持生效。",
+      "ac.connectionsTab": "连接", "ac.testingTab": "测试", "ac.tabs": "智能体连接视图",
+      "ac.guide": "接入智能体", "ac.guideNote": "连接前，请让编程智能体阅读这些文档。",
+      "ac.prompt": "接入提示词", "ac.knowledge": "项目知识", "ac.contract": "通信契约",
       "ac.diagnostics": "数据与服务详情", "ac.loading": "正在加载连接控制…",
       "ac.stream": "消息流", "ac.connections": "已连接读取端", "ac.events": "重连可读取的事件", "ac.discovery": "打开数据协议发现接口", "ac.samples": "浏览芯片记录（JSON）",
-      "ac.local": "在本机运行 python scripts/agent_portal.py。打开 http://127.0.0.1:8792/。",
       "ac.service": "服务", "ac.state": "缓存状态", "ac.age": "缓存时长", "ac.instance": "进程实例",
       "ac.details": "观测字段", "ac.missing": "未发布", "ac.wait": "等待缓存诊断数据。",
     },
@@ -41,21 +35,21 @@
       el("tbody", {}, ...(view.body?.services || []).map(row => el("tr", {},
         el("td", { text: deviceName(row.service) }), el("td", { text: row.phase || "—" }),
         el("td", { text: age(row.age_s) }), el("td", { class: "ac-instance", text: row.observation.instance || t("ac.missing") })))));
-    view.root.replaceChildren(
-      el("div", { class: "ac-phases" }, ...["phase0", "phase1", "phase2", "phase3", "phase4", "phase5", "phase6", "phase7", "phase8", "phase9"].map(key => el("div", { class: "lc-card", text: t(`ac.${key}`) }))),
+    view.root.replaceChildren(...[
       view.body?.stream ? el("section", { class: "lc-card" }, el("h2", { text: t("ac.stream") }),
         el("p", { text: `${t("ac.connections")}: ${view.body.stream.subscribers} · ${t("ac.events")}: ${view.body.stream.retained_events}` }),
-        el("p", {}, el("a", { href: "api/agent/discovery", target: "_blank", text: t("ac.discovery") })),
-        el("p", {}, el("a", { href: "api/agent/v1/samples?selection=all", target: "_blank", text: t("ac.samples") }))) : null,
+        el("p", {}, el("a", { href: "api/agent/discovery", target: "_blank", rel: "noopener noreferrer", text: t("ac.discovery") })),
+        el("p", {}, el("a", { href: "api/agent/v1/samples?selection=all", target: "_blank", rel: "noopener noreferrer", text: t("ac.samples") }))) : null,
       el("section", { class: "lc-card" }, el("h2", { text: t("ac.source") }),
         view.error ? el("p", { class: "ac-error", text: view.error }) : null,
         view.body ? el("div", { class: "ac-scroll" }, table) : el("p", { text: t("ac.wait") })),
       el("section", { class: "lc-card" }, el("h2", { text: t("ac.details") }),
         el("div", { class: "ac-observations" }, ...(view.body?.services || []).map(row => el("article", {},
-          el("h3", { text: deviceName(row.service) }), el("pre", { text: JSON.stringify(row.observation, null, 2) }))))));
+          el("h3", { text: deviceName(row.service) }), el("pre", { text: JSON.stringify(row.observation, null, 2) }))))),
+    ].filter(Boolean));
   }
   async function refresh() {
-    if (view.busy) return; view.busy = true;
+    if (view.busy || !view.visible || view.tab !== "testing") return; view.busy = true;
     try { view.body = await view.api.request("status"); view.error = null; }
     catch (error) { view.error = error.message; }
     finally { view.busy = false; render(); }
@@ -71,21 +65,66 @@
       document.head.append(script);
     });
   }
-  function start() { view.owner?.start(); if (!view.timer) { refresh(); view.timer = setInterval(refresh, 1500); } }
-  function stop() { view.owner?.stop(); if (view.timer) clearInterval(view.timer); view.timer = null; }
+  function polling() {
+    if (view.visible && view.tab === "testing") {
+      if (!view.timer) { refresh(); view.timer = setInterval(refresh, 1500); }
+    } else { if (view.timer) clearInterval(view.timer); view.timer = null; }
+  }
+  function selectTab(name, focus = false) {
+    if (!Object.hasOwn(view.tabs, name)) return;
+    view.tab = name;
+    for (const [key, button] of Object.entries(view.tabs)) {
+      button.setAttribute("aria-selected", String(key === name)); button.tabIndex = key === name ? 0 : -1;
+      view.panels[key].hidden = key !== name;
+    }
+    if (focus) view.tabs[name].focus();
+    polling();
+  }
+  function start() { view.visible = true; view.owner?.start(); polling(); }
+  function stop() { view.visible = false; view.owner?.stop(); polling(); }
   LabConsole.register({ id: "agent-connect", i18n, logic: { age },
     mount(root, api) {
-      view.api = api; const { el, t } = api;
+      view.api = api; const { el, t } = api; const labels = [];
+      function label(tag, key, attributes = {}) {
+        const node = el(tag, { ...attributes, text: t(`ac.${key}`) }); labels.push([node, key]); return node;
+      }
       const owner = el("div", { text: t("ac.loading") });
+      const tests = el("div", {}), stops = el("div", {}), messages = el("div", { class: "ac-messages" });
       view.root = el("div", { class: "ac-diagnostics" });
-      root.replaceChildren(el("div", { class: "ac-heading" }, el("h1", { text: t("ac.title") }), el("span", { class: "ac-mode", text: t("ac.mode") })),
-        owner, el("details", { class: "lc-card ac-details" }, el("summary", { text: t("ac.diagnostics") }), view.root),
-        el("p", { class: "lc-muted ac-local", text: t("ac.local") }));
+      view.tabs = Object.fromEntries(["connections", "testing"].map(name => [name,
+        label("button", `${name}Tab`, { type: "button", id: `ac-tab-${name}`, role: "tab", "aria-controls": `ac-panel-${name}` })]));
+      const names = Object.keys(view.tabs);
+      for (const [name, button] of Object.entries(view.tabs)) {
+        button.addEventListener("click", () => selectTab(name));
+        button.addEventListener("keydown", event => {
+          const index = names.indexOf(name);
+          const target = event.key === "Home" ? 0 : event.key === "End" ? names.length - 1
+            : event.key === "ArrowRight" ? (index + 1) % names.length : event.key === "ArrowLeft" ? (index + names.length - 1) % names.length : null;
+          if (target !== null) { event.preventDefault(); selectTab(names[target], true); }
+        });
+      }
+      const nav = el("nav", { class: "ac-tabs", role: "tablist", "aria-label": t("ac.tabs") }, ...Object.values(view.tabs));
+      const guide = el("section", { class: "lc-card ac-guide" }, label("h2", "guide"), label("p", "guideNote"),
+        el("div", { class: "ac-guide-links" }, ...[
+          ["prompt", "README.en.md#connect-an-external-agent"],
+          ["knowledge", "docs/agent-connect/project-knowledge.md"],
+          ["contract", "docs/agent-connect/communication-contract.md"],
+        ].map(([key, path]) => label("a", key, { href: DOCS + path, target: "_blank", rel: "noopener noreferrer" }))));
+      view.panels = {
+        connections: el("section", { id: "ac-panel-connections", role: "tabpanel", "aria-labelledby": "ac-tab-connections" }, owner, guide),
+        testing: el("section", { id: "ac-panel-testing", role: "tabpanel", "aria-labelledby": "ac-tab-testing" }, tests,
+          el("details", { class: "lc-card ac-details" }, label("summary", "diagnostics"), view.root)),
+      };
+      root.replaceChildren(el("div", { class: "ac-heading" }, label("h1", "title"), label("span", "mode", { class: "ac-mode" })),
+        nav, messages, view.panels.connections, view.panels.testing, stops);
+      selectTab("connections");
       loadOwnerPanel(api).then(module => {
-        view.owner = module.mount(owner, { request: (path, body) => api.consoleRequest(`/api/agent/control/${path}`, body), changed: status => LabConsole.setAuthority?.(status) });
-        if (!view.timer) view.owner.stop();
+        view.owner = module.mount(owner, { testContainer: tests, stopContainer: stops, messageContainer: messages,
+          request: (path, body) => api.consoleRequest(`/api/agent/control/${path}`, body), changed: status => LabConsole.setAuthority?.(status) });
+        if (!view.visible) view.owner.stop();
       }).catch(error => { owner.textContent = error.message; owner.className = "ac-error"; });
-      api.onLanguage(render); render(); start();
+      api.onLanguage(() => { for (const [node, key] of labels) node.textContent = t(`ac.${key}`); nav.setAttribute("aria-label", t("ac.tabs")); render(); });
+      render(); start();
     },
     show: start, hide: stop,
   });

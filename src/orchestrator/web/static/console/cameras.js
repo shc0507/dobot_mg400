@@ -1,6 +1,6 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * camera1 to camera4 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
- * They fall back to MJPEG at /camera/<view>.mjpeg. camera1 to camera4 take snapshots at
+ * camera1 to camera5 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
+ * They fall back to MJPEG at /camera/<view>.mjpeg. camera1 to camera5 take snapshots at
  * /camera/<view>.full.jpg, the microscope at /camera/microscope.png. The console relays the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
@@ -12,8 +12,8 @@
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
   "use strict";
 
-  const VIEWS = ["camera1", "camera2", "camera3", "camera4", "thermal", "microscope"];
-  const MJPEG = new Set(["camera1", "camera2", "camera3", "camera4", "microscope"]);
+  const VIEWS = ["camera1", "camera2", "camera3", "camera4", "camera5", "thermal", "microscope"];
+  const MJPEG = new Set(["camera1", "camera2", "camera3", "camera4", "camera5", "microscope"]);
   const STATUS_MS = 1000;
   const THERMAL_MS = 40;
   const DETECT_MS = 1000;
@@ -41,9 +41,9 @@
 
   const i18n = {
     en: {
-      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
+      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4", "title.camera5": "camera5",
       "title.thermal": "Thermal", "title.microscope": "Microscope",
-      "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray",
+      "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray", "role.camera5": "Wrist",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "LIVE", "badge.stale": "STALE", "badge.offline": "OFFLINE", "badge.frozen": "FROZEN",
       "age": "{age} s",
@@ -75,9 +75,9 @@
       "probe": "Pixel {x}, {y}: {value}", "probe.pinned": "Pinned pixel {x}, {y}: {value}",
     },
     zh: {
-      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
+      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4", "title.camera5": "camera5",
       "title.thermal": "热像仪", "title.microscope": "显微镜",
-      "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘",
+      "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘", "role.camera5": "腕部",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "实时", "badge.stale": "过期", "badge.offline": "离线", "badge.frozen": "已冻结",
       "age": "{age} 秒",
@@ -240,7 +240,7 @@
     return { x: (boxW - w * scale) / 2, y: (boxH - h * scale) / 2, scale };
   }
 
-  const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4"]);
+  const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4", "camera5"]);
 
   /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. USB views get USB_LARGE_FPS or USB_TILE_FPS. */
   function streamUrl(view, large) {
@@ -248,7 +248,7 @@
     return `/camera/${view}.mjpeg?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
-  /** The video preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
+  /** The video preview URL of camera1 to camera5 and the microscope, or null for the thermal view. */
   function videoUrl(view, hevc = false) {
     if (!CAMERAS.has(view) && view !== "microscope") return null;
     return `/camera/${view}.mp4${hevc ? "?codec=h265" : ""}`;
@@ -286,7 +286,7 @@
     return [mode, rate, ...extra].filter(Boolean).join(" · ");
   }
 
-  /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
+  /** The snapshot URL: a full-resolution JPEG for camera1 to camera5, a full-size PNG for the microscope. */
   function snapshotUrl(view) {
     return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `/camera/${view}.png`;
   }
@@ -541,7 +541,7 @@
       return { ...(engine.status.get("thermal") || {}), ...thermalRow(engine.thermal, engine.thermalAt, nowMs(), engine.thermalFailed) };
     }
     const row = engine.status.get(view) || null;
-    // The browser loads camera1 to camera4 and the microscope itself: a loaded tile is live.
+    // The browser loads camera1 to camera5 and the microscope itself: a loaded tile is live.
     const own = [...engine.tiles].filter(tile => tile.view === view);
     if (row) {
       const live = own.some(tile => tile.live);
@@ -938,7 +938,7 @@
     }
   }
 
-  /** A live camera tile for any workspace. view: camera1–camera4, thermal or microscope.
+  /** A live camera tile for any workspace. view: camera1–camera5, thermal or microscope.
    * options: {api, large, onSelect(view), onExpand(view), buttons}. The tile streams only while it is visible. */
   function tile(view, options = {}) {
     if (!VIEWS.includes(view)) throw new Error("Unknown camera view: " + view);
@@ -957,7 +957,7 @@
 
   // Workspace -------------------------------------------------------------------
 
-  /** The Cameras workspace: all 6 views as a wall, or 1 large view with a rail of the others.
+  /** The Cameras workspace: all 7 views as a wall, or 1 large view with a rail of the others.
    * Each tile carries its own tools. The thermal settings open on demand in a card on the thermal tile. */
   function workspace(rootNode, api) {
     engine.api = api;

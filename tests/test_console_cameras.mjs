@@ -92,7 +92,7 @@ test("overlay geometry, retry delay and translations", () => {
   assert.equal(logic.translate("zh", "badge.live"), "实时");
   assert.equal(logic.translate("en", "age", { age: "1.0" }), "1.0 s");
   for (const key of Object.keys(cameras.i18n.en)) assert.ok(key in cameras.i18n.zh, key);
-  assert.deepEqual(cameras.VIEWS, ["camera1", "camera2", "camera3", "camera4", "thermal", "microscope"]);
+  assert.deepEqual(cameras.VIEWS, ["camera1", "camera2", "camera3", "camera4", "camera5", "thermal", "microscope"]);
   assert.throws(() => cameras.tile("camera9"), /Unknown camera view/);
 });
 
@@ -294,7 +294,7 @@ async function mountWorkspace() {
   return { doc, rootNode, sent, refresh, button, cell, restore };
 }
 
-test("the wall shows all 6 views without a side panel; Large view puts 1 view large beside a rail", async () => {
+test("the wall shows all 7 views without a side panel; Large view puts 1 view large beside a rail", async () => {
   const page = await mountWorkspace();
   try {
     const wall = page.rootNode.all().find(node => node.className.startsWith("lcam-wall"));
@@ -303,7 +303,7 @@ test("the wall shows all 6 views without a side panel; Large view puts 1 view la
     cameras.engine.thermal = null;
     for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.paint();
     assert.equal(page.cell("thermal").all().find(node => node.className === "lcam-colorbar").hidden, true);
-    assert.equal(wall.children.length, 6);
+    assert.equal(wall.children.length, 7);
     assert.equal(page.rootNode.all().some(node => /lcam-side/.test(node.className)), false);
     const camera2Tile = page.cell("camera2").children[0];
     page.button("Large view").click();

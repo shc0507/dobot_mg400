@@ -202,7 +202,7 @@ def test_camera_four_still_uses_the_existing_stream_and_checks_its_mode():
     assert mismatch.closed
 
 
-@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4, 5])
 def test_frame_source_rejects_unconfigured_stream_before_any_request(count):
     opener = Mock(side_effect=AssertionError("No request to an unconfigured stream"))
     source = Go2RTCSource(settings=camera_settings(count), opener=opener)

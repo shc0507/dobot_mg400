@@ -44,7 +44,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | 快捷命令 | 发送 |
 | --- | --- |
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`、`disable`、`home`、`clear_alarm` |
-| `robot move X Y Z R [--speed N] [--relative]` | 带法兰 `targets` 的 `execute`。`--relative` 把数值加到当前 `actual` 位姿上 |
+| `robot move X Y Z R [--speed N] [--relative] [--no-collision-check]` | 带法兰 `targets` 的 `execute`。`--relative` 把数值加到当前 `actual` 位姿上。发送命令前，命令行先做[碰撞检查](#碰撞检查) |
 | `robot vacuum suck\|release\|off` | `vacuum` |
 | `stage move MOTOR ROTATIONS [--speed N]` | 相对 `move`。ROTATIONS 为正时使用 `ccw`，为负时使用 `cw`。默认速度为 0.25 圈/秒 |
 | `stage goto MOTOR POSITION [--speed N]` | `move_to_position`，目标为绝对圈数坐标。默认速度为 0.25 圈/秒 |
@@ -108,6 +108,36 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 没有同步客户端的机器人服务无法确认停止。它发送 `ResetRobot()` 并报告 `unconfirmed`，但不锁定。之后的 `labctl robot take` 重新读取机械臂状态。
 
+## 碰撞检查
+
+机器人服务检查关节范围、速度和报警，不检查障碍物。因此 `robot move` 在发送命令前，先用台面孪生检查这次移动。
+
+- 移动是法兰从当前 `actual` 位姿到目标的直线。检查每隔 2 mm 取 1 个点。
+- 检查使用资源 `twin-collision`，位于 `/var/lib/mg400/twin/collision.json`（见[外部资源](deploy.md#外部资源)）。位移台取实时台面工作区报告的位置。位置未知时，取模型中的位移台位置。
+- 孪生显示接触或间隙小于 10 mm 时，命令行拒绝移动，`error.code` 为 `collision`。不发送任何命令。`collision` 对象给出 `obstacle`、`group`、`arm_part`、`clearance_mm`、`along_mm`（沿直线的距离）、`pose`（该点的法兰位姿）和 `start_clearance_mm`。
+- 起点处距离小于 10 mm 的障碍物是近处障碍物。移动不得更靠近它。此时 `start_clearance_mm` 是数值。允许远离它的移动。
+- 起点处已与某个障碍物接触时，不对该障碍物做检查。孪生不给出重叠深度。
+- 检查无法运行时，命令行同样拒绝移动：资源缺失，或直线上有 1 个点没有关节解。
+- `--no-collision-check` 不做检查，直接发送移动。只用于有人监视的示教移动。以接触结束的移动（例如取样）需要它。
+- 只有 `robot move` 做检查。`robot home`、`robot call execute`、配方、键盘点动和网页面板不做检查。停止从不做检查。
+
+拒绝：
+
+```json
+{"ok": false, "device": "robot", "collision": {"obstacle": "pole tube 1", "group": "fixtures", "arm_part": "link4_3_0", "clearance_mm": 0.0, "along_mm": 48.8, "pose": [-117.8, -243.0, 163.7, -31.3], "start_clearance_mm": null}, "outcome": "refused", "error": {"code": "collision", "status": null, "message": "The bench twin shows contact of the arm (link4_3_0) with 'pole tube 1' (fixtures) 48.8 mm along the line, at flange (-117.8, -243, 163.7). No command was sent. For a taught, supervised move, add --no-collision-check."}}
+```
+
+孪生没有显示台面上的全部物体：
+
+- 线缆、软管和零散物品不在碰撞模型中。
+- 机械臂带吸盘工具和腕部相机。腕部相机的尺寸是估计值。其他工具或携带的样品不在碰撞模型中。
+- 托盘台在碰撞模型中是 1 块空的平板。支腿、板厚和四角标记块是估计值。
+- 每个形状是凸包。凸包填满零件的凹处，因此检查可能拒绝台面上实际畅通的移动。
+- 显微镜的调焦和转盘保持在模型位置。
+- 对编码器位移台，实时台面工作区不给出位移台位置。此时检查把位移台保持在模型位置。
+
+规划移动时，使用仓库外孪生建模目录的碰撞工具：`tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`、`descend X Y R --top Z`（首次接触时的法兰 Z）和 `pose X Y Z R`。
+
 ## 输出和退出码
 
 命令结果：
@@ -123,7 +153,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ```
 
 - `outcome`：`ok`、`accepted`、`failed`、`rejected`、`stopped`、`refused`、`unknown`、`interrupted`。
-- `error.code`：`usage`、`invalid`、`not_controlled`、`held_by_other`、`locked`、`busy`、`refused`、`failed`、`rejected`、`stopped`、`unknown`、`timeout`、`unreachable`、`interrupted`。
+- `error.code`：`usage`、`invalid`、`not_controlled`、`held_by_other`、`locked`、`busy`、`collision`、`refused`、`failed`、`rejected`、`stopped`、`unknown`、`timeout`、`unreachable`、`interrupted`。
 - `hint`：适用时给出下一条要运行的命令。
 - 停止输出 `results`，每台设备为 `confirmed`、`pending`、`unconfirmed`、`unreachable` 或 `not-configured`。
 - 命令的回复丢失时，命令行最多读取 3 s 设备状态。服务记录了本会话的该命令时，命令行报告记录的结果。机器人命令仍为 `unknown`。

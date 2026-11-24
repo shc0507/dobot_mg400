@@ -48,7 +48,7 @@ units = ["mg400-orchestrator.service"]
 optional = false
 venv = ".venv"
 groups = ["orchestrator"]
-assets = ["twin-model"]
+assets = ["twin-model", "twin-collision"]
 
 [[service]]
 name = "stage"

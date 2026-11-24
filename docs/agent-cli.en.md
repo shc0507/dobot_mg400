@@ -44,7 +44,7 @@ Shortcuts:
 | Shortcut | Sends |
 | --- | --- |
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`, `disable`, `home`, `clear_alarm` |
-| `robot move X Y Z R [--speed N] [--relative]` | `execute` with flange `targets`. `--relative` adds the values to the current `actual` pose |
+| `robot move X Y Z R [--speed N] [--relative] [--no-collision-check]` | `execute` with flange `targets`. `--relative` adds the values to the current `actual` pose. The CLI does the [collision check](#collision-check) before it sends the command |
 | `robot vacuum suck\|release\|off` | `vacuum` |
 | `stage move MOTOR ROTATIONS [--speed N]` | Relative `move`. Positive ROTATIONS use `ccw`; negative values use `cw`. Default speed is 0.25 rotations/s |
 | `stage goto MOTOR POSITION [--speed N]` | `move_to_position` at an absolute rotation coordinate. Default speed is 0.25 rotations/s |
@@ -108,6 +108,36 @@ The furnace cannot read back the flow of a write-only flow controller. A gas sto
 
 A robot service with no syncing client cannot confirm a stop. It sends `ResetRobot()` and reports `unconfirmed`, but it does not lock. A later `labctl robot take` reads the robot state again.
 
+## Collision check
+
+The robot service checks the joint range, the speed and the alarms. It does not check obstacles. Thus `robot move` checks the move against the bench twin before it sends the command.
+
+- The move is a straight line of the flange from the current `actual` pose to the target. The check samples it at intervals of 2 mm.
+- The check uses the `twin-collision` asset at `/var/lib/mg400/twin/collision.json` (see [External assets](deploy.en.md#external-assets)). It puts the stage at the position that the Twin workspace reports. If that position is unknown, it uses the stage position of the model.
+- The CLI refuses the move with `error.code` `collision` when the twin shows contact or a clearance below 10 mm. No command is sent. The `collision` object gives `obstacle`, `group`, `arm_part`, `clearance_mm`, `along_mm` (the distance along the line), `pose` (the flange pose at that point) and `start_clearance_mm`.
+- An obstacle that is nearer than 10 mm at the start is a near obstacle. The move must not go closer to it. `start_clearance_mm` is then a number. A move away from it is permitted.
+- A move that starts in contact with an obstacle is not checked against that obstacle. The twin does not give the depth of an overlap.
+- The CLI also refuses the move when the check cannot run: the asset is missing, or a point of the line has no joint solution.
+- `--no-collision-check` sends the move without the check. Use it only for a taught move that a person monitors. A move that ends in a touch, such as a pick, needs it.
+- Only `robot move` does the check. `robot home`, `robot call execute`, recipes, the keyboard jog and the web panels do not. Stops never do it.
+
+A refusal:
+
+```json
+{"ok": false, "device": "robot", "collision": {"obstacle": "pole tube 1", "group": "fixtures", "arm_part": "link4_3_0", "clearance_mm": 0.0, "along_mm": 48.8, "pose": [-117.8, -243.0, 163.7, -31.3], "start_clearance_mm": null}, "outcome": "refused", "error": {"code": "collision", "status": null, "message": "The bench twin shows contact of the arm (link4_3_0) with 'pole tube 1' (fixtures) 48.8 mm along the line, at flange (-117.8, -243, 163.7). No command was sent. For a taught, supervised move, add --no-collision-check."}}
+```
+
+The twin does not show all of the bench:
+
+- Cables, hoses and loose items are not in the collision world.
+- The arm has the suction tool and the wrist camera. The size of the wrist camera is an estimate. A different tool or a carried sample is not in the collision world.
+- The tray table is in the collision world as an empty flat plate. Its legs, its plate thickness and its corner tiles are estimates.
+- Each shape is a convex hull. A hull fills the hollows of its part, so the check can refuse a move that is free on the bench.
+- The focus and the turret of the microscope stay at their model positions.
+- The Twin workspace gives no stage position for an encoder stage. The check then keeps the stage at its model position.
+
+To plan a move, use the collision tool of the twin authoring folder, outside the repository: `tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`, `descend X Y R --top Z` (the flange Z of the first contact) and `pose X Y Z R`.
+
 ## Output and exit codes
 
 A command result:
@@ -123,7 +153,7 @@ A refusal:
 ```
 
 - `outcome`: `ok`, `accepted`, `failed`, `rejected`, `stopped`, `refused`, `unknown`, `interrupted`.
-- `error.code`: `usage`, `invalid`, `not_controlled`, `held_by_other`, `locked`, `busy`, `refused`, `failed`, `rejected`, `stopped`, `unknown`, `timeout`, `unreachable`, `interrupted`.
+- `error.code`: `usage`, `invalid`, `not_controlled`, `held_by_other`, `locked`, `busy`, `collision`, `refused`, `failed`, `rejected`, `stopped`, `unknown`, `timeout`, `unreachable`, `interrupted`.
 - `hint`: the next command to run, when one applies.
 - A stop prints `results` with `confirmed`, `pending`, `unconfirmed`, `unreachable` or `not-configured` for each device.
 - If the reply to a command is lost, the CLI reads the device state for up to 3 s. If the service recorded the command for this session, the CLI reports that result. A robot command stays `unknown`.

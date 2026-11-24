@@ -97,6 +97,13 @@ def runs(tmp_path_factory):
     yield from _serve(tmp_path_factory)
 
 
+@pytest.fixture(autouse=True)
+def collision_world(monkeypatch):
+    """`robot move` checks the test world, not the installed asset."""
+    world = ROOT / "tests/fixtures/collision_world.json"
+    monkeypatch.setattr(agent_cli.collision, "WORLD", world)
+
+
 def labctl(console, *argv, session="e2e"):
     out = io.StringIO()
     code = agent_cli.main([*argv, "--url", console, "--session", session], out=out)

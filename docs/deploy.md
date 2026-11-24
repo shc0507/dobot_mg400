@@ -409,6 +409,11 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 目标为 `/var/lib/mg400/twin/twin.glb`，权限为 `0640`。该资源属于 `orch`。
 安装不必包含它。没有它时，实时台面工作区显示无法加载模型。
 
+`twin-collision` 对应本仓库 `twin-collision-v1` 发布中的 `collision.json`。它是台面孪生的碰撞模型：机械臂和台面的凸包与关节树。
+大小为 3,043,062 字节，SHA-256 为 `e37df1804b57607bfc556b593025b3e131c173990a8f6380387abe1b97a511bd`。
+目标为 `/var/lib/mg400/twin/collision.json`，权限为 `0640`。该资源属于 `orch`。
+没有它时，`labctl robot move` 拒绝每个不带 `--no-collision-check` 的移动。见[碰撞检查](agent-cli.md#碰撞检查)。
+
 资源必须属于已启用服务，并列在该服务的 `assets` 中。
 启用 `vision` 时，安装必须包含 `vision-weights`，即使未指定 `--fetch-assets`。
 用 `--asset vision-weights=PATH` 提供通过校验的本地文件，或让安装器下载清单中的资源。

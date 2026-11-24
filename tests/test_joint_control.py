@@ -68,7 +68,7 @@ def rig(monkeypatch):
         if text.startswith("JointMovJ("):
             target = tuple(float(value) for value in text[len("JointMovJ(") :].split(",")[:4])
             sample[0] = Feedback(target, 5, 0, False)
-        elif text == "EnableRobot()":
+        elif text == "EnableRobot(0.117,-27,19,0)":
             sample[0] = Feedback(sample[0].joints_deg, 5, 0, False)
         elif text == "DisableRobot()":
             sample[0] = Feedback(sample[0].joints_deg, 4, 0, False)
@@ -505,7 +505,7 @@ def test_explicit_enable_preserves_joints_and_does_not_move(rig, initial_mode):
     assert actual.mode == 5
     assert actual.joints_deg == START
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
-    assert mutations == (["EnableRobot()"] if initial_mode == 4 else [])
+    assert mutations == (["EnableRobot(0.117,-27,19,0)"] if initial_mode == 4 else [])
     assert not control.busy
     assert not control.stopped
 
@@ -644,7 +644,7 @@ def test_successful_disable_allows_explicit_enable_on_fresh_controller(rig, monk
         with pytest.raises(RuntimeError, match="stopped"):
             action()
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
-    assert mutations == ["DisableRobot()", "EnableRobot()", MOVE]
+    assert mutations == ["DisableRobot()", "EnableRobot(0.117,-27,19,0)", MOVE]
 
 
 @pytest.mark.parametrize("jitter_deg", [0.024, 0.026])
@@ -660,7 +660,7 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
 
     def feedback():
         jitter_active = not settled and (
-            jitter_stage == "precheck" or ("EnableRobot()", 29999) in commands
+            jitter_stage == "precheck" or ("EnableRobot(0.117,-27,19,0)", 29999) in commands
         )
         offset = jitter_deg if jitter_active and int((now[0] - 10.0) / 0.1) % 2 else 0.0
         sample[0] = Feedback((*START[:2], START[2] + offset, START[3]), sample[0].mode, 0, False)
@@ -674,7 +674,7 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
     if jitter_deg < 0.025:
         assert fresh_control.enable().mode == 5
         assert not fresh_control.stopped
-        expected_mutations = ["DisableRobot()", "EnableRobot()"]
+        expected_mutations = ["DisableRobot()", "EnableRobot(0.117,-27,19,0)"]
     elif jitter_stage == "precheck":
         with pytest.raises(PreparationRejectedError, match="Wait until the robot") as failure:
             fresh_control.enable()
@@ -682,11 +682,13 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
         assert "joint_span_deg=(0.0, 0.0, 0.026, 0.0)" in diagnostic
         assert not fresh_control.stopped and not fresh_control.busy
         assert fresh_control._pending is None and fresh_control._stop_result is None
-        assert not any(text in {"EnableRobot()", "ResetRobot()"} for text, _ in commands)
+        assert not any(
+            text in {"EnableRobot(0.117,-27,19,0)", "ResetRobot()"} for text, _ in commands
+        )
         settled = True
         assert fresh_control.enable().mode == 5
         assert not fresh_control.stopped
-        expected_mutations = ["DisableRobot()", "EnableRobot()"]
+        expected_mutations = ["DisableRobot()", "EnableRobot(0.117,-27,19,0)"]
     else:
         with pytest.raises(RuntimeError) as failure:
             fresh_control.enable()
@@ -701,7 +703,12 @@ def test_enable_after_disable_verifies_fresh_feedback_stationarity(
         assert not fresh_control.stop()["stationary_verified"]
         assert "stage=after EnableRobot()" in diagnostic
         assert fresh_control._pending["sent"] and fresh_control._pending["ok"]
-        expected_mutations = ["DisableRobot()", "EnableRobot()", "ResetRobot()", "ResetRobot()"]
+        expected_mutations = [
+            "DisableRobot()",
+            "EnableRobot(0.117,-27,19,0)",
+            "ResetRobot()",
+            "ResetRobot()",
+        ]
 
     assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == (
         expected_mutations
@@ -773,7 +780,7 @@ def test_disabled_stationary_timeout_rechecks_safety_before_allowing_retry(rig, 
         control.enable()
     assert not isinstance(failure.value, PreparationRejectedError)
     assert control.stopped
-    assert ("EnableRobot()", 29999) not in commands
+    assert ("EnableRobot(0.117,-27,19,0)", 29999) not in commands
     assert (("ResetRobot()", 29999) in commands) is (fault != "disabling")
 
 
@@ -791,7 +798,7 @@ def test_disabled_precheck_does_not_treat_other_timeouts_as_stationary_rejection
     with pytest.raises(TimeoutError, match="Unrelated timeout"):
         control.enable()
     assert control.stopped
-    assert ("EnableRobot()", 29999) not in commands
+    assert ("EnableRobot(0.117,-27,19,0)", 29999) not in commands
     assert ("ResetRobot()", 29999) in commands
 
 
@@ -832,7 +839,10 @@ def test_disable_cancels_active_operation_without_competing_failure_stop(rig, mo
     assert str(errors[0]) == "Operation was cancelled"
     assert not control.busy
     mutations = [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))]
-    assert mutations == ["EnableRobot()" if action == "enable" else MOVE, "DisableRobot()"]
+    assert mutations == [
+        "EnableRobot(0.117,-27,19,0)" if action == "enable" else MOVE,
+        "DisableRobot()",
+    ]
 
 
 @pytest.mark.parametrize("action", ["disable", "stop"])
@@ -1024,7 +1034,7 @@ def test_disable_during_drift_does_not_allow_enable_or_prove_rest(rig, monkeypat
         fresh_control.enable()
     assert not fresh_control.stopped
     assert fresh_control._stop_result is None
-    assert "EnableRobot()" not in [text for text, _ in commands]
+    assert "EnableRobot(0.117,-27,19,0)" not in [text for text, _ in commands]
     assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
         "DisableRobot()",
     ]
@@ -1046,7 +1056,7 @@ def test_disabled_j4_turning_alone_proves_rest_and_allows_enable(rig, monkeypatc
     fresh_control = JointControl(control.host, control.feedback_snapshot)
     monkeypatch.setattr(fresh_control, "_command", control._command)
     assert fresh_control.enable().mode == 5
-    assert "EnableRobot()" in [text for text, _ in commands]
+    assert "EnableRobot(0.117,-27,19,0)" in [text for text, _ in commands]
 
 
 def test_disable_does_not_require_stationary_angle_agreement(rig, monkeypatch):
@@ -2168,7 +2178,7 @@ def test_enable_accepts_a_new_settled_position_only_while_disabled(rig, monkeypa
     original_command = control._command
 
     def command(text, *args, **kwargs):
-        if text == "EnableRobot()":
+        if text == "EnableRobot(0.117,-27,19,0)":
             assert now[0] >= 10.5
             assert kwargs["pending"]["expected"] == settled
         return original_command(text, *args, **kwargs)
@@ -2180,14 +2190,14 @@ def test_enable_accepts_a_new_settled_position_only_while_disabled(rig, monkeypa
         assert enabled.joints_deg == settled
         assert not control.stopped
         assert [text for text, _ in commands if not text.startswith(("Get", "RobotMode"))] == [
-            "EnableRobot()",
+            "EnableRobot(0.117,-27,19,0)",
         ]
         assert [text for text, _ in commands].count("RobotMode()") == 3
     else:
         with pytest.raises(TimeoutError, match="stationary state"):
             control.enable()
         assert control.stopped
-        assert ("EnableRobot()", 29999) not in commands
+        assert ("EnableRobot(0.117,-27,19,0)", 29999) not in commands
         assert control.stop()["stationary_verified"]
 
 
@@ -2243,7 +2253,7 @@ def test_disabled_preflight_rechecks_settled_state_before_enable(rig, monkeypatc
     with pytest.raises(PreparationRejectedError if fault == "both_angles" else RuntimeError):
         control.enable()
     assert mode_reads == 2
-    assert ("EnableRobot()", 29999) not in commands
+    assert ("EnableRobot(0.117,-27,19,0)", 29999) not in commands
     if fault == "both_angles":
         assert not control.stopped
         assert ("ResetRobot()", 29999) not in commands
@@ -2266,7 +2276,7 @@ def test_disabled_preflight_still_rejects_initial_source_mismatch(rig, monkeypat
     with pytest.raises(RuntimeError, match="Dashboard and passive feedback disagree"):
         control.enable()
     assert [text for text, _ in commands].count("RobotMode()") == 1
-    assert ("EnableRobot()", 29999) not in commands
+    assert ("EnableRobot(0.117,-27,19,0)", 29999) not in commands
     assert control.stopped
 
 

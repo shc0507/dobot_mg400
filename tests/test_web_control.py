@@ -733,7 +733,7 @@ def test_enabled_disconnect_keeps_feedback_until_explicit_disable(make_sim_rig, 
     assert snapshot["last_command"]["action"] == "disable"
     assert snapshot["last_command"]["result"] == "ok"
     assert rig.controller.sent().count("DisableRobot()") == 1
-    assert "EnableRobot()" not in rig.controller.sent()
+    assert "EnableRobot(0.117,-27,19,0)" not in rig.controller.sent()
     if new_owner:
         rig.wait_reads(3)
         assert rig.state._ownership.held and rig.state._reader.is_alive()
@@ -819,7 +819,7 @@ def test_short_retained_feedback_gap_allows_disable_after_feedback_returns(
     assert snapshot["last_command"]["result"] == "ok"
     assert rig.controller.sent().count("ResetRobot()") == 1
     assert rig.controller.sent().count("DisableRobot()") == 1
-    assert "EnableRobot()" not in rig.controller.sent()
+    assert "EnableRobot(0.117,-27,19,0)" not in rig.controller.sent()
 
 
 @pytest.mark.parametrize("mode,error", [(7, False), (9, False), (5, True)])

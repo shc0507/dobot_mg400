@@ -24,6 +24,11 @@ from .suction import STEPS as VACUUM_STEPS
 
 # Arrival needs fresh, unchanged feedback for this long.
 STABLE_SECONDS = 0.4
+# End load in kg: suction tool 0.053 on the J4 axis, wrist camera and its mount 0.064 beside it.
+PAYLOAD_KG = 0.117
+# Centre of the end load from the J4 axis at J4 = 0, in mm: X away from the base, Y to the left, Z.
+PAYLOAD_CENTER_MM = (-27, 19, 0)
+ENABLE = f"EnableRobot({PAYLOAD_KG},{','.join(map(str, PAYLOAD_CENTER_MM))})"
 
 
 def _rest(joints, mode):
@@ -872,16 +877,14 @@ class JointControl:
             ) from error
 
     def enable(self) -> Feedback:
-        """Explicitly enable using the existing payload settings, without moving."""
+        """Explicitly enable and set the payload, without moving."""
         self._begin()
         stage = "before EnableRobot()"
         try:
             mode, joints = self._preflight({4, 5})
             if mode == 4:
                 stage = "EnableRobot() command attempt"
-                self._guarded_command(
-                    "EnableRobot()", modes={4, 5}, send_modes={4}, expected=joints
-                )
+                self._guarded_command(ENABLE, modes={4, 5}, send_modes={4}, expected=joints)
             stage = "after EnableRobot()" if mode == 4 else "already enabled idle check"
             # From a disabled start, J4 holds wherever the tube left it at EnableRobot().
             expected = _rest(joints, mode)

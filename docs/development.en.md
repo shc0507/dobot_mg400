@@ -211,7 +211,7 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
-| `enable` | None | Enable the robot |
+| `enable` | None | Enable the robot and set the payload |
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
@@ -506,7 +506,7 @@ The `operation` of the `vacuum` command is one of these values:
 - The service sends each command once. Then it waits up to 1 second for the measured DO bit in the 30004 feedback to change.
 - After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the result of `JointControl.stop()` contains `blow_error`; the stop itself does not fail because of it. The robot service does not report `blow_error`, and disable does not record the error.
 - The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is the measured level of DI8 (`GRIP_DI`), or `null` when `GRIP_DI` is `None` or without feedback.
-- The `payload_kg` field of the state object is the payload that the controller reports, in kg.
+- The `payload_kg` field of the state object is the payload that the controller reports, in kg. At each enable, the service sends `PAYLOAD_KG` and `PAYLOAD_CENTER_MM` with the `EnableRobot` command. The 2 constants are in `src/mg400/joint_control.py`. `PAYLOAD_KG` is the total mass of the end tool, the wrist camera, and the camera mount. `PAYLOAD_CENTER_MM` is the position of the centre of that mass from the J4 axis, with J4 at 0°.
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.
 - The offline simulator answers `DOExecute` and reports the DO bits in its feedback frames. While DO2 is high, the simulator also sets DI8.
 - For the wiring and the feedback fields, see [Vacuum suction cup](hardware.en.md#vacuum-suction-cup).

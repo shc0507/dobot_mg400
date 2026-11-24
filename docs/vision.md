@@ -521,9 +521,11 @@ cross_check_slots(location, *, taught_stations, chips,
 - 相机矩阵和 OpenCV 有理模型的 8 个畸变系数。
 - 安装位置：相机在腕部连杆坐标系中的位置，即相对工具轴的 x 和 y，以及连杆坐标系到相机坐标系的旋转。校准不给出相机相对法兰的高度。
 - `arm_lateral_scale`：机械臂报告的 x 和 y 乘以该系数，得到实际位置。它适用于 X -79 到 41、Y -316 到 -236。
+- `camera_above_tip_mm`：镜头高出吸盘尖端的距离。
 - 拟合误差，单位为像素。
 
 `vision.wrist_camera.load()` 读取该文件。目前没有服务使用该校准。
+`surface_points()` 给出水平面上图像点的机械臂 x 和 y。`locate()` 给出 2 个或更多位姿都看到的 1 个点的机械臂 x、y 和接触 Z。接触 Z 是吸盘尖端接触表面时的法兰 Z。
 改变镜头对焦、相机安装或采集尺寸后，重新校准。
 
 ### 用打印的标定板校准
@@ -540,6 +542,17 @@ cross_check_slots(location, *, taught_stations, chips,
 拟合误差不超过 1 像素时，脚本才保存结果。
 脚本把记录的位姿和标定板角点写入 `work/wrist-camera/run.json`。
 如果不移动机械臂而重新拟合，运行 `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`。
+
+### 测量相机高出工具尖端的距离
+
+标定板运行不给出 `camera_above_tip_mm`。用一次接触来测量：
+
+1. 用 `locate()` 从 3 个或更多位姿找到一个平整的标记。读取它的高度，即结果的第 4 个值。
+2. 确认相机机身在接触位姿有空间。相机距工具轴 61 mm。
+3. 把工具移到标记上方。打开吸气，在表面附近以 0.1 mm 的步长下降。管路压力从约 -185 hPa 降到约 -690 hPa 时，吸盘已密封。
+4. 该值等于首次密封那一步的法兰 Z 减去第 1 步的高度。
+
+`run` 和 `fit` 命令保留已保存的值。改变相机安装或吸盘后，重新测量。
 
 ### 腕部校准的限制
 

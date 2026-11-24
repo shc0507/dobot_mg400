@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import cv2
@@ -83,10 +84,72 @@ def test_stored_calibration_is_valid(tmp_path):
     stored = wrist_camera.load()
     assert stored["camera_matrix"][0, 0] == pytest.approx(wrist_camera.NOMINAL_FOCAL_PX, rel=0.05)
     assert stored["distortion"].shape == (8,) and stored["rms_px"] <= wrist_camera.MAX_RMS_PX
+    assert 20 < stored["mount"]["camera_above_tip_mm"] < 50
     bad = tmp_path / "wrist.json"
     bad.write_text(wrist_camera.CONFIG.read_text().replace('"schema": 1', '"schema": 2'))
     with pytest.raises(ValueError, match="Invalid wrist camera calibration"):
         wrist_camera.load(bad)
+
+
+def simulated_model():
+    tilt = cv2.Rodrigues(np.radians([0.4, -0.3, 0.0]))[0]
+    return {
+        "camera_matrix": np.array([[1235.0, 0, 1900], [0, 1232.0, 1140], [0, 0, 1]]),
+        "distortion": np.array([0.22, 2.2, -0.0007, -0.0004, 0.03, 0.28, 2.1, 0.17]),
+        "mount": {
+            "offset_xy_mm": [-42.0, 43.0],
+            "rotation_link_to_camera": (tilt @ wrist_camera._down(np.radians(179.6))).tolist(),
+            "camera_above_tip_mm": 35.0,
+        },
+        "arm_lateral_scale": 0.9877,
+    }
+
+
+def simulated_pixel(model, point, pose):
+    """Pixel of a real point. Its z is the flange z at which the lens is at its height."""
+    real = np.array([pose[0], pose[1], pose[2]]) * [0.9877, 0.9877, 1.0]
+    j1 = np.arctan2(pose[1], pose[0])
+    linked = wrist_camera.link_points(
+        np.array([point]), real, np.array([j1]), model["mount"]["offset_xy_mm"]
+    )
+    rotation = cv2.Rodrigues(np.array(model["mount"]["rotation_link_to_camera"]))[0]
+    return wrist_camera.project(model["camera_matrix"], model["distortion"], rotation, linked)[0]
+
+
+def test_pixels_map_to_arm_coordinates_on_a_surface_and_from_2_views():
+    model = simulated_model()
+    # A point at reported arm (150, -180), on a surface that the tip touches at flange z -70.
+    point = np.array([150 * 0.9877, -180 * 0.9877, -70.0 - 35.0])
+    poses = [(100.0, -230.0, 120.0, 0.0), (160.0, -215.0, 120.0, 0.0), (130.0, -220.0, 60.0, 0.0)]
+    pixels = [simulated_pixel(model, point, pose) for pose in poses]
+    for pixel, pose in zip(pixels, poses):
+        found = wrist_camera.surface_points(model, [pixel], pose, -70.0)[0]
+        assert found == pytest.approx([150.0, -180.0], abs=0.01)
+    x, y, touch_z, _ = wrist_camera.locate(model, pixels, poses)
+    assert (x, y, touch_z) == pytest.approx((150.0, -180.0, -70.0), abs=0.01)
+    with pytest.raises(ValueError, match="2 different viewing directions"):
+        wrist_camera.locate(model, pixels[:1], poses[:1])
+    del model["mount"]["camera_above_tip_mm"]
+    assert wrist_camera.locate(model, pixels, poses)[2] is None
+    with pytest.raises(ValueError, match="no camera height"):
+        wrist_camera.surface_points(model, pixels[:1], poses[0], -70.0)
+
+
+def test_a_new_fit_keeps_the_stored_camera_height(tmp_path, monkeypatch, capsys):
+    script = load_script()
+    out = tmp_path / "wrist.json"
+    out.write_text(wrist_camera.CONFIG.read_text())
+    stored = wrist_camera.load(out)
+    result = {**json.loads(out.read_text()), "rms_px": 0.4}
+    del result["mount"]["camera_above_tip_mm"]
+    monkeypatch.setattr(script.wrist_camera, "fit", lambda records, square_mm: result)
+    script.fit([], 24.0, out)
+    assert wrist_camera.load(out)["mount"]["camera_above_tip_mm"] == pytest.approx(
+        stored["mount"]["camera_above_tip_mm"]
+    )
+    result["rms_px"] = 1.5
+    with pytest.raises(RuntimeError, match="above the limit"):
+        script.fit([], 24.0, out)
 
 
 def test_run_refuses_a_start_that_was_not_checked():

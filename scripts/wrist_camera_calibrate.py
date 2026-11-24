@@ -136,8 +136,14 @@ def fit(records, square_mm, out):
     print(json.dumps({key: result[key] for key in ("rms_px", "max_px", "arm_lateral_scale")}))
     if result["rms_px"] > wrist_camera.MAX_RMS_PX:
         raise RuntimeError("The fit error is above the limit. The calibration is not stored")
-    Path(out).parent.mkdir(parents=True, exist_ok=True)
-    Path(out).write_text(json.dumps(result, indent=1) + "\n")
+    out = Path(out)
+    if out.exists():
+        # The camera height above the tool tip comes from a touch, not from this fit.
+        height = json.loads(out.read_text())["mount"].get("camera_above_tip_mm")
+        if height is not None:
+            result["mount"]["camera_above_tip_mm"] = height
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=1) + "\n")
     print(f"Stored {out}")
 
 

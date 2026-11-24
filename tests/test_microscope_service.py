@@ -503,6 +503,139 @@ def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
     assert state["objective_offset_steps"] is None
 
 
+def test_lost_marker_during_a_turn_keeps_focus_zero_and_does_not_lock(demo_rig, monkeypatch):
+    from microscope.aruco_switch import SwitchVisionError
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    factory = rig.service._switcher_factory
+
+    def blind_switcher(*args, **kwargs):
+        def fail(*_args, **_kwargs):
+            raise SwitchVisionError("Objective identity could not be confirmed: not_detected")
+
+        switcher = factory(*args, **kwargs)
+        switcher.run = fail
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", blind_switcher)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "failed"
+    assert "could not be confirmed" in state["last_command"]["message"]
+    assert state["objective_id"] is None and state["objective_offset_steps"] is None
+    assert state["fault"] is None and not state["locked"] and state["focus_zero_known"]
+    monkeypatch.setattr(rig.service, "_switcher_factory", factory)
+    state = dispatch(rig, "select_objective", id=2)
+    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+
+
+def test_turn_starts_from_the_steps_that_the_objective_pair_needed_last_time(demo_rig, monkeypatch):
+    from dataclasses import replace
+
+    rig = demo_rig()
+    establish_manual_reference(rig)
+    acquire_automation(rig)
+    factory = rig.service._switcher_factory
+    needed = [191.0]
+
+    def measured_switcher(*args, **kwargs):
+        switcher = factory(*args, **kwargs)
+        run = switcher.run
+
+        def measured_run(*run_args, **run_kwargs):
+            result = run(*run_args, **run_kwargs)
+            return replace(result, commanded_full_steps=needed.pop()) if needed else result
+
+        switcher.run = measured_run
+        return switcher
+
+    monkeypatch.setattr(rig.service, "_switcher_factory", measured_switcher)
+    for ident in (1, 0, 1):
+        assert dispatch(rig, "select_objective", id=ident)["objective_id"] == ident
+    turns = [item for item in rig.port.commands if item.startswith("OBJ MOVE ")]
+    assert turns == ["OBJ MOVE 740", "OBJ MOVE -740", "OBJ MOVE 764"]
+    # A learned turn stays near the default.
+    rig.service._pair_steps.clear()
+    needed.append(400.0)
+    assert dispatch(rig, "select_objective", id=2)["objective_id"] == 2
+    assert rig.service._pair_steps[(1, 2)] == 210
+
+
+class ShakingTurret:
+    """Fake camera, locator and motor: each enable and each move shakes the next frames."""
+
+    def __init__(self, landing_px, shake_frames, source=0):
+        self.current, self.dx, self.shake_frames = source, 0.0, shake_frames
+        self.landing_px, self.shake, self.frame, self.commands = landing_px, 0, 0, []
+
+    def get_frame_packet(self, after_id=None, timeout=0.2, copy=True):
+        import time
+
+        self.frame += 1
+        return self.frame, time.monotonic(), None
+
+    def locate(self, _image, target_id=None, only_target=False):
+        if self.shake:
+            self.shake -= 1
+            if self.shake % 2:
+                return {"status": "target_not_visible", "markers": []}
+            dx = self.dx + 3.0 * self.shake
+        else:
+            dx = self.dx
+        marker = {"id": self.current, "dx_px": dx, "dy_px": 0.0, "method": "fake"}
+        return {"status": "ok", "markers": [marker]}
+
+    def send_and_wait(self, command, _prefix, **_kwargs):
+        self.commands.append(command)
+        if command.startswith("OBJ MOVE "):
+            pulses = int(command.split()[2])
+            if abs(pulses) > 100:
+                self.current += 1 if pulses > 0 else -1
+                self.dx = self.landing_px
+            else:
+                self.dx -= pulses  # 4 px for each full step of 4 pulses
+            self.shake = self.shake_frames
+        elif command == "OBJ ENABLE":
+            self.shake = self.shake_frames
+
+
+def shaking_switcher(turret, **settings):
+    from microscope.aruco_switch import ArucoObjectiveSwitcher, SwitchSettings
+
+    quiet = dict(enable_settle_seconds=0, release_settle_seconds=0, move_settle_seconds=0)
+    return ArucoObjectiveSwitcher(
+        turret, turret, locator=turret, settings=SwitchSettings(**quiet, **settings)
+    )
+
+
+def test_switch_waits_for_a_steady_image_and_holds_the_turret_until_aligned(tmp_path, monkeypatch):
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path)
+    turret = ShakingTurret(landing_px=22.0, shake_frames=9)
+    result = shaking_switcher(turret).run(1, "switch.csv", source_id=0)
+    assert (result.source_id, result.target_id) == (0, 1)
+    assert abs(result.dx_px) <= 5 and result.commanded_full_steps > 185
+    turn = turret.commands.index("OBJ MOVE 740")
+    release = turret.commands.index("OBJ DISABLE", turn)
+    # The motor holds the turret from the turn to the last correction: 1 enable, no kick.
+    assert turret.commands.count("OBJ ENABLE") == 1
+    assert all(item.startswith("OBJ MOVE ") for item in turret.commands[turn:release])
+    assert len(turret.commands[turn:release]) > 1
+
+
+def test_switch_stops_and_disables_the_turret_when_the_image_never_steadies(tmp_path, monkeypatch):
+    from microscope.aruco_switch import SwitchVisionError
+
+    monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path)
+    turret = ShakingTurret(landing_px=22.0, shake_frames=10**9)
+    with pytest.raises(SwitchVisionError, match="could not be confirmed"):
+        shaking_switcher(turret, steady_timeout_seconds=0.05).run(1, "switch.csv", source_id=0)
+    assert turret.commands[-2:] == ["STOP OBJ", "OBJ DISABLE"]
+    assert not any(
+        item.startswith("OBJ MOVE ") and item != "OBJ MOVE 740" for item in turret.commands
+    )
+
+
 def refused_nudge(rig, steps):
     before = list(rig.port.commands)
     response = service_post(rig, "command", {"action": "objective_nudge", "steps": steps})
@@ -1300,3 +1433,13 @@ def test_switch_cleanup_error_keeps_the_switch_failure(tmp_path, monkeypatch):
     switcher._run = lambda *args, **kwargs: "switched"
     with pytest.raises(RuntimeError, match="Could not confirm objective disabled"):
         switcher.run(1, "switch-2.csv")
+    # A camera-only failure becomes a motor failure when the turret is not confirmed disabled.
+    from microscope.aruco_switch import SwitchVisionError
+
+    def blind(*args, **kwargs):
+        raise SwitchVisionError("Objective identity could not be confirmed")
+
+    switcher._run = blind
+    with pytest.raises(RuntimeError, match="Could not confirm objective disabled") as caught:
+        switcher.run(1, "switch-3.csv")
+    assert not isinstance(caught.value, SwitchVisionError)

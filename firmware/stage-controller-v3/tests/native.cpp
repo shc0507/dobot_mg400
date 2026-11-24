@@ -1,4 +1,4 @@
-// Runs the real control loop, encoder reader, serial parser and AccelStepper source.
+// Runs the real control loop, encoder reader, serial parser and step generator.
 // Only clocks/GPIO/I2C/UART are replaced. No hardware port is opened.
 #include "Arduino.h"
 #include "Wire.h"
@@ -94,10 +94,12 @@ double requestedPulseRate(uint8_t axis);
 unsigned long millis() { return static_cast<uint32_t>(clockUs/1000); }
 unsigned long micros() { return static_cast<uint32_t>(clockUs); }
 void delayMicroseconds(unsigned int us) { clockUs += us; }
+uint8_t ADCSRA = 0x87; // Arduino core default: ADC on, prescaler 128.
 void pinMode(uint8_t pin,uint8_t mode) { assert(pin<20); pinModes[pin]=mode; }
 int analogRead(uint8_t pin) {
   assert(pin>=A0 && pin<=A2 && pinModes[pin]==INPUT_PULLUP);
-  delayMicroseconds(100); // Model the Uno ADC's approximately 100 microsecond conversion.
+  // Model the Uno ADC conversion: about 104 us at prescaler 128, 13 us at prescaler 16.
+  delayMicroseconds((ADCSRA & 7) == 4 ? 13 : 104);
   const uint8_t axis=pin-A0;
   if(switchPlant[axis]) {
     if(physical[axis]>=physicalLower[axis]) return 250;
@@ -274,7 +276,7 @@ void testFixedEighthAndConcurrentAxes() {
     assert(state().position==0 && pulseCount[0]==0);
   }
   finite(.5f);
-  assert(std::fabs(state().maxSpeed-.5f)<0.00001f);
+  assert(std::fabs(state().maxSpeed-.6f)<0.00001f);
   assert(state().tolerance==4.0f/4096);
   assert(pulseCount[0]>784 && pulseCount[0]<816);
   reset(); assert(MotorControl::rotateSteps(1600)); finish();
@@ -334,7 +336,7 @@ void testFaultsAndRecovery() {
   reset(); jammed[0]=noisy[0]=true;
   assert(MotorControl::rotateRevolutions(.1f)); advance(3000);
   assert(!state().rotating && state().fault==Fault::Stall);
-  reset(); jammed[0]=true; assert(MotorControl::setSpeed(.5f));
+  reset(); jammed[0]=true; assert(MotorControl::setSpeed(.3f));
   assert(MotorControl::startHold());
   advance(800); assert(MotorControl::keepHoldAlive()); advance(650);
   assert(!state().rotating && state().fault==Fault::Tracking);
@@ -363,14 +365,14 @@ void testProtocolAndBounds() {
   assert(Serial.output.find("OK: bottom rev")!=std::string::npos);
   assert(!MotorControl::setSpeed(NAN)); assert(!MotorControl::setSpeed(INFINITY));
   assert(!MotorControl::rotateRevolutions(0)); assert(!MotorControl::rotateRevolutions(10001));
-  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.501f));
+  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.601f));
   assert(MotorControl::setSpeed(.001f)); assert(!MotorControl::rotateRevolutions(100));
   assert(!MotorControl::setStepsPerRevolution(0));
   assert(MotorControl::setStepsPerRevolution(65535));
   assert(state().maxSpeed>=.001f);
   assert(!MotorControl::setMicrostep(1));
   assert(!MotorControl::setMicrostep(16));
-  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.332226f));
+  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.398671f));
   assert(state().speed<=state().maxSpeed);
   Serial.output.clear(); Serial.input="microstep 16\nmicrostep 8\nmicrostep\n";
   while(Serial.available()) readSerialCommands();
@@ -775,7 +777,7 @@ void testLimitEnforcementAndRecoveryDirection() {
   assert(state().positionCounts>500 && state().positionCounts<700);
   for(bool jitter: {false,true}) for(Direction dir: {Direction::Clockwise,Direction::Counterclockwise}) {
     reset(); captureTestBounds(-100,100);
-    assert(MotorControl::setAcceleration(50) && MotorControl::setSpeed(.5f));
+    assert(MotorControl::setAcceleration(50) && MotorControl::setSpeed(.3f));
     assert(MotorControl::setDirection(dir));
     noisy[0]=jitter;
     checkPhysicalBounds[0]=true; testLower[0]=4080-100; testUpper[0]=4080+100;
@@ -1160,7 +1162,7 @@ void testHeldRampReferenceAndRepeatedPresses() {
   for(uint8_t axis=0;axis<3;++axis) for(Direction direction: {Direction::Clockwise,Direction::Counterclockwise}) {
     reset(); const Motor motor=static_cast<Motor>(axis);
     assert(MotorControl::selectMotor(motor) && MotorControl::setDirection(direction));
-    assert(MotorControl::setSpeed(.5f) && MotorControl::setAcceleration(.25f));
+    assert(MotorControl::setSpeed(.3f) && MotorControl::setAcceleration(.25f));
     auto &control=MotorControl::motors[axis];
     const double sign=direction==Direction::Clockwise ? 1 : -1;
     for(int press=0;press<2;++press) {
@@ -1174,16 +1176,16 @@ void testHeldRampReferenceAndRepeatedPresses() {
         if(ms%100==0) assert(MotorControl::keepHoldAlive());
         assert(state(motor).rotating && state(motor).fault==Fault::None);
         const double seconds=(control.lastControlMs-started)*.001;
-        const double expected=seconds<2 ? .125*seconds*seconds : .5*(seconds-1);
+        const double expected=seconds<1.2 ? .125*seconds*seconds : .3*(seconds-.6);
         const double reference=sign*(control.targetCounts-origin+control.phaseRemainder)/4096.0;
-        assert(std::fabs(reference-expected)<.0001); // Analytic area under a two-second speed ramp.
-        assert(control.referenceSpeed>=0 && control.referenceSpeed<=.500001);
+        assert(std::fabs(reference-expected)<.0001); // Analytic area under a 1.2-second speed ramp.
+        assert(control.referenceSpeed>=0 && control.referenceSpeed<=.300001);
         const double dt=(control.lastControlMs-previousFeedback)*.001;
         assert(std::fabs(control.outputSpeed-previousOutput)<=.25*dt+.000002);
-        assert(sign*control.outputSpeed>=0 && std::fabs(control.outputSpeed)<=.625001);
+        assert(sign*control.outputSpeed>=0 && std::fabs(control.outputSpeed)<=.375001);
         previousOutput=control.outputSpeed; previousFeedback=control.lastControlMs;
       }
-      assert(control.referenceSpeed>.4999);
+      assert(control.referenceSpeed>.2999);
       MotorControl::stopRotation();
       const long stopped=pulseCount[axis]; advance(10);
       assert(pulseCount[axis]==stopped && control.referenceSpeed==0 && control.outputSpeed==0);
@@ -1193,21 +1195,21 @@ void testHeldRampReferenceAndRepeatedPresses() {
 }
 void testHeldRampAccelerationSensitivePlantAndLegacyStart() {
   reset(); accelerationSensitive[0]=true; lastPlantUs[0]=clockUs;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   for(int i=0;i<40;++i) { advance(100); assert(MotorControl::keepHoldAlive()); }
   assert(state().rotating && state().fault==Fault::None && accelerationDrops[0]==0);
-  // 2s acceleration plus2s cruising:1.5 rotations, with finite polling/correction error.
-  assert(std::fabs(state().position+1.5f)<.035);
+  // 1.2 s acceleration plus 2.8 s cruising: 1.02 rotations, with finite polling/correction error.
+  assert(std::fabs(state().position+1.02f)<.035);
   reset(); accelerationSensitive[0]=true; lastPlantUs[0]=clockUs;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startRotation());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startRotation());
   advance(20);
-  assert(std::fabs(MotorControl::motors[0].outputSpeed)>.49);
+  assert(std::fabs(MotorControl::motors[0].outputSpeed)>.29);
   assert(MotorControl::motors[0].referenceSpeed==0); // Legacy start is intentionally not ramped.
-  advance(650);
+  advance(1000);
   assert(accelerationDrops[0]>100 && !state().rotating && state().fault==Fault::Tracking);
 }
 void testHeldRampCorrectionHeadroomAndImmediateStops() {
-  reset(); Serial.input="speed 0.5\nhold\n"; advanceLoop(250);
+  reset(); Serial.input="speed 0.3\nhold\n"; advanceLoop(250);
   assert(state().rotating && state().position<0 && state().position>-.02);
   assert(MotorControl::motors[0].referenceSpeed>.05 && MotorControl::motors[0].referenceSpeed<.07);
   assert(Serial.output.find("OK: bottom hold\r\n")!=std::string::npos);
@@ -1215,8 +1217,8 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
   assert(!state().rotating && MotorControl::motors[0].referenceSpeed==0);
   assert(Serial.output.find("OK: bottom keepalive\r\n")!=std::string::npos);
   assert(Serial.output.find("OK: bottom stop\r\n")!=std::string::npos);
-  reset(); dropEvery[0]=6;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  reset(); dropEvery[0]=20;
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   auto &control=MotorControl::motors[0];
   float previous=0, peak=0; auto previousFeedback=control.lastControlMs;
   for(int ms=0;ms<7000;++ms) {
@@ -1227,10 +1229,10 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
     const double dt=(control.lastControlMs-previousFeedback)*.001;
     assert(std::fabs(control.outputSpeed-previous)<=.25*dt+.000002);
     peak=std::max(peak,std::fabs(control.outputSpeed));
-    assert(std::fabs(control.outputSpeed)<=.625001);
+    assert(std::fabs(control.outputSpeed)<=.375001);
     previous=control.outputSpeed; previousFeedback=control.lastControlMs;
   }
-  assert(peak>.55 && std::fabs(control.outputSpeed)<peak-.01); // Catch-up keeps headroom and slews back down.
+  assert(peak>.33 && std::fabs(control.outputSpeed)<peak-.01); // Catch-up keeps headroom and slews back down.
   // A slow hold that is held back catches up at most 1.25 times the requested speed.
   reset(); dropEvery[0]=2; assert(MotorControl::setSpeed(.05f) && MotorControl::startHold());
   peak=0;
@@ -1243,7 +1245,7 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
   }
   assert(peak>.055 && peak<=.0625001);
   for(int stopKind=0;stopKind<4;++stopKind) {
-    reset(); assert(MotorControl::setSpeed(.5f) && MotorControl::setAcceleration(.1f));
+    reset(); assert(MotorControl::setSpeed(.3f) && MotorControl::setAcceleration(.1f));
     assert(MotorControl::startHold()); advance(250);
     assert(MotorControl::motors[0].referenceSpeed<.03); // All stops happen well before ramp completion.
     if(stopKind==0) MotorControl::stopRotation();
@@ -1257,7 +1259,7 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
   // Physical startup already close to a software bound remains inside it during the ramp.
   reset(); captureTestBounds(-12,12);
   checkPhysicalBounds[0]=true; testLower[0]=4080-12; testUpper[0]=4080+12;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   for(int i=0;i<100 && state().rotating;++i) {
     advance(10); if(i%10==0 && state().rotating) assert(MotorControl::keepHoldAlive());
   }
@@ -1280,7 +1282,7 @@ void testAutonomousCalibrationAllAxesAndSavedSettings() {
     assert(MotorControl::selectMotor(motor) && MotorControl::setDirection(saved));
     manualPosition(axis,-100); assert(MotorControl::setLimit());
     manualPosition(axis,100); assert(MotorControl::setLimit()); manualPosition(axis,0);
-    assert(MotorControl::setSpeed(.5f)); plantForCalibration(axis);
+    assert(MotorControl::setSpeed(.3f)); plantForCalibration(axis);
     assert(MotorControl::calibrate()); assert(state(motor).bounds==0);
     assert(!MotorControl::setDirection(saved) && !MotorControl::startHold() && !MotorControl::startRotation());
     assert(!MotorControl::setSpeed(.1f) && !MotorControl::resetPosition() && !MotorControl::setMicrostep(8));
@@ -1291,7 +1293,7 @@ void testAutonomousCalibrationAllAxesAndSavedSettings() {
     const auto s=state(motor);
     assert(s.lowerCounts==0 && s.bounds==3 && std::labs(s.upperCounts-1000)<=8);
     assert(std::labs(s.positionCounts-(s.upperCounts+1)/2)<=4);
-    assert(s.direction==saved && s.speed==.5f && outputs[pairs[axis].dir]==(saved==Direction::Clockwise ? HIGH:LOW));
+    assert(s.direction==saved && s.speed==.3f && outputs[pairs[axis].dir]==(saved==Direction::Clockwise ? HIGH:LOW));
     bool lower=false, upper=false, center=false, done=false;
     for(const auto &sample:limitSamples()) if(sample.motor==names[axis]) {
       lower|=sample.calibration=="lower"; upper|=sample.calibration=="upper";

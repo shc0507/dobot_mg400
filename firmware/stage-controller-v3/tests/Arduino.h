@@ -29,6 +29,7 @@ void pinMode(uint8_t pin, uint8_t mode);
 void digitalWrite(uint8_t pin, uint8_t level);
 int digitalRead(uint8_t pin);
 int analogRead(uint8_t pin);
+extern uint8_t ADCSRA; // Only the ADC prescaler bits are modeled.
 class Print {
 public:
   virtual ~Print() {}

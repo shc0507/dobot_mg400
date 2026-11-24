@@ -300,7 +300,7 @@ def test_snapshot_uses_encoder_rotations_and_unset_bounds_are_absent(contract):
     state = controller.snapshot()
     assert state["coordinate_unit"] == "rotations" and not state["legacy_geometry_active"]
     motor = state["motors"][0]
-    assert motor["steps_per_revolution"] == 200 and motor["max_speed"] == 0.5
+    assert motor["steps_per_revolution"] == 200 and motor["max_speed"] == 0.6
     assert motor["lower_limit_rotations"] is motor["upper_limit_rotations"] is None
     transport.motors["bottom"].position = 1.234
     controller.poll()

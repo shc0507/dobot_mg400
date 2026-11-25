@@ -97,7 +97,7 @@ def test_stored_calibration_is_valid(tmp_path):
     assert stored["distortion"].shape == (8,) and stored["rms_px"] <= wrist_camera.MAX_RMS_PX
     assert 20 < stored["mount"]["camera_above_tip_mm"] < 50
     bad = tmp_path / "wrist.json"
-    bad.write_text(wrist_camera.CONFIG.read_text().replace('"schema": 2', '"schema": 3'))
+    bad.write_text(wrist_camera.CONFIG.read_text().replace('"schema": 3', '"schema": 2'))
     with pytest.raises(ValueError, match="Invalid wrist camera calibration"):
         wrist_camera.load(bad)
 
@@ -112,6 +112,8 @@ def simulated_model():
             "rotation_link_to_camera": (tilt @ wrist_camera._down(np.radians(179.6))).tolist(),
             "camera_above_tip_mm": 35.0,
         },
+        "arm": dict(wrist_camera.NO_ARM),
+        "tool": {"offset_xy_mm": [0.0, 0.0]},
     }
 
 
@@ -143,6 +145,132 @@ def test_pixels_map_to_arm_coordinates_on_a_surface_and_from_2_views():
     assert wrist_camera.locate(model, pixels, poses)[2] is None
     with pytest.raises(ValueError, match="no camera height"):
         wrist_camera.surface_points(model, pixels[:1], poses[0], -70.0)
+
+
+def test_arm_scales_and_cup_offset_change_the_arm_coordinates():
+    plain = simulated_model()
+    pose = (100.0, -230.0, 120.0, 30.0)
+    pixel = simulated_pixel(plain, np.array([150.0, -180.0, -105.0]), pose)
+    model = {
+        **plain,
+        "arm": {
+            "radial_scale": 1.02,
+            "sideways_scale": 1.01,
+            "radial_drift": -0.01,
+            "radius_mm": 240,
+        },
+        "tool": {"offset_xy_mm": [1.0, 0.5]},
+    }
+    # The vector from the flange to the point, along the reach and sideways.
+    reach = np.array(pose[:2]) / np.hypot(*pose[:2])
+    side = np.array([-reach[1], reach[0]])
+    vector = np.array([150.0, -180.0]) - pose[:2]
+    along = 1.02 * (vector @ reach) - 0.01 * (np.hypot(*pose[:2]) - 240)
+    cup = [np.cos(np.radians(30)) - 0.5 * np.sin(np.radians(30))]
+    cup.append(np.sin(np.radians(30)) + 0.5 * np.cos(np.radians(30)))
+    expected = pose[:2] + along * reach + 1.01 * (vector @ side) * side - cup
+    found = wrist_camera.surface_points(model, [pixel], pose, -70.0)
+    assert found[0] == pytest.approx(expected, abs=0.01)
+    assert wrist_camera.surface_pixels(model, found, pose, -70.0)[0] == pytest.approx(
+        pixel, abs=0.05
+    )
+
+
+def touch_data(truth, lower=-38.0, touch_z=23.5):
+    """Looks at fixed points and chip moves, as a camera with the calibration `truth` sees them."""
+    rng = np.random.default_rng(5)
+    look = np.array([-39.0, -236.0, 163.8, -25.2])
+    poses = [look + [dx, dy, 0, 0] for dx in (-40, 20, 80) for dy in (0, -40, -80)]
+    poses[1::2] = [pose + [0, 0, lower, 0] for pose in poses[1::2]]
+
+    def pixel(place, pose):
+        return wrist_camera.surface_pixels(truth, [place], pose, touch_z)[0].tolist()
+
+    def turned(degrees, vector):
+        cos, sin = np.cos(np.radians(degrees)), np.sin(np.radians(degrees))
+        return np.array([cos * vector[0] - sin * vector[1], sin * vector[0] + cos * vector[1]])
+
+    looks, moves = [], []
+    for number in range(12):
+        place = [rng.uniform(-100, 30), rng.uniform(-330, -200)]
+        looks += [{"point": number, "pose": p.tolist(), "pixel": pixel(place, p)} for p in poses]
+    cup = turned(look[3], truth["tool"]["offset_xy_mm"])
+    for _ in range(16):
+        pick, put = ([rng.uniform(-100, 30), rng.uniform(-330, -200)] for _ in range(2))
+        turn = float(rng.uniform(-60, 60))
+        long = turned(rng.uniform(0, 180), [1.0, 0.0])
+        # The cup seals at a place along the length of the chip, in the middle of its width.
+        picked = np.array(pick) + rng.uniform(-3, 3) * long
+        seen_after = np.array(put) + turned(turn, np.array(pick) + cup - picked) - cup
+        moves.append(
+            {
+                "pose_before": look.tolist(),
+                "pixel_before": pixel(pick, look),
+                "picked_at": picked.tolist(),
+                "across": [-long[1], long[0]],
+                "turn": turn,
+                "put": put,
+                "pose_after": look.tolist(),
+                "pixel_after": pixel(seen_after, look),
+            }
+        )
+    return {"touch_z": touch_z, "looks": looks, "moves": moves}
+
+
+def touch_truth():
+    stored = wrist_camera.load()
+    mount = {**stored["mount"], "offset_xy_mm": [-44.0, 42.5], "camera_above_tip_mm": 35.0}
+    arm = {"radial_scale": 1.02, "sideways_scale": 1.004, "radial_drift": -0.004}
+    arm["radius_mm"] = stored["arm"]["radius_mm"]
+    return {**stored, "mount": mount, "arm": arm, "tool": {"offset_xy_mm": [-0.6, 0.4]}}
+
+
+def test_touch_fit_recovers_the_cup_offset_and_the_arm_scales():
+    truth = touch_truth()
+    data = touch_data(truth)
+    result = wrist_camera.fit_touch(wrist_camera.load(), data["looks"], data["moves"], 23.5)
+    assert result["tool"]["offset_xy_mm"] == pytest.approx([-0.6, 0.4], abs=0.02)
+    assert result["arm"]["radial_scale"] == pytest.approx(1.02, abs=0.0005)
+    assert result["arm"]["sideways_scale"] == pytest.approx(1.004, abs=0.0005)
+    assert result["mount"]["camera_above_tip_mm"] == pytest.approx(35.0, abs=0.05)
+    assert result["touch_fit"]["seal_rms_mm"] < 0.01 and result["touch_fit"]["moves"] == 16
+    # The fitted calibration gives the pick point of each chip: the sealed place across the width.
+    for move in data["moves"]:
+        found = wrist_camera.surface_points(
+            result, [move["pixel_before"]], move["pose_before"], 23.5
+        )
+        assert (found[0] - move["picked_at"]) @ move["across"] == pytest.approx(0, abs=0.02)
+    with pytest.raises(ValueError, match="12 moves"):
+        wrist_camera.fit_touch(wrist_camera.load(), data["looks"], data["moves"][:5], 23.5)
+    # Looks from 1 height: the camera height stays, and the pick points are still right.
+    data = touch_data(truth, lower=0.0)
+    result = wrist_camera.fit_touch(wrist_camera.load(), data["looks"], data["moves"], 23.5)
+    stored = wrist_camera.load()["mount"]["camera_above_tip_mm"]
+    assert result["mount"]["camera_above_tip_mm"] == pytest.approx(stored, abs=1e-4)
+    move = data["moves"][0]
+    found = wrist_camera.surface_points(result, [move["pixel_before"]], move["pose_before"], 23.5)
+    assert (found[0] - move["picked_at"]) @ move["across"] == pytest.approx(0, abs=0.02)
+
+
+def test_touch_command_stores_the_fit(tmp_path, capsys):
+    script = load_script()
+    out = tmp_path / "wrist.json"
+    out.write_text(wrist_camera.CONFIG.read_text())
+    data = tmp_path / "touch.json"
+    data.write_text(json.dumps(touch_data(touch_truth())))
+    script.touch(data, out)
+    stored = wrist_camera.load(out)
+    assert stored["tool"]["offset_xy_mm"] == pytest.approx([-0.6, 0.4], abs=0.02)
+    assert stored["touch_fit"]["looks"] == 108 and "Stored" in capsys.readouterr().out
+    wrong = touch_data(touch_truth())
+    for number, move in enumerate(wrong["moves"]):
+        shift = 1.5 * (-1) ** number
+        move["picked_at"] = [a + shift * b for a, b in zip(move["picked_at"], move["across"])]
+    data.write_text(json.dumps(wrong))
+    before = out.read_text()
+    with pytest.raises(RuntimeError, match="above the limit"):
+        script.touch(data, out)
+    assert out.read_text() == before
 
 
 FIXED = "/dev/v4l/by-path/fake-camera-1"

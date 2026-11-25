@@ -14,9 +14,15 @@ size gives the real scale. The fit takes the reported z steps as true. Each pose
 small position correction for the arm accuracy.
 
 The reported radial moves of the arm do not agree exactly with the board. The fit gives
-them 1 scale factor about the mean radius of the poses. That factor is not valid away
-from those poses, so the mapping functions do not use it: a touch test on the stage was
-5 mm off with a scale about the base axis and 0.5 mm off without it.
+them 1 scale factor about the mean radius of the poses. The mapping functions do not use
+that factor: a scale about the base axis is 5 mm wrong away from those poses.
+
+The board fit does not see the tool, so it cannot give the place of the cup against the
+camera. `fit_touch` gives that from picks: the flange places where the cup sealed on a
+chip, and looks before and after each move. It also gives the terms of the arm. The arm
+reports a longer move than the real one between a look pose and a touch, by about 1%
+along the reach and less sideways. The mapping multiplies the vector from the flange to
+the point by these 2 scales in the link frame. It does not scale positions about the base.
 """
 
 import json
@@ -37,6 +43,13 @@ POSE_SIGMA_MM = 0.2
 SQUARE_SIGMA_MM = 0.05
 OUTLIER_PX = 2.5
 MAX_RMS_PX = 1.0
+# Without a touch fit: the arm moves as it reports and the cup is on the flange axis.
+NO_ARM = {"radial_scale": 1.0, "sideways_scale": 1.0, "radial_drift": 0.0, "radius_mm": 0.0}
+LOOK_SIGMA_MM = 0.15
+MOVE_SIGMA_MM = 0.3
+MIN_MOVES = 12
+# Looks from 1 height do not tell a longer camera distance from larger arm scales.
+MIN_HEIGHT_RANGE_MM = 20.0
 
 
 def board():
@@ -226,7 +239,7 @@ def fit(records, square_mm=SQUARE_MM):
     radius = float(np.mean(np.hypot(flange[:, 0], flange[:, 1])))
     offset = offset + [(scale - 1.0) * radius, 0.0]
     return {
-        "schema": 2,
+        "schema": 3,
         "image_size": list(IMAGE_SIZE),
         "camera_matrix": matrix.tolist(),
         "distortion": distortion.tolist(),
@@ -234,6 +247,8 @@ def fit(records, square_mm=SQUARE_MM):
             "offset_xy_mm": offset.tolist(),
             "rotation_link_to_camera": cv2.Rodrigues(rotation)[0].tolist(),
         },
+        "arm": dict(NO_ARM, radius_mm=radius),
+        "tool": {"offset_xy_mm": [0.0, 0.0]},
         "arm_radial_scale": float(scale),
         "calibration_radius_mm": radius,
         "square_mm": float(square_mm),
@@ -253,37 +268,83 @@ def load(path=CONFIG):
     rotation = np.array(document["mount"]["rotation_link_to_camera"], float)
     offset = np.array(document["mount"]["offset_xy_mm"], float)
     height = document["mount"].get("camera_above_tip_mm")
+    arm = document.get("arm", {})
+    tool = np.array(document.get("tool", {}).get("offset_xy_mm", [np.nan]), float)
+    terms = [arm.get(name, np.nan) for name in NO_ARM]
     if (
-        document.get("schema") != 2
+        document.get("schema") != 3
         or document.get("image_size") != list(IMAGE_SIZE)
         or matrix.shape != (3, 3)
         or distortion.shape != (8,)
         or rotation.shape != (3, 3)
         or offset.shape != (2,)
-        or not all(np.all(np.isfinite(v)) for v in (matrix, distortion, rotation, offset))
+        or tool.shape != (2,)
+        or not all(np.all(np.isfinite(v)) for v in (matrix, distortion, rotation, offset, tool))
+        or not np.all(np.isfinite(terms))
         or not 0 < document["rms_px"] <= MAX_RMS_PX
         or not 0.9 < document["arm_radial_scale"] < 1.1
+        or not 0.9 < arm["radial_scale"] < 1.1
+        or not 0.9 < arm["sideways_scale"] < 1.1
+        or not abs(arm["radial_drift"]) < 0.1
+        or np.abs(tool).max() > 10
         or (height is not None and not 0 < height < 200)
     ):
         raise ValueError(f"Invalid wrist camera calibration: {path}")
     return {**document, "camera_matrix": matrix, "distortion": distortion}
 
 
-def rays(model, pixels, pose):
-    """Return the camera centre and a viewing direction for each pixel, for 1 arm pose.
-
-    The frame is the arm frame. Its z is the flange z of the pose, so the centre has the z
-    of the flange and not of the lens.
-    """
-    offset = model["mount"]["offset_xy_mm"]
-    rotation = np.array(model["mount"]["rotation_link_to_camera"], float)
+def _normal(model, pixels):
     points = np.asarray(pixels, float).reshape(-1, 1, 2)
-    normal = cv2.undistortPoints(points, model["camera_matrix"], model["distortion"]).reshape(-1, 2)
+    return cv2.undistortPoints(points, model["camera_matrix"], model["distortion"]).reshape(-1, 2)
+
+
+def _turn(poses, vectors):
+    """Link frame to arm frame for each row: a turn by the J1 of the pose about z."""
+    radius = np.hypot(poses[:, 0], poses[:, 1])
+    cos, sin = poses[:, 0] / radius, poses[:, 1] / radius
+    x, y = vectors[:, 0], vectors[:, 1]
+    return np.column_stack([cos * x - sin * y, sin * x + cos * y, vectors[:, 2]])
+
+
+def _lines(model, normal, poses, tool=True):
+    """Return a start point and a direction for each row of normalised pixels and poses.
+
+    The lines are in reported arm coordinates: the point start + t direction at the height
+    of a surface is the flange x, y that puts the cup over the point of the surface, with
+    the tool rotation r of the pose. tool=False gives the place of the flange axis.
+    """
+    mount, arm = model["mount"], model["arm"]
+    rotation = np.array(mount["rotation_link_to_camera"], float)
+    stretch = np.array([arm["radial_scale"], arm["sideways_scale"], 1.0])
     link = np.column_stack([normal, np.ones(len(normal))]) @ rotation
-    cos, sin = np.cos(np.arctan2(pose[1], pose[0])), np.sin(np.arctan2(pose[1], pose[0]))
-    turn = np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
-    centre = np.array(pose[:3], float) + turn @ [*offset, 0.0]
-    return centre, link @ turn.T
+    start = np.tile(np.array([*mount["offset_xy_mm"], 0.0]) * stretch, (len(poses), 1))
+    radius = np.hypot(poses[:, 0], poses[:, 1])
+    start[:, 0] += arm["radial_drift"] * (radius - arm["radius_mm"])
+    centre = poses[:, :3] + _turn(poses, start)
+    if tool:
+        angle = np.radians(poses[:, 3])
+        x, y = model["tool"]["offset_xy_mm"]
+        centre[:, 0] -= np.cos(angle) * x - np.sin(angle) * y
+        centre[:, 1] -= np.sin(angle) * x + np.cos(angle) * y
+    return centre, _turn(poses, link * stretch)
+
+
+def _poses(pose, count):
+    """1 pose for each row. A pose without r has the tool rotation 0."""
+    pose = np.asarray(pose, float)
+    return np.tile(np.append(pose, 0.0)[:4] if len(pose) < 4 else pose[:4], (count, 1))
+
+
+def rays(model, pixels, pose):
+    """Return the start point and a direction of the line of each pixel, for 1 arm pose.
+
+    The frame is the arm frame. Its z is the flange z of the pose, so the start point has
+    the z of the flange and not of the lens. The lines include the scales of the arm and
+    the cup offset: see `surface_points`.
+    """
+    normal = _normal(model, pixels)
+    centre, directions = _lines(model, normal, _poses(pose, len(normal)))
+    return centre[0], directions
 
 
 def _height(model):
@@ -297,14 +358,28 @@ def surface_points(model, pixels, pose, touch_z):
     """Return the arm x, y of pixels on a level surface.
 
     touch_z is the flange z at which the tool tip touches the surface. A move to the
-    result puts the tool axis over the point. Use a pose 170 mm or more above the surface:
-    a view from a shorter distance can be 2 mm off.
+    result with the tool rotation r of the pose puts the cup over the point. Use a pose
+    with the lens 170 mm or more above the surface: a nearer view can be 2 mm off.
     """
     centre, directions = rays(model, pixels, pose)
     distance = (touch_z - _height(model) - centre[2]) / directions[:, 2]
     if np.any(distance <= 0):
         raise ValueError("A pixel does not look at the surface")
     return (centre + distance[:, None] * directions)[:, :2]
+
+
+def surface_pixels(model, points, pose, touch_z):
+    """Return the pixels of arm x, y points on a level surface: the reverse of surface_points."""
+    points = np.asarray(points, float).reshape(-1, 2)
+    poses = _poses(pose, len(points))
+    centre, _ = _lines(model, np.zeros((len(points), 2)), poses)
+    drop = touch_z - _height(model) - centre[:, 2]
+    arm = np.column_stack([(points - centre[:, :2]) / drop[:, None], np.ones(len(points))])
+    stretch = [model["arm"]["radial_scale"], model["arm"]["sideways_scale"], 1.0]
+    turned = poses * [1.0, -1.0, 1.0, 1.0]  # the turn by -J1
+    link = _turn(turned, arm) / stretch * np.sign(drop)[:, None]
+    camera = link @ np.array(model["mount"]["rotation_link_to_camera"], float).T
+    return project(model["camera_matrix"], model["distortion"], np.zeros(3), camera)
 
 
 def locate(model, pixels, poses):
@@ -322,3 +397,110 @@ def locate(model, pixels, poses):
     height = model["mount"].get("camera_above_tip_mm")
     touch_z = None if height is None else float(point[2] + height)
     return float(point[0]), float(point[1]), touch_z, float(point[2])
+
+
+def _spin(degrees, vectors):
+    """Turn each row of x, y vectors by its angle about z."""
+    cos, sin = np.cos(np.radians(degrees)), np.sin(np.radians(degrees))
+    return np.column_stack(
+        [cos * vectors[:, 0] - sin * vectors[:, 1], sin * vectors[:, 0] + cos * vectors[:, 1]]
+    )
+
+
+def fit_touch(model, looks, moves, touch_z):
+    """Fit the cup offset, the camera place and the arm scales to looks and chip moves.
+
+    looks: [{"point": key, "pose": [x, y, z, r], "pixel": [u, v]}]. Each point is fixed on a
+    level surface with the touch height touch_z, and several poses see it.
+    moves: 1 record for each chip that the cup picked and put down again:
+    {"pose_before", "pixel_before", "picked_at": [x, y], "across": [x, y], "turn",
+    "put": [x, y], "pose_after", "pixel_after"}. The pick has the tool rotation of
+    pose_before, and the put has that rotation plus `turn` degrees. `across` is the unit
+    vector across the width of the chip: the cup seals only near the middle of the width.
+
+    The chip turns about the flange axis, so the looks before and after a move give the
+    place of the flange axis against the camera. The sealed places then give the cup offset.
+    Return the model with a new mount offset, yaw, camera height, arm terms and cup offset.
+    The camera height stays as stored when all looks are from nearly 1 height.
+    """
+    keys = sorted({str(look["point"]) for look in looks})
+    if len(moves) < MIN_MOVES or len(looks) < 8 * len(keys) or not keys:
+        raise ValueError("The touch fit needs 12 moves and 8 looks of each fixed point")
+    group = np.array([keys.index(str(look["point"])) for look in looks])
+    seen = _normal(model, [look["pixel"] for look in looks])
+    seen_from = np.array([look["pose"] for look in looks], float)[:, :4]
+    before = _normal(model, [move["pixel_before"] for move in moves])
+    after = _normal(model, [move["pixel_after"] for move in moves])
+    pose_before = np.array([move["pose_before"] for move in moves], float)[:, :4]
+    pose_after = np.array([move["pose_after"] for move in moves], float)[:, :4]
+    picked, put = (np.array([move[key] for move in moves], float) for key in ("picked_at", "put"))
+    across = np.array([move["across"] for move in moves], float)
+    turn = np.array([move["turn"] for move in moves], float)
+    radius = float(np.mean(np.hypot(seen_from[:, 0], seen_from[:, 1])))
+    mount, arm = model["mount"], model["arm"]
+    rotation = np.array(mount["rotation_link_to_camera"], float)
+
+    def candidate(x):
+        yaw = cv2.Rodrigues(np.array([0.0, 0.0, x[3]]))[0]
+        return {
+            **model,
+            "mount": {
+                "offset_xy_mm": [float(x[0]), float(x[1])],
+                "rotation_link_to_camera": (rotation @ yaw.T).tolist(),
+                "camera_above_tip_mm": float(x[2]),
+            },
+            "arm": {
+                "radial_scale": float(x[4]),
+                "sideways_scale": float(x[5]),
+                "radial_drift": float(x[6]),
+                "radius_mm": radius,
+            },
+            "tool": {"offset_xy_mm": [float(x[7]), float(x[8])]},
+        }
+
+    def places(trial, normal, poses):
+        """Flange x, y that puts the flange axis over each point."""
+        centre, directions = _lines(trial, normal, poses, tool=False)
+        distance = (touch_z - _height(trial) - centre[:, 2]) / directions[:, 2]
+        return (centre + distance[:, None] * directions)[:, :2]
+
+    def parts(x):
+        trial = candidate(x)
+        point = places(trial, seen, seen_from)
+        sums = np.zeros((len(keys), 2))
+        np.add.at(sums, group, point)
+        spread = point - (sums / np.bincount(group, minlength=len(keys))[:, None])[group]
+        # The chip from the flange axis: at the pick, and after the put.
+        held = places(trial, before, pose_before) - picked
+        left = places(trial, after, pose_after) - put
+        cup = _spin(pose_before[:, 3], np.tile(x[7:9], (len(moves), 1)))
+        return spread, left - _spin(turn, held), np.einsum("ij,ij->i", across, held - cup)
+
+    heights = np.concatenate([seen_from[:, 2], pose_before[:, 2], pose_after[:, 2]])
+    keep_height = 1e3 if np.ptp(heights) < MIN_HEIGHT_RANGE_MM else 0.0
+
+    def error(x):
+        spread, closure, seal = parts(x)
+        return np.concatenate(
+            [
+                spread.ravel() / LOOK_SIGMA_MM,
+                closure.ravel() / MOVE_SIGMA_MM,
+                seal / MOVE_SIGMA_MM,
+                [keep_height * (x[2] - _height(model))],
+            ]
+        )
+
+    x = [*mount["offset_xy_mm"], _height(model), 0.0, arm["radial_scale"], arm["sideways_scale"]]
+    x, _ = _minimize(error, np.array([*x, arm["radial_drift"], *model["tool"]["offset_xy_mm"]]))
+    spread, closure, seal = parts(x)
+    result = candidate(x)
+    result["touch_fit"] = {
+        "touch_z_mm": float(touch_z),
+        "points": len(keys),
+        "looks": len(looks),
+        "moves": len(moves),
+        "look_rms_mm": float(np.sqrt((spread**2).sum(1).mean())),
+        "move_rms_mm": float(np.sqrt((closure**2).sum(1).mean())),
+        "seal_rms_mm": float(np.sqrt((seal**2).mean())),
+    }
+    return result

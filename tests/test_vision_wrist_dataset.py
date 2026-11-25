@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from vision import wrist_dataset
+from vision import wrist_camera, wrist_dataset
 
 ROOT = Path(__file__).resolve().parents[1]
 SIZE = (1920, 1080)
@@ -30,6 +30,8 @@ def camera():
             "rotation_link_to_camera": [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
             "camera_above_tip_mm": 31.5,
         },
+        "arm": dict(wrist_camera.NO_ARM),
+        "tool": {"offset_xy_mm": [0.0, 0.0]},
     }
 
 

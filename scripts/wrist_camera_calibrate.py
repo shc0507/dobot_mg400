@@ -3,8 +3,10 @@
 uv run python scripts/wrist_camera_calibrate.py board work/wrist-camera/board.pdf
 uv run python scripts/wrist_camera_calibrate.py run --board-mm 264
 uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264
+uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json
 
 `run` moves the arm. Read the procedure in docs/vision.en.md first and watch the arm.
+`touch` fits the cup offset and the arm scales to looks and chip moves that a pick run saved.
 """
 
 import argparse
@@ -28,6 +30,7 @@ START_TOLERANCE_MM = 5.0
 BOARD_DISTANCE_MM = (160.0, 190.0)
 SPEED = 15
 SETTLE_S = 1.2
+MAX_SEAL_RMS_MM = 0.4
 # (z offset, x offsets, y offsets) from the start pose, in mm. All y offsets go away from
 # the robot base: a point nearer to the base is outside the joint range at this height.
 LEVELS = (
@@ -147,6 +150,21 @@ def fit(records, square_mm, out):
     print(f"Stored {out}")
 
 
+def touch(data, out):
+    """Store the touch fit of the calibration in `out` to the looks and moves in `data`."""
+    document = json.loads(Path(data).read_text())
+    result = wrist_camera.fit_touch(
+        wrist_camera.load(out), document["looks"], document["moves"], document["touch_z"]
+    )
+    print(json.dumps(result["touch_fit"]))
+    if result["touch_fit"]["seal_rms_mm"] > MAX_SEAL_RMS_MM:
+        raise RuntimeError("The touch fit error is above the limit. The calibration is not stored")
+    for key in ("camera_matrix", "distortion"):
+        result[key] = result[key].tolist()
+    Path(out).write_text(json.dumps(result, indent=1) + "\n")
+    print(f"Stored {out}")
+
+
 def write_board(path):
     """Write the board as an A4 landscape PDF at 600 dpi. Print it at 100%."""
     from PIL import Image
@@ -175,9 +193,15 @@ def main():
             help="measured long side of the printed pattern, 264 at 100%%",
         )
         command.add_argument("--out", type=Path, default=wrist_camera.CONFIG)
+    command = commands.add_parser("touch")
+    command.add_argument("data", type=Path)
+    command.add_argument("--out", type=Path, default=wrist_camera.CONFIG)
     arguments = parser.parse_args()
     if arguments.command == "board":
         write_board(arguments.path)
+        return
+    if arguments.command == "touch":
+        touch(arguments.data, arguments.out)
         return
     square_mm = arguments.board_mm / wrist_camera.SQUARES[0]
     if arguments.command == "run":

@@ -24,7 +24,9 @@ def mock_read(path):
     return json.loads(raw)
 
 
-def register_chat(app, control, live_reader, *, model=None, reader=None, profiles=None):
+def register_chat(
+    app, control, live_reader, *, model=None, reader=None, profiles=None, history=None
+):
     if profiles is None and model is None:
         from .model_profiles import ModelProfileStore
 
@@ -39,6 +41,7 @@ def register_chat(app, control, live_reader, *, model=None, reader=None, profile
         reader or ChatContextReader({"live": live_reader, "mock": mock_read}),
         model,
         profiles=profiles,
+        history=history,
     )
     app.extensions["agent_portal_chat"] = chat
     atexit.register(chat.close)
@@ -113,5 +116,10 @@ def register_chat(app, control, live_reader, *, model=None, reader=None, profile
     def cancel():
         data = body({"source"})
         return jsonify(chat.cancel(data["source"]))
+
+    @app.post(prefix + "/reconcile")
+    def reconcile():
+        data = body({"source"})
+        return jsonify(chat.reconcile(data["source"]))
 
     return chat

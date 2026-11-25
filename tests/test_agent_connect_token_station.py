@@ -105,7 +105,8 @@ def test_gateway_uses_chat_completions_with_namespaced_model(monkeypatch, provid
     assert headers["accept"] == "text/event-stream"
     assert "x-api-key" not in headers and "x-goog-api-key" not in headers
     payload = json.loads(request.data)
-    assert set(payload) == {"model", "messages", "stream"}
+    assert set(payload) == {"model", "messages", "stream", "stream_options"}
+    assert payload["stream_options"] == {"include_usage": True}
     assert payload["model"] == "openai/gpt-6.1-sol" and payload["stream"] is True
     instructions, user = payload["messages"]
     assert instructions["role"] == "system" and user["role"] == "user"

@@ -38,13 +38,29 @@ Token Station 隐藏提供方选项，使用 Chat Completions 协议。保留模
 
 Windows DPAPI 为当前 Windows 用户加密全部保存内容。加密内容包括 API 密钥和配置资料。默认文件为 `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/model-profiles.json`，位于 Git 仓库外。重启 Portal 后，恢复已保存的配置及当前选择。如果 Windows 凭据保护不可用，不能保存配置，也不使用明文存储。默认配置模式不自动读取 `OPENAI_API_KEY`。
 
+读写配置时，Portal 使用有等待时限的进程锁。每次读取或修改前，重新加载最新文件。新的模型请求使用当前配置。正在运行的请求继续使用原配置。若读取失败，清除缓存中的配置凭据。
+
+启动器将真机配对保存到 `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/pairing.json`，使用 Windows DPAPI 加密。不保存会话令牌或操作权。若智能体原先已连接，启动时最多尝试 5 次观察者连接，每次间隔 2 秒。离线重连失败后，开启 LarePass，再选择 **Connect**。选择 **Disconnect** 可取消恢复，并在重启后保持断开。仅 1 个 Portal 进程可持有保存的配对。重连后须重新授予操作权，才能执行命令。
+
+真机历史记录加密保存在 `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/history.sqlite3`。保留 60 条消息、120 条活动、100 条用量记录和 100 条请求引用。模拟历史仍保存在内存中。恢复的历史只提供过去的上下文，不代表当前读数或待执行指令。**Check previous command results** 读取原请求 ID 的结果，不重发命令、不恢复任务，也不申请操作权。
+
 修改配置或重启 Portal 不会自动探测 API，也不会发送设备命令。提交请求后，指令和近期对话发送到当前 API 地址。请求还包含已审阅的项目知识、已核验的 Console 状态和当前命令目录。不发送摄像头视频或 Console 凭据。
+
+对于少量明确的位移台或机器人请求，模型只接收该设备的状态和动作。操作规则、单位、选项、样品及运行状态仍完整提供。含糊请求和比较请求保留完整上下文。返回的动作仍用原始完整目录核验。
+
+**API usage** 显示近期每次请求的提供方、模型、路由、输入/输出/总 token 数、耗时和结果。仅当提供方明确返回美元费用时，才显示费用。缺少用量或费用时，保持未知。**Cancel agent task** 中断本地 API 连接，禁止迟到的响应触发命令。但不能保证提供方停止计算或计费。
 
 运行时，本地智能体加载已审阅的项目知识。使用状态前，先检查当前只读契约。对受支持的动作，核对已审阅的参数结构、修订版本、默认值和设备。若不匹配，必须由人指示编码智能体更新代码，普通命令才能恢复。本地智能体不会自主修改代码。
 
+调用模型前，Portal 保存 `choices.stage_context`。它将保存的位移台参考与模型状态快照中的 `devices.stage.values.stage_reference` 比较。对位移台运动和传送配置操作，Portal 将保存的 `preconditions` 原样放入命令封装。模型不提供参考或配置绑定值。
+
+通过 `POST /commands` 提交这些动作前，Portal 读取新选项并比较原值。如果上下文缺失、不可用、格式错误或发生变化，Portal 拒绝这些动作，不发送命令。Portal 不会用新值替换原值。执行前，服务器再次检查这些值。
+
+此绑定只覆盖位移台校准参考和当前传送配置。草稿内容和动作参数指定的其他配置不在此绑定范围内。它不要求传感器读数保持不变，也不增加设备进程标识检查。位移台校准、故障清除、其他设备动作和 Stop 保留原有路径。
+
 连接并明确授予操作权后，清晰指令立即执行。缺少目标或单位时，智能体会提问。每条指令可执行 1 个目录动作，包括已有的组合动作。位移台坐标使用圈数。机器人 X/Y/Z 使用毫米，R 使用度。智能体显示 Console 返回的结果。结果未知时，保留请求 ID，不自动重发运动命令。**Cancel agent task** 取消待处理的解释，并请求取消自己的命令。Portal 各页签均保留 Stop 控件。
 
-实时活动列表每 1 秒更新。它显示状态读取、指令解释、参数核验、命令提交和 Console 结果。每条已提交命令均显示完整 JSON 请求正文和请求 ID。指令解释提供简短的动作说明，不展示模型的私有推理。活动只保存在进程内存中，真机和模拟来源分别保存。
+实时活动列表每 1 秒更新。它显示状态读取、指令解释、参数核验、命令提交和 Console 结果。每条已提交命令均显示完整 JSON 请求正文和请求 ID。指令解释提供简短的动作说明，不展示模型的私有推理。真机活动使用加密的本地历史记录。模拟活动保存在内存中，与真机活动分开。
 
 Digital Twin 页显示实时 Console 状态。Manual testing 页包含命令表单、目标预览和可选模拟。切换页签不会断开智能体。只有明确提交的指令或手动命令才会请求设备操作。打开页面、设置模型和授予控制权均不会启动设备。
 
@@ -115,6 +131,10 @@ Move one stage axis 使用编码器绝对位置，单位为转数，原点是所
 
 `/commands/choices` 响应中的 `constraints.stage` 来自现有设备缓存。这些运行时限位不改变命令目录约定或摘要。运动前，服务器重新检查所选轴限位、故障、租约和 Stop 版本。X/Y 移动不依赖 Insert 的位置。这适用于单轴移动、组合坐标、微动、步进和已存位置。组合 X/Y 移动先执行 Bottom，再执行 Top，Insert 不变。命名位置按 Bottom、Top、Insert 顺序移动，不额外执行抽出动作。每次只移动 1 个轴。
 
+`choices.stage_context` 包含 `version: 1`、`available`、`reason` 和 `preconditions`。可用时，`preconditions` 包含 `stage_reference`、`profile_id` 和 `profile_digest`。该上下文与返回选项使用同一份位移台缓存和当前配置快照。不可用时，`preconditions` 为 `null`，`reason` 说明原因。此上下文不改变命令目录摘要。
+
+状态字段 `devices.stage.values.stage_reference` 与该帧使用同一份原生缓存快照。不可用时，该字段为 `null`。为受保护的位移台动作决策前，Portal 将它与选项中的参考比较。
+
 拒绝或失败的命令在控制区显示原因。展开 Recent commands and results 可查看完整记录。
 
 每次明确选择 Send command 都创建新的 `request_id`。如果响应丢失，Portal 查询原 ID，不重发命令。结果未确定时，禁止再次提交。切换来源会清空命令视图，并忽略旧来源迟到的响应。
@@ -137,7 +157,7 @@ Take control 把操作权交给人。Release control 清空操作员。Revoke ac
 
 客户端连接权限和 `last_connected_at` 保存在 Console 运行目录的 `agent-connect/authority.db`。该时间戳以 Unix 秒记录最近的成功连接或重连。未记录连接时间时，值为 `null`，历史记录也按此处理。配对、心跳、状态读取、释放操作权和遭拒的连接均不更新它。邀请、会话和授权不持久化。重启 Console 会使会话和授权失效。
 
-PC Portal 只在服务器内存中保留 Console 连接凭据。即使模型配置仍启用，重启 Portal 后也必须使用新邀请。旧版待批准客户端也必须使用新邀请。
+PC 启动器在重启后恢复加密配对。会话令牌和操作权仍只保存在内存中。配对被撤销或无效时，须使用新邀请。旧版待批准客户端也须使用新邀请。
 
 Start test、Run next step 和 Stop test 提供独立的内存交接测试。测试包含 3 个手动步骤，在 Olares 上也只改变内存。Stop test 只停止该测试，不停止设备。
 
@@ -159,6 +179,8 @@ Start test、Run next step 和 Stop test 提供独立的内存交接测试。测
 版本 1 命令目录包含 `version`、`contract_id` 和 `actions`。摘要以 `sha256:` 开头。每个动作包含 `id`、`label`、`description`、`params`、`defaults`、`device`、`available`、`reason` 和 `revision`。可用状态可能变化，而定义摘要不变。
 
 只提交 `request_id`、`boot_id`、`contract_id`、`control_epoch`、`action` 和 `params`，以及可选的 `preconditions`。最后 2 个字段必须为 JSON 对象。Portal 明确发送 `preconditions`。执行前，服务器检查当前标识、命令摘要、操作员授权和动作约定。
+
+为保持兼容，服务器接受旧版或手动客户端发送的 `{}`。本地模型命令流程要求位移台运动和传送配置操作使用已保存的位移台上下文。如果 Console 未提供上下文，Portal 拒绝这些动作。其他动作使用 `{}`。
 
 将控制状态中的 `command_boot_id` 用作命令的 `boot_id`。其 `identity_scope` 为 `command_control`。原样保留返回的 `control_epoch` 字符串。状态的 `command_contract_id` 必须匹配目录的 `contract_id`。只读数据流有独立的 `boot_id` 和约定摘要，不得用它们替换命令标识。
 

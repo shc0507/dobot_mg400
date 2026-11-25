@@ -38,13 +38,29 @@ Select **Activate** to use a saved profile. Saving alone does not activate it. *
 
 Windows DPAPI encrypts the complete saved payload for the current Windows user, including API keys and profile metadata. The default file is `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/model-profiles.json`, outside Git. Restarting the portal restores saved profiles and the active selection. Without Windows credential protection, profile storage is unavailable. There is no plaintext fallback. The default profile mode does not load `OPENAI_API_KEY` automatically.
 
+Profile access uses a bounded process lock and reloads the latest file before each read or change. A new model request uses the current active profile. An already running request keeps its original profile. A failed read clears cached profile credentials.
+
+The launcher saves the live pairing in `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/pairing.json`, encrypted with Windows DPAPI. It saves no session token or operator grant. If the agent was connected, startup makes up to 5 observer connection attempts, with 2 seconds between attempts. After an offline failure, enable LarePass and select **Connect**. Select **Disconnect** to cancel restoration and keep the agent disconnected after restart. Only 1 portal process can own the saved pairing. Reconnection requires a new operator grant before commands can run.
+
+Live history uses encrypted records in `%LOCALAPPDATA%/AI Chemistry Console/agent-portal/history.sqlite3`. It retains 60 messages, 120 activity entries, 100 usage entries and 100 request references. Simulation history remains in memory. Restored history is historical context, not current measurements or pending instructions. **Check previous command results** reads the original request IDs. It does not repeat commands, resume tasks or acquire control.
+
 Profile changes and portal restarts send no automatic API probe or equipment command. When you submit a request, instructions and recent conversation go to the active API endpoint. The request also includes reviewed project knowledge, verified Console state and the current command catalog. Requests exclude camera video and Console credentials.
+
+For a small set of explicit stage or robot requests, the model receives that device's state and actions. Operating rules, units, choices, samples and operations remain included. Ambiguous requests and comparisons retain the full context. The original full catalog still validates the returned action.
+
+**API usage** shows the provider, model, route, input/output/total tokens, request time and result for each recent request. Cost appears only when the provider explicitly reports USD cost. Missing usage or cost remains unknown. **Cancel agent task** interrupts the local API connection and prevents command dispatch from a late response. It cannot guarantee that provider computation or billing stops.
 
 At runtime, the local agent loads reviewed project knowledge and checks the current read contract before using state. It compares supported actions with their reviewed schemas, revisions, defaults and devices. A mismatch requires a human-directed coding-agent update before normal commands can resume. The local agent does not change its code autonomously.
 
+Before calling the model, the portal captures `choices.stage_context`. It compares the captured stage reference with `devices.stage.values.stage_reference` in the model's state snapshot. For stage movement and transfer-profile actions, it copies the captured `preconditions` into the command envelope. The model supplies no reference or profile binding values.
+
+Before submitting these actions with `POST /commands`, the portal reads fresh choices and compares the original values. If context is missing, unavailable, malformed or changed, it rejects these actions and sends no command. It never replaces the original values with newer ones. The server checks them again before dispatch.
+
+This binding covers stage calibration references and the selected transfer profile. Draft contents and other profiles named by action parameters are outside this binding. It does not require unchanged sensor readings or add device process identity checks. Stage calibration, fault clearing, other device actions and Stop retain their existing paths.
+
 After connection and an explicit operator grant, clear instructions execute immediately. Missing targets or units cause a clarification question. Each instruction can execute 1 catalog action, including an existing composite action. Stage positions use rotations. Robot X/Y/Z use millimetres; R uses degrees. The agent reports the Console result and retains the request ID when the outcome is unknown. It never resends movement automatically. **Cancel agent task** cancels pending interpretation and requests cancellation of its own command. Stop controls remain available across the portal tabs.
 
-The live activity list updates every 1 second. It shows state reads, interpretation, validation, command submission and Console results. Each submitted command includes its exact JSON body and request ID. The interpretation gives a brief action explanation; the list does not expose private model reasoning. Activity stays in process memory and is separate for live and simulated sources.
+The live activity list updates every 1 second. It shows state reads, interpretation, validation, command submission and Console results. Each submitted command includes its exact JSON body and request ID. The interpretation gives a brief action explanation; the list does not expose private model reasoning. Live activity uses the encrypted local history. Simulated activity stays in memory and is separate from live activity.
 
 The **Digital Twin** tab shows the live Console state. **Manual testing** contains command forms, target previews and optional simulations. Opening a different tab does not disconnect the agent. Only an explicit instruction or manual command can request equipment operation. Opening the page, configuring the model and granting control do not start equipment.
 
@@ -115,6 +131,10 @@ Move one stage axis uses an absolute encoder position in rotations, measured fro
 
 The `/commands/choices` response includes `constraints.stage` from the existing device cache. These runtime limits do not change the catalog schema or its digest. The server rechecks the selected axis limits, faults, lease and Stop epoch before movement. X/Y moves do not depend on the Insert position. This applies to single-axis moves, combined coordinates, jogs, steps and saved positions. Combined X/Y moves use Bottom, then Top, and leave Insert unchanged. Named positions use Bottom, Top, then Insert without an extra extraction move. Only 1 axis moves at a time.
 
+`choices.stage_context` contains `version: 1`, `available`, `reason` and `preconditions`. When available, `preconditions` contains `stage_reference`, `profile_id` and `profile_digest`. The context uses the same cached stage and selected-profile snapshots as the returned choices. When unavailable, `preconditions` is `null` and `reason` explains why. This context does not change the catalog digest.
+
+The state field `devices.stage.values.stage_reference` uses the same native cache snapshot as that frame. Its value is `null` when unavailable. The portal compares it with the choices reference before a protected stage decision.
+
 Rejected and failed commands show their reason beside the command controls. Expand Recent commands and results for the full record.
 
 Each deliberate Send command creates a new `request_id`. If the response is lost, the portal queries that ID without repeating the command. An unresolved result blocks another submission. Changing sources clears the command view and ignores late responses from the previous source.
@@ -137,7 +157,7 @@ The warning includes the sender and remains visible until a human selects Dismis
 
 Client access records and `last_connected_at` persist in `agent-connect/authority.db` under the Console runs directory. This timestamp records the latest successful connection or reconnection in Unix seconds. It is `null` if no connection time is recorded, including historical records. Pairing, heartbeats, status reads, control release and rejected connections do not update it. Invitations, sessions and grants do not persist. Restarting the Console invalidates sessions and grants.
 
-The PC portal keeps Console connection credentials only in server memory. Restarting the portal requires a new invitation, even when a model profile remains active. A legacy pending client must use a new invitation.
+The PC launcher restores the encrypted pairing after restart. Session tokens and operator grants remain in memory. A revoked or invalid pairing requires a new invitation. A legacy pending client must also use a new invitation.
 
 Start test, Run next step and Stop test provide a separate memory-only handover test. The test has 3 manually triggered steps, including on Olares. Stop test affects only this test. It does not stop equipment.
 
@@ -159,6 +179,8 @@ Agents use `Authorization: Bearer <session_token>`. The portal supplies its toke
 Catalog version 1 contains `version`, `contract_id` and `actions`. The digest starts with `sha256:`. Each action includes `id`, `label`, `description`, `params`, `defaults`, `device`, `available`, `reason` and `revision`. Availability can change without changing the definition digest.
 
 Submit only `request_id`, `boot_id`, `contract_id`, `control_epoch`, `action` and `params`, plus optional `preconditions`. The last 2 fields must be JSON objects. The portal sends `preconditions` explicitly. The server checks the current identity, command digest, operator grant and action schema before dispatch.
+
+For compatibility, the server accepts `{}` from older or manual clients. The local model command path requires the captured stage context for stage movement and transfer-profile actions. It refuses these actions when the Console does not provide that context. Other actions use `{}`.
 
 Use control status `command_boot_id` as the command's `boot_id`. Its `identity_scope` is `command_control`. Keep `control_epoch` as the exact returned string. Status `command_contract_id` must match catalog `contract_id`. The read stream has a separate `boot_id` and agreement digest. Do not substitute them in a command.
 

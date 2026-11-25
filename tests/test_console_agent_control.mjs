@@ -7,6 +7,18 @@ const require = createRequire(import.meta.url);
 const { controlView, processStatus, ControlClient } = require("../src/orchestrator/agent_connect/static/control-portal.js");
 const owner = require("../src/orchestrator/agent_connect/static/control-owner.js");
 const tick = () => new Promise(resolve => setImmediate(resolve));
+test("offline refresh preserves saved pairing status without inventing operator access", async () => {
+  const local = { continuity: { paired: true, state: "offline", connect_intent: true, name: "Saved agent", message: "The Console is offline." } };
+  const error = Object.assign(new Error("Offline"), { localAgent: local });
+  const client = new ControlClient({ request: async () => { throw error; } });
+  await client.refresh();
+  assert.deepEqual(client.status.local_agent, local);
+  const view = controlView(client.status);
+  assert.equal(view.paired, true);
+  assert.equal(view.connected, false);
+  assert.equal(view.mine, false);
+  assert.equal(view.role, "Saved pairing · Offline");
+});
 const operator = {
   paired: true, connected: true, client_status: "approved", control_epoch: "grant-1",
   principal: { id: "session-a", kind: "agent", name: "A" },

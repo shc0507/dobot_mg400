@@ -37,6 +37,8 @@
         <div class="card-heading"><div><p class="eyebrow">AGENT</p><h2>What would you like to do?</h2></div><span id="chat-source" class="status-pill">Olares · Live equipment</span></div>
         <p class="section-note">Ask about readings or give a clear instruction. The agent asks when a target or unit is missing.</p>
         <p id="chat-error" class="live-error" role="alert" hidden></p>
+        <p id="chat-history-status" class="section-note" role="status"></p>
+        <button type="button" id="chat-reconcile" hidden>Check previous command results</button>
         <div id="chat-messages" class="chat-messages" role="log" aria-label="Agent conversation" aria-live="polite" aria-relevant="additions text"></div>
         <details id="chat-process" class="chat-process" open>
           <summary>Agent activity <span id="chat-phase" class="status-pill">No activity yet</span></summary>
@@ -75,6 +77,13 @@
             </details>
             <p class="section-note chat-data-note">Activate a saved profile to use it. Activation sends no model request or equipment command.</p>
             <p class="section-note">Instructions and relevant Console state go to the active API endpoint. Camera video and Console credentials are excluded. Keep API keys out of chat.</p>
+          </div>
+        </details>
+        <details id="chat-usage" class="card disclosure">
+          <summary>API usage <span id="chat-usage-summary" class="status-pill">No requests</span></summary>
+          <div class="disclosure-content">
+            <p class="section-note">Last 100 requests. Missing usage or cost means the provider did not report it. Cancellation cannot guarantee that provider billing stops.</p>
+            <ul id="chat-usage-list" class="chat-profile-list" aria-label="API request usage"></ul>
           </div>
         </details>
         <details id="chat-adapter" class="card disclosure">

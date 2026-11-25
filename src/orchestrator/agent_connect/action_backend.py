@@ -32,6 +32,7 @@ from orchestrator.web.sample_transfer import (
 )
 
 from .actions import FURNACE_DISABLED, PHYSICAL_DISABLED, SPECS, descriptors, validate
+from .stage_reference import stage_reference as decision_stage_reference
 
 WAIT_SECONDS = 600
 
@@ -288,7 +289,8 @@ class ActionBackend:
                 "available": False,
                 "reason": PHYSICAL_DISABLED,
                 "actions": {},
-                "constraints": {"stage": self._stage_constraints()},
+                "constraints": {"stage": self._stage_constraints({})},
+                "stage_context": self._stage_context({}, None, PHYSICAL_DISABLED),
             }
         actions = {}
         profiles = [
@@ -351,11 +353,19 @@ class ActionBackend:
             ]
         for action in ("select", "load", "delete"):
             actions["turret." + action] = {"id": copy.deepcopy(profiles)}
-        constraints = {"stage": self._stage_constraints()}
-        return {"available": True, "reason": "", "actions": actions, "constraints": constraints}
+        entry = self._stage_cache()
+        constraints = {"stage": self._stage_constraints(entry)}
+        return {
+            "available": True,
+            "reason": "",
+            "actions": actions,
+            "constraints": constraints,
+            "stage_context": self._stage_context(
+                entry.get("state"), selected, constraints["stage"]["reason"]
+            ),
+        }
 
-    def _stage_constraints(self):
-        """Describe cached encoder limits without changing the command contract."""
+    def _stage_cache(self):
         entry = {}
         if self.enabled:
             try:
@@ -363,7 +373,29 @@ class ActionBackend:
                 entry = cache.get("stage") if cache is not None else {}
             except (AttributeError, KeyError, OSError, RuntimeError, ValueError):
                 pass
-        entry = entry if isinstance(entry, dict) else {}
+        return entry if isinstance(entry, dict) else {}
+
+    def _stage_context(self, state, profile, reason):
+        """Identify the stage and profile snapshots used for these choices."""
+        preconditions = None
+        if not reason:
+            try:
+                preconditions = {
+                    "stage_reference": self._stage_reference(state),
+                    "profile_id": profile.get("id") if profile else None,
+                    "profile_digest": _digest(profile),
+                }
+            except (AttributeError, TypeError, ValueError):
+                reason = "The stage cache has no usable reference."
+        return {
+            "version": 1,
+            "available": not bool(reason),
+            "reason": reason,
+            "preconditions": preconditions,
+        }
+
+    def _stage_constraints(self, entry):
+        """Describe cached encoder limits without changing the command contract."""
         state = entry.get("state")
         state = state if isinstance(state, dict) else {}
         phase = entry.get("phase") if isinstance(entry.get("phase"), str) else "unavailable"
@@ -478,41 +510,9 @@ class ActionBackend:
         }
 
     def _stage_reference(self, state):
-        revision, epoch = state.get("reference_revision"), state.get("stop_epoch")
-        legacy = self.physical and revision is None
-        if (
-            (not legacy and (type(revision) is not int or revision < 0))
-            or type(epoch) is not int
-            or epoch < 0
-        ):
-            raise ValueError("The stage has no current reference revision or stop epoch.")
-        return {
-            "reference_revision": revision,
-            "reference_source": "limits_port_calibration" if legacy else "reference_revision",
-            "stop_epoch": epoch,
-            "limits_digest": _digest(
-                {
-                    "port": state.get("port"),
-                    "microstep": state.get("microstep"),
-                    "motors": [
-                        {
-                            key: item.get(key)
-                            for key in (
-                                "id",
-                                "lower_limit_rotations",
-                                "upper_limit_rotations",
-                                "tolerance",
-                                "calibration",
-                            )
-                        }
-                        for item in state.get("motors", [])
-                    ],
-                }
-            ),
-        }
+        return decision_stage_reference(state, allow_legacy=self.physical)
 
-    def _references(self, state):
-        profile = self.transfer.store.selected()
+    def _references(self, state, profile):
         return {
             "stage_reference": self._stage_reference(state),
             "profile_id": profile.get("id") if profile else None,
@@ -523,7 +523,7 @@ class ActionBackend:
     def _check_reference(self, plan, state, page):
         self._mode(state)
         expected = plan["references"]
-        current = self._references(state)
+        current = self._references(state, self.transfer.store.selected())
         if current == expected:
             return
         # Taking our existing device lease can change its stop epoch once.
@@ -539,7 +539,7 @@ class ActionBackend:
                 "The stage reference or selected profile changed. Submit a new request."
             )
 
-    def _targets(self, spec, params, state):
+    def _targets(self, spec, params, state, profile=None):
         command = spec["command"]
         if command == "coordinates":
             value = params["target"]
@@ -566,13 +566,12 @@ class ActionBackend:
         elif command in {"fully_in", "fully_out"}:
             targets = [("insert", reference(state)["targets_rotations"][command])]
         elif command == "stage":
-            saved = stage_reference(state, self.transfer.store.selected())
+            saved = stage_reference(state, profile)
             target = params["target"]
             if not saved["ready_targets"][target]:
                 raise ValueError(saved["message"])
             targets = sequence(saved["targets_rotations"][target], stage_only=True)
         else:
-            profile = self.transfer.store.selected()
             if not compatible(profile) or params["name"] not in profile["positions"]:
                 raise ValueError("Choose a named position from the selected rotation profile.")
             targets = sequence(profile["positions"][params["name"]]["position_rotations"])
@@ -620,12 +619,15 @@ class ActionBackend:
                     raise ValueError("The stage service does not expose guarded motion.")
             state = self.transfer.adapter.stage_state(page)
             self._mode(state)
+            profile = (
+                self.transfer.store.selected() if spec["route"] in {"transfer", "profile"} else None
+            )
             if spec["route"] == "transfer":
-                plan["targets"] = self._targets(spec, params, state)
-                plan["references"] = self._references(state)
+                plan["targets"] = self._targets(spec, params, state, profile)
+                plan["references"] = self._references(state, profile)
             elif spec["route"] == "profile":
                 self._validate_profile_action(spec["command"], params)
-                plan["references"] = self._references(state)
+                plan["references"] = self._references(state, profile)
             else:
                 # Calibration may establish an absent reference. It still freezes source identity.
                 plan["source_reference"] = self._source_reference()

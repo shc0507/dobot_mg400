@@ -25,6 +25,9 @@ def create_portal_app(
     interpreter=None,
     chat_reader=None,
     model_profiles=None,
+    persist_local=False,
+    pairing_store=None,
+    chat_history=None,
 ):
     transport = transport or LocalTransport()
     clients = {
@@ -39,17 +42,34 @@ def create_portal_app(
     register_live_routes(app, live_transport)
     from .control_portal import register_control_portal
 
-    control = register_control_portal(app, control_transport, live_reader=live_transport.read)
+    if persist_local:
+        from .portal_history import PortalHistory
+        from .portal_store import PortalPairingStore
+
+        pairing_store = pairing_store if pairing_store is not None else PortalPairingStore()
+        chat_history = chat_history if chat_history is not None else PortalHistory()
+    control = register_control_portal(
+        app,
+        control_transport,
+        live_reader=live_transport.read,
+        pairing_store=pairing_store,
+        restore_pairing=False,
+    )
     from .chat_routes import register_chat
 
-    register_chat(
-        app,
-        control,
-        live_transport.read,
-        model=interpreter,
-        reader=chat_reader,
-        profiles=model_profiles,
-    )
+    try:
+        register_chat(
+            app,
+            control,
+            live_transport.read,
+            model=interpreter,
+            reader=chat_reader,
+            profiles=model_profiles,
+            history=chat_history,
+        )
+    except BaseException:
+        control.close()
+        raise
 
     @app.get("/")
     def index():

@@ -134,6 +134,9 @@ Stage `sampled_at` remains null because its native assembly time is monotonic, n
 rotations. Robot pose uses `mm,mm,mm,degree`. Robot joints use degrees. Furnace temperatures use degrees Celsius. Command schemas specify ramps and gas flow units. Do not infer
 conversions from numeric values.
 
+`devices.stage.values.stage_reference` uses the same native cache snapshot as that frame. Its value is `null` when unavailable. Before a protected stage decision, compare this
+value with `choices.stage_context.preconditions.stage_reference`. A newer choices response alone cannot establish which calibration reference produced a retained frame.
+
 `cached_state` adds bounded native `values`, a `units` map, `complete`, `omitted` and `omitted_count`. Unit keys are JSON Pointer paths within `cached_state.values`. The copy
 excludes private fields, paths, images, thermal matrices and other oversized or unsupported values. Check omissions before treating this copy as complete. `data_gaps` reports
 absent source metadata, including source identity and timestamps. Thermal observations contain shared statistics. Vision observations contain existing results without new capture
@@ -174,9 +177,28 @@ latest schema.
 
 Read `GET /commands/catalog` under the control base before selecting an action. The catalog contains `version`, `contract_id` and `actions`. Descriptors include `id`, `label`,
 `description`, `params`, `defaults`, `device`, `available`, `reason`, `revision` and mode metadata. Use the exact action ID and its `params` schema. Defaults do not authorize
-execution. Read authenticated `GET /commands/choices` for saved choices and `constraints.stage`. Choices and cached stage limits can change without changing the definition digest.
+execution. Read authenticated `GET /commands/choices` for saved choices, `constraints.stage` and `stage_context`. These values can change without changing the definition digest.
 Stage movement requires current calibration, limits, faults, lease and Stop-epoch checks. The server rechecks these conditions before movement. Do not reproduce the action catalog
 or bypass it with direct service protocols.
+
+`choices.stage_context` contains `version: 1`, boolean `available`, string `reason` and `preconditions`. When available, `preconditions` contains `stage_reference`, `profile_id`
+and `profile_digest`. The context uses the same cached stage and selected-profile snapshots as the returned choices. When unavailable, `preconditions` is `null` and `reason`
+explains why. Use the returned values exactly. Do not manufacture references or calculate profile digests in the model.
+
+Protected stage actions have the reviewed `route` value `transfer` or `profile` in [ACTION_SPECS](../../src/orchestrator/agent_connect/actions.py).
+This includes stage movement, saved targets and transfer-profile edits. Bind model decisions to this context for these actions. Apply this sequence:
+
+1. Read choices and the state snapshot supplied to the model.
+2. Check that choices provide an available, supported stage context.
+3. Compare the frame's `stage_reference` with the choices reference. Reject a protected stage decision if either is missing or different.
+4. Preserve that context before calling the model.
+5. After the model selects a protected action, read fresh choices before `POST /commands`.
+6. Reject that action if the context is missing, unavailable, malformed or changed.
+7. Copy the original `preconditions` into the command envelope. Never replace them with the newer values.
+
+The model selects the action and parameters. Connector code supplies the original preconditions. Server checks reject changes after the connector's final comparison and before
+dispatch. This binding covers stage calibration references and the selected transfer profile. It does not freeze arbitrary sensor readings or check every position-derived
+decision. Draft contents and other profiles named by action parameters are outside this binding. It adds no device process identity checks.
 
 The command digest hashes `{"version":1,"actions":[...]}` after sorting actions by `id`. Remove only `available` and `reason` from each action before hashing. Use sorted object
 keys, compact separators, UTF-8 and Python JSON's default ASCII escaping. Reject nonfinite numbers. Preserve the server's numeric encoding. This differs from the read-bundle
@@ -200,8 +222,10 @@ Submit `POST /commands` with the session Bearer token. The following template is
 Replace `params` with the selected action's checked parameters. Send only these fields. `preconditions` is optional. Both objects must contain finite JSON values. Request IDs match
 `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The other identity strings and action are nonempty and at most `256` characters. The body limit is `6 * 1024 * 1024 + 1024` bytes. Supported
 stage preconditions are `stage_reference`, `profile_id` and `profile_digest`. `stage_reference` accepts `reference_revision`, `stop_epoch`, `limits_digest` and `reference_source`.
-These preconditions apply only to supported stage motion or profile actions. Use `{}` elsewhere. Read [prepare()](../../src/orchestrator/agent_connect/action_backend.py) before
-implementing reference comparisons.
+These preconditions apply only to stage actions with the reviewed `transfer` or `profile` route. Native actions such as `stage.calibrate` and `stage.clear_fault` use `{}`.
+Other device actions also use `{}`. Stop keeps its independent path. For compatibility, the server accepts omitted preconditions or `{}` from older and manual clients.
+The local model command path refuses protected stage actions without the captured context. Questions and other device actions do not require stage context. Read
+[prepare()](../../src/orchestrator/agent_connect/action_backend.py) before implementing reference comparisons.
 
 ## Results, errors and cancellation
 
@@ -261,7 +285,8 @@ Test the external adapter offline for these cases:
 - Missing, null, stale, uncalibrated and unavailable measurements, incomplete cached fields and conflicting chip evidence.
 - Sample pagination revisions, exact chip IDs, slow readers, replay gaps, contract changes and Console restarts.
 - Invitation expiry, observer-only connection, explicit grant, reconnect, token expiry and heartbeat loss.
-- Catalog schema checks, runtime choices, stale references, changed epochs and server-side physical-mode restrictions.
+- Catalog schema checks, runtime choices, missing or malformed stage context, stale references, changed epochs and server-side physical-mode restrictions.
+- Stage context changes during state capture, model interpretation or submission, with original preconditions preserved and unrelated actions available.
 - Lost command responses, duplicate IDs, changed bodies, asynchronous rejection, cancellation and unknown outcomes.
 - Stop without authority, repeated Stop delivery, fallback without credentials and unconfirmed device outcomes.
 - Furnace command completion versus sequence completion, with no new shutdown policy after control loss.

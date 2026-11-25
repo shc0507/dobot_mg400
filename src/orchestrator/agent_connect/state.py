@@ -3,6 +3,7 @@
 import copy
 import math
 
+from .stage_reference import stage_reference
 from .state_fields import cached_fields
 
 
@@ -108,6 +109,12 @@ class CacheStateProvider:
                 if quality == "valid" and state.get("feedback_fresh") is False:
                     quality = "stale"
             elif name == "stage":
+                try:
+                    values["stage_reference"] = stage_reference(
+                        state, allow_legacy=self.mode == "live" and state.get("demo") is False
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    values["stage_reference"] = None
                 values["axes"] = [
                     _axis(motor, age, quality, state.get("reference_revision"))
                     for motor in state.get("motors", [])

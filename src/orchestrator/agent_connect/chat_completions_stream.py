@@ -2,6 +2,8 @@
 
 import time
 
+from .chat_request_runtime import check_cancelled
+
 
 def _lines(chunks):
     line, first, skip_lf = bytearray(), True, False
@@ -43,12 +45,12 @@ def _events(chunks):
 
 def _parse_stream(chunks, *, loads):
     """Use only content from choice 0. Require stop and the final DONE event."""
-    content, finished, response_id = [], False, None
+    content, finished, response_id, usage = [], False, None, None
     for data in _events(chunks):
         if data == "[DONE]":
             if not finished or not any(content):
                 raise ValueError("Incomplete model response.")
-            return {
+            response = {
                 "choices": [
                     {
                         "index": 0,
@@ -57,6 +59,9 @@ def _parse_stream(chunks, *, loads):
                     }
                 ]
             }
+            if usage is not None:
+                response["usage"] = usage
+            return response
         chunk = loads(data)
         if not isinstance(chunk, dict) or chunk.get("error") is not None:
             raise ValueError("Invalid model stream chunk.")
@@ -68,6 +73,7 @@ def _parse_stream(chunks, *, loads):
             response_id = chunk["id"]
         choices = chunk.get("choices")
         if finished and choices == [] and isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
             continue
         if finished or not isinstance(choices, list) or len(choices) != 1:
             raise ValueError("Expected one unfinished model choice.")
@@ -96,19 +102,23 @@ def _parse_stream(chunks, *, loads):
             if reason != "stop":
                 raise ValueError("Incomplete model response.")
             finished = True
+        if isinstance(chunk.get("usage"), dict):
+            usage = chunk["usage"]
     raise ValueError("Incomplete model stream.")
 
 
-def read_stream(response, *, loads, max_bytes, timeout_s):
+def read_stream(response, *, loads, max_bytes, timeout_s, cancelled=None):
     """Stop reading at DONE. Bound the bytes and check the deadline between reads."""
     deadline = time.monotonic() + timeout_s
 
     def chunks():
         size = 0
         while True:
+            check_cancelled(cancelled)
             if time.monotonic() >= deadline:
                 raise TimeoutError("The model stream exceeded its deadline.")
             raw = response.read1(min(4096, max_bytes - size + 1))
+            check_cancelled(cancelled)
             if time.monotonic() >= deadline:
                 raise TimeoutError("The model stream exceeded its deadline.")
             if not raw:

@@ -1,4 +1,4 @@
-"""One PC agent connection. Credentials remain in this process, outside the page."""
+"""One PC agent connection. Credentials never enter the browser page."""
 
 import atexit
 import ipaddress
@@ -14,6 +14,7 @@ from flask import jsonify, request
 from labkit.errors import ServiceError
 
 from .live import NoRedirect
+from .portal_continuity import PortalContinuity
 from .portal_runtime import PortalSession
 
 ORIGINS = {"live": "http://100.64.0.1:8082", "mock": "http://127.0.0.1:8790"}
@@ -153,13 +154,17 @@ class ControlTransport:
 
 
 class PortalControl:
-    def __init__(self, transport=None, *, live_reader=None):
+    def __init__(self, transport=None, *, live_reader=None, pairing_store=None):
         self.transport = transport or ControlTransport()
         self.live_reader = live_reader
         self.lock = threading.RLock()
         self.records = {source: {} for source in ORIGINS}
         self.sessions = {}
         self.closed = False
+        self.continuity = PortalContinuity(self, pairing_store, ORIGINS["live"])
+
+    def start_restore(self):
+        self.continuity.start()
 
     def _source(self, source):
         if not isinstance(source, str) or source not in self.records:
@@ -177,17 +182,21 @@ class PortalControl:
         with self.lock:
             self._record(source)
             session = self.sessions.get(source)
-            return (
+            state = (
                 session.snapshot(include_state=include_state)
                 if session is not None
                 else {"running": False, "heartbeat_owner": "process", "read_collection": None}
             )
+            if source == "live":
+                state["continuity"] = self.continuity.snapshot()
+            return state
 
     def close(self):
         with self.lock:
             if self.closed:
                 return
             self.closed = True
+            self.continuity.cancel()
             sessions = list(self.sessions.values())
             tokens = {
                 source: record.pop("session_token", None) for source, record in self.records.items()
@@ -202,12 +211,22 @@ class PortalControl:
                     pass
         for session in sessions:
             session.join()
+        self.continuity.close()
 
     def status(self, source):
         with self.lock:
             record = self._record(source)
             token = record.get("session_token")
-            state = self.transport(source, "status", token=token)
+            try:
+                state = self.transport(source, "status", token=token)
+            except ServiceError as error:
+                if error.status != 401 or not token:
+                    raise
+                record.pop("session_token", None)
+                token = None
+                if source in self.sessions:
+                    self.sessions[source].stop("The Console session ended. Connect again.")
+                state = self.transport(source, "status")
             phase = state.get("phase")
             enabled = state.get("commands_enabled")
             legacy = (phase == 4 and enabled is False) or (
@@ -257,9 +276,17 @@ class PortalControl:
                     session.stop("The Console session ended. Connect again.")
             client_status = None
             if record.get("credential"):
-                client_status = self.transport(
-                    source, "pair/status", {"credential": record["credential"]}
-                ).get("status")
+                try:
+                    client_status = self.transport(
+                        source, "pair/status", {"credential": record["credential"]}
+                    ).get("status")
+                except ServiceError as error:
+                    if error.status not in {401, 403}:
+                        raise
+                    client_status = "revoked"
+                if client_status == "revoked":
+                    self.continuity.forget(source)
+                    connected = False
             return {
                 **state,
                 "source": source,
@@ -270,7 +297,9 @@ class PortalControl:
                 "pairing_code": record.get("matching_code"),
                 "client_status": client_status,
                 "console_url": ORIGINS[source] + "/lab/#agent-connect",
-                "credential_storage": "memory",
+                "credential_storage": "windows_dpapi"
+                if source == "live" and self.continuity.snapshot()["storage_available"]
+                else "memory",
                 "local_agent": self.local_status(source),
             }
 
@@ -412,6 +441,7 @@ class PortalControl:
                     raise ServiceError(400, "Send an invitation and an agent name.")
                 if record.get("session_token"):
                     raise ServiceError(409, "Disconnect before pairing another agent.")
+                self.continuity.cancel(source)
                 result = self.transport(source, "pair", data)
                 if not isinstance(result.get("credential"), str) or not result.get("client_id"):
                     raise ServiceError(502, "The Console returned an invalid pairing result.")
@@ -421,12 +451,19 @@ class PortalControl:
                 previous = self.sessions.pop(source, None)
                 if previous is not None:
                     previous.stop()
+                self.continuity.save(source, connected=False)
             elif action == "connect":
                 if data or not record.get("credential"):
                     raise ServiceError(400, "Pair this portal before connecting.")
                 if record.get("session_token"):
                     raise ServiceError(409, "Disconnect before starting another connection.")
-                result = self.transport(source, "connect", {"credential": record["credential"]})
+                self.continuity.manual_connect(source)
+                try:
+                    result = self.transport(source, "connect", {"credential": record["credential"]})
+                except ServiceError as error:
+                    if error.status in {401, 403}:
+                        self.continuity.forget(source)
+                    raise
                 if not isinstance(result.get("session_token"), str):
                     raise ServiceError(502, "The Console returned an invalid session.")
                 record["session_token"] = result["session_token"]
@@ -435,6 +472,7 @@ class PortalControl:
                 )
                 self.sessions[source] = session
                 session.start()
+                self.continuity.save(source, connected=True)
             elif action in {
                 "disconnect",
                 "heartbeat",
@@ -450,6 +488,18 @@ class PortalControl:
                 }.get(action, set())
                 if set(data) != allowed:
                     raise ServiceError(400, "Send the documented control fields.")
+                if action == "disconnect":
+                    self.continuity.cancel(source)
+                    self.continuity.save(source, connected=False)
+                    if not record.get("session_token"):
+                        return {
+                            "source": source,
+                            "paired": bool(record.get("credential")),
+                            "connected": False,
+                            "name": record.get("name"),
+                            "client_status": "approved" if record.get("credential") else None,
+                            "local_agent": self.local_status(source),
+                        }
                 if action != "simulate/stop" and not record.get("session_token"):
                     raise ServiceError(401, "Connect the approved agent first.")
                 if action == "disconnect" and source in self.sessions:
@@ -464,8 +514,10 @@ class PortalControl:
             return self.status(source)
 
 
-def register_control_portal(app, transport=None, *, live_reader=None):
-    control = PortalControl(transport, live_reader=live_reader)
+def register_control_portal(
+    app, transport=None, *, live_reader=None, pairing_store=None, restore_pairing=True
+):
+    control = PortalControl(transport, live_reader=live_reader, pairing_store=pairing_store)
     app.extensions["agent_portal_control"] = control
     atexit.register(control.close)
 
@@ -477,7 +529,7 @@ def register_control_portal(app, transport=None, *, live_reader=None):
     def control_access():
         if not request.path.startswith(("/api/agent-control/", "/api/agent-chat/")):
             return
-        # This server holds agent credentials in memory and binds only to this PC.
+        # This server holds agent credentials and binds only to this PC.
         host = urlsplit(request.host_url).hostname
         try:
             local = ipaddress.ip_address(request.remote_addr or "").is_loopback and (
@@ -496,7 +548,9 @@ def register_control_portal(app, transport=None, *, live_reader=None):
         try:
             return jsonify(control.status(request.args.get("source", "live")))
         except ServiceError as error:
-            return jsonify(error=error.message), error.status
+            source = request.args.get("source", "live")
+            local = control.local_status(source) if source in ORIGINS else None
+            return jsonify(error=error.message, local_agent=local), error.status
 
     @app.post("/api/agent-control/<path:action>", endpoint="agent_portal_control_action")
     def action(action):
@@ -536,4 +590,6 @@ def register_control_portal(app, transport=None, *, live_reader=None):
         action = "stops" if request_id is None else "stops/" + request_id
         return jsonify(control.read_stops(request.args.get("source", "live"), action))
 
+    if restore_pairing:
+        control.start_restore()
     return control

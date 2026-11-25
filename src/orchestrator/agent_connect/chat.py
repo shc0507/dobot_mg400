@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import inspect
 import threading
 import time
 import uuid
@@ -13,6 +14,8 @@ from labkit.errors import ServiceError
 
 from .actions import validate
 from .chat_adaptation import ConsoleAdaptation
+from .chat_payload import model_context
+from .chat_preconditions import capture, command_preconditions, protected_action
 from .command_store import TERMINAL, canonical
 from .control_portal import REQUEST_ID, STOP_TARGETS
 
@@ -27,6 +30,8 @@ class ChatJob:
     command: dict | None = None
     dispatched: bool = False
     worker: threading.Thread | None = None
+    stage_preconditions: dict | None = None
+    stage_context_error: str = ""
 
 
 def checked_catalog(value):
@@ -63,9 +68,12 @@ def command_identity(status):
 
 
 class ChatAgent:
-    def __init__(self, control, reader, model, *, profiles=None, adaptation=None):
+    def __init__(self, control, reader, model, *, profiles=None, adaptation=None, history=None):
         self.control, self.reader, self.model = control, reader, model
         self.profiles = profiles
+        self.history = history
+        self._profile_value = None
+        self._managed_profile = bool(model.status().get("profile_id"))
         self.adaptation = adaptation or ConsoleAdaptation()
         self.adaptation_errors = {source: None for source in ("live", "mock")}
         self.lock = threading.RLock()
@@ -74,6 +82,63 @@ class ChatAgent:
         self.jobs = OrderedDict()
         self.current = None
         self.closed = False
+        self.usage = {source: deque(maxlen=100) for source in ("live", "mock")}
+        self._restore_history()
+
+    def _restore_history(self):
+        if self.history is None or not self.history.available:
+            return
+        try:
+            self.messages["live"].extend(self.history.rows("message"))
+            self.activity["live"].extend(self.history.rows("activity"))
+            self.usage["live"].extend(self.history.rows("usage"))
+            for row in self.history.rows("request"):
+                job = ChatJob("live", row["request_id"], row["message"])
+                job.command = row.get("command")
+                job.dispatched = row.get("dispatched", False)
+                job.done.set()
+                self.jobs["live", job.request_id] = job
+        except (ServiceError, KeyError, TypeError):
+            self.messages["live"].append(
+                {
+                    "id": uuid.uuid4().hex,
+                    "role": "system",
+                    "text": "Saved history could not be restored.",
+                }
+            )
+
+    def _persist(self, source, kind, key, value, *, required=False, **kwargs):
+        if self.history is not None and source == "live":
+            try:
+                return self.history.put(kind, key, value, **kwargs)
+            except ServiceError:
+                if required:
+                    raise
+        return None
+
+    def _save_job(self, job, *, required=False):
+        self._persist(
+            job.source,
+            "request",
+            job.request_id,
+            {
+                "request_id": job.request_id,
+                "message": job.message,
+                "dispatched": job.dispatched,
+                "command": job.command,
+            },
+            required=required,
+        )
+
+    def _sync_profile(self):
+        if self.profiles is None or (self.current and not self.current.done.is_set()):
+            return
+        active = self.profiles.active()
+        if active != self._profile_value or (active is None and self._managed_profile):
+            if active is not None or self._managed_profile:
+                self.model.configure_profile(active)
+            self._profile_value = copy.deepcopy(active)
+            self._managed_profile = active is not None
 
     @staticmethod
     def source(source):
@@ -83,13 +148,14 @@ class ChatAgent:
 
     def _message(self, source, role, text, **fields):
         with self.lock:
-            self.messages[source].append(
-                {"id": uuid.uuid4().hex, "role": role, "text": text, **copy.deepcopy(fields)}
-            )
+            value = {"id": uuid.uuid4().hex, "role": role, "text": text, **copy.deepcopy(fields)}
+            self._persist(source, "message", value["id"], value)
+            self.messages[source].append(value)
 
     def status(self, source="live"):
         self.source(source)
         with self.lock:
+            self._sync_profile()
             job = self.current
             active = job if job and job.source == source and not job.done.is_set() else None
             adaptation = self.adaptation.public()
@@ -102,20 +168,65 @@ class ChatAgent:
                 "messages": list(copy.deepcopy(self.messages[source])),
                 "activity": list(copy.deepcopy(self.activity[source])),
                 "active": copy.deepcopy(active.command) if active else None,
+                "usage": list(copy.deepcopy(self.usage[source])),
+                "history": self.history.status()
+                if self.history is not None and source == "live"
+                else {"available": False, "message": "This conversation is stored in memory only."},
+                "recovery_pending": [
+                    job.request_id
+                    for (saved_source, _), job in self.jobs.items()
+                    if saved_source == source
+                    and job.done.is_set()
+                    and job.dispatched
+                    and job.command
+                    and job.command.get("status") not in TERMINAL - {"unknown"}
+                ],
             }
 
     def _activity(self, job, phase, text, **fields):
         with self.lock:
-            self.activity[job.source].append(
-                {
-                    "id": uuid.uuid4().hex,
-                    "at": datetime.now(UTC).isoformat(timespec="milliseconds"),
-                    "request_id": job.request_id,
-                    "phase": phase,
-                    "text": text,
-                    **copy.deepcopy(fields),
-                }
+            value = {
+                "id": uuid.uuid4().hex,
+                "at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "request_id": job.request_id,
+                "phase": phase,
+                "text": text,
+                **copy.deepcopy(fields),
+            }
+            self._persist(job.source, "activity", value["id"], value)
+            self.activity[job.source].append(value)
+
+    def _usage(self, job, value):
+        value = copy.deepcopy(value) | {
+            "id": uuid.uuid4().hex,
+            "request_id": job.request_id,
+            "at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+        }
+        with self.lock:
+            self._persist(job.source, "usage", value["id"], value)
+            self.usage[job.source].append(value)
+
+    def reconcile(self, source):
+        """Read saved command IDs. Do not infer, submit, cancel, or acquire control."""
+        pending = self.status(source)["recovery_pending"]
+        for identifier in pending:
+            job = self.jobs[source, identifier]
+            try:
+                result = self.control.read_commands(source, "commands/request/" + identifier)
+                if result.get("request_id") != identifier:
+                    raise ServiceError(502, "The saved result has a different request ID.")
+            except ServiceError:
+                result = self._unknown(job.command)
+            with self.lock:
+                job.command = copy.deepcopy(result)
+                self._save_job(job)
+            self._activity(
+                job,
+                "reconciled",
+                "Read the saved command result. No command was repeated.",
+                result=result,
             )
+        return self.status(source)
 
     def configure(self, api_key, model):
         with self.lock:
@@ -152,6 +263,8 @@ class ChatAgent:
                     result = self.profiles.delete(data["profile_id"])
                 if action == "activate" or result["active_profile_id"] != previous:
                     self.model.configure_profile(self.profiles.active())
+                    self._managed_profile = bool(result["active_profile_id"])
+                    self._profile_value = None
             except ModelProfileError as error:
                 raise ServiceError(400, str(error)) from None
             return result
@@ -174,8 +287,7 @@ class ChatAgent:
         }.get(message.strip().lower().rstrip(".!"))
         if stop:
             self.invalidate(source)
-            self._message(source, "user", message)
-            self._stop(ChatJob(source, request_id, message), {"target": stop})
+            self._stop(ChatJob(source, request_id, message), {"target": stop}, record_user=True)
             return self.status(source)
         with self.lock:
             old = self.jobs.get((source, request_id))
@@ -187,11 +299,31 @@ class ChatAgent:
                 return self.status(source)
             if self.closed:
                 raise ServiceError(503, "The local agent is shutting down.")
+            self._sync_profile()
             if not self.model.status()["configured"]:
                 raise ServiceError(400, "Add and activate an API profile in Model APIs first.")
             if self.current and not self.current.done.is_set():
                 raise ServiceError(409, "Wait for the current request or cancel it.")
             job = ChatJob(source, request_id, message)
+            old = self._persist(
+                source,
+                "request",
+                request_id,
+                {
+                    "request_id": request_id,
+                    "message": message,
+                    "dispatched": False,
+                    "command": None,
+                },
+                once=True,
+                required=True,
+            )
+            if old is not None:
+                if old.get("message") != message:
+                    raise ServiceError(
+                        409, "This request ID already identifies another instruction."
+                    )
+                return self.status(source)
             self.current = job
             self.jobs[source, request_id] = job
             while len(self.jobs) > 100:
@@ -224,6 +356,7 @@ class ChatAgent:
             if status.get("connected")
             else {}
         )
+        job.stage_preconditions, job.stage_context_error = capture(context["state"], choices)
         with self.lock:
             conversation = [
                 {"role": item["role"], "text": item["text"]}
@@ -253,7 +386,13 @@ class ChatAgent:
             self._activity(
                 job, "interpreting", "Interpreting your instruction with the active model."
             )
-            decision = self.model.interpret(context)
+            options = {}
+            parameters = inspect.signature(self.model.interpret).parameters
+            if "cancelled" in parameters:
+                options["cancelled"] = job.cancelled
+            if "on_usage" in parameters:
+                options["on_usage"] = lambda value: self._usage(job, value)
+            decision = self.model.interpret(model_context(context), **options)
             self._check_cancelled(job)
             kind = decision["kind"]
             if kind in {"answer", "clarify"}:
@@ -287,18 +426,21 @@ class ChatAgent:
             self._message(job.source, "assistant", message, kind="error")
             self._activity(job, "cancelled" if job.cancelled.is_set() else "failed", message)
 
-    def _stop(self, job, params):
+    def _stop(self, job, params, *, record_user=False):
         if not isinstance(params, dict) or set(params) != {"target"}:
             raise ServiceError(400, "Specify the device to stop.")
         if params["target"] not in STOP_TARGETS:
             raise ServiceError(400, "Choose a supported Stop target.")
         envelope = {"request_id": job.request_id, "target": params["target"]}
-        self._activity(job, "sending", "Sending independent Stop request.", command=envelope)
         try:
             result = self.control.stop(job.source, envelope)
         except ServiceError as error:
             self._activity(job, "failed", error.message)
             raise
+        # Stop reaches its independent transport before any history lock or disk write.
+        if record_user:
+            self._message(job.source, "user", job.message)
+        self._activity(job, "sending", "Sent independent Stop request.", command=envelope)
         self._activity(job, "completed", "Stop response received.", result=result)
         self._message(
             job.source,
@@ -335,6 +477,14 @@ class ChatAgent:
             row["id"] == action and row.get("available") is True for row in current["actions"]
         ):
             raise ServiceError(409, "The selected action is no longer available.")
+        preconditions = command_preconditions(
+            action,
+            job.stage_preconditions,
+            job.stage_context_error,
+            self.control.read_commands(job.source, "commands/choices")
+            if protected_action(action)
+            else {},
+        )
         envelope = {
             "request_id": job.request_id,
             "boot_id": status.get("boot_id"),
@@ -342,7 +492,7 @@ class ChatAgent:
             "contract_id": catalog["contract_id"],
             "action": action,
             "params": params,
-            "preconditions": {},
+            "preconditions": preconditions,
         }
         self._check_cancelled(job)
         with self.lock:
@@ -379,12 +529,14 @@ class ChatAgent:
     def _admit(self, job, envelope):
         self._check_cancelled(job)
         job.dispatched = True
+        self._save_job(job, required=True)
         self._activity(
             job,
             "sending",
             "Sending POST /lab/api/agent/control/commands.",
             command=envelope,
         )
+        self._check_cancelled(job)
 
     @staticmethod
     def _unknown(record):
@@ -401,6 +553,8 @@ class ChatAgent:
         while True:
             with self.lock:
                 job.command = copy.deepcopy(result)
+            if result.get("status") != previous_status:
+                self._save_job(job)
             if result.get("status") in TERMINAL:
                 text = "Command status: " + result["status"] + "."
                 if result.get("error"):

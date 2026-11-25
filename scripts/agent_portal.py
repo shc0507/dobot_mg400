@@ -74,8 +74,9 @@ def main():
                 "http://127.0.0.1:8790/lab/api/agent/control/contract",
             )
         )
-        app = create_portal_app()
+        app = create_portal_app(persist_local=True)
         portal = make_server("127.0.0.1", 8792, app, threaded=True)
+        app.extensions["agent_portal_control"].start_restore()
     except BaseException:
         if app is not None:
             app.extensions["agent_portal_chat"].close()

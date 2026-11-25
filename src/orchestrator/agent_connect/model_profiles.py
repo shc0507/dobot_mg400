@@ -9,10 +9,12 @@ import stat
 import tempfile
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .credential_protection import WindowsCredentialProtector
+from .profile_lock import ProfileLockError, profile_storage_lock
 
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
@@ -191,31 +193,32 @@ class ModelProfileStore:
                     return
                 path = Path(root) / "AI Chemistry Console" / "agent-portal" / "model-profiles.json"
             self._path = _checked_path(Path(path).absolute())
-            self._load()
         except Exception:
             self._storage_message = (
                 "Saved model profiles could not be read. The file was not changed."
             )
             return
-        self._storage_available = True
-        self._storage_message = "Profile storage is ready."
+        self._refresh()
 
     def status(self):
         with self._lock:
-            return {
-                "profiles": [
-                    {key: value for key, value in profile.items() if key != "api_key"}
-                    | {"has_key": True}
-                    for profile in self._profiles.values()
-                ],
-                "active_profile_id": self._active_id,
-                "storage_available": self._storage_available,
-                "storage_message": self._storage_message,
-            }
+            self._refresh()
+            return self._status()
+
+    def _status(self):
+        return {
+            "profiles": [
+                {key: value for key, value in profile.items() if key != "api_key"}
+                | {"has_key": True}
+                for profile in self._profiles.values()
+            ],
+            "active_profile_id": self._active_id,
+            "storage_available": self._storage_available,
+            "storage_message": self._storage_message,
+        }
 
     def add(self, name, provider, model, base_url, api_key, route="direct"):
-        with self._lock:
-            self._require_storage()
+        with self._lock, self._transaction():
             if len(self._profiles) >= MAX_PROFILES:
                 raise ModelProfileError("Delete a profile before adding another. The limit is 32.")
             profile = _PrivateProfile(
@@ -230,45 +233,77 @@ class ModelProfileStore:
             profiles = self._profiles | {profile["id"]: profile}
             self._save(profiles, self._active_id)
             self._profiles = profiles
-            return self.status()
+            return self._status()
 
     def activate(self, profile_id_or_None):
-        with self._lock:
-            self._require_storage()
+        with self._lock, self._transaction():
             if profile_id_or_None is not None:
                 self._require_profile(profile_id_or_None)
             self._save(self._profiles, profile_id_or_None)
             self._active_id = profile_id_or_None
-            return self.status()
+            return self._status()
 
     def delete(self, profile_id):
-        with self._lock:
-            self._require_storage()
+        with self._lock, self._transaction():
             self._require_profile(profile_id)
             profiles = {key: value for key, value in self._profiles.items() if key != profile_id}
             active_id = None if profile_id == self._active_id else self._active_id
             self._save(profiles, active_id)
             self._profiles, self._active_id = profiles, active_id
-            return self.status()
+            return self._status()
 
     def active(self):
         """Return credentials only to the interpreter, never to a response handler."""
         with self._lock:
+            self._refresh()
             profile = self._profiles.get(self._active_id)
             return _PrivateProfile(profile) if profile is not None else None
 
-    def _require_storage(self):
-        if not self._storage_available:
+    def _refresh(self):
+        try:
+            with self._transaction():
+                pass
+        except ModelProfileError:
+            pass
+
+    @contextmanager
+    def _transaction(self):
+        if self._path is None or self._protector is None:
             raise ModelProfileError(self._storage_message)
+        try:
+            with profile_storage_lock(self._path):
+                try:
+                    self._load()
+                except Exception:
+                    self._unavailable(
+                        "Saved model profiles could not be read. The file was not changed."
+                    )
+                    raise ModelProfileError(self._storage_message) from None
+                self._storage_available = True
+                self._storage_message = "Profile storage is ready."
+                yield
+        except ProfileLockError as error:
+            self._unavailable(str(error))
+            raise ModelProfileError(self._storage_message) from None
+        except OSError:
+            self._unavailable("The model profile storage lock is unavailable.")
+            raise ModelProfileError(self._storage_message) from None
+
+    def _unavailable(self, message):
+        self._profiles, self._active_id = {}, None
+        self._storage_available = False
+        self._storage_message = message
 
     def _require_profile(self, profile_id):
         if _identifier(profile_id) not in self._profiles:
             raise ModelProfileError("Choose an existing model profile.")
 
     def _load(self):
+        _checked_path(self._path)
         try:
             info = self._path.lstat()
         except FileNotFoundError:
+            self._profiles, self._active_id = {}, None
             return
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
             raise ValueError

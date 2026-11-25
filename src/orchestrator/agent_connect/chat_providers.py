@@ -44,6 +44,7 @@ def build_payload(provider, model, instructions, content, schema, *, route="dire
                 {"role": "user", "content": content},
             ],
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
     if route != "direct":
         raise ValueError("Unknown model route.")

@@ -255,6 +255,7 @@ def test_context_does_not_contain_connection_credentials(rig):
         "commands",
         "choices",
         "project_knowledge",
+        "context_scope",
     }
 
 

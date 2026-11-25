@@ -5,6 +5,26 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const { ChatClient, ActivityTimeline, ProfileForm, activity, phaseLabel, tabFromHash, providerName, profileView, isLiteralStop, adapterSummary } = require("../src/orchestrator/agent_connect/static/chat-portal.js");
 const ready = () => ({ model: { configured: true, model: "test-model" }, busy: false, messages: [], active: null });
+const { usageView } = require("../src/orchestrator/agent_connect/static/chat-portal.js");
+
+test("usage distinguishes missing values from reported zero cost", () => {
+  const value = usageView([
+    { provider: "openai", route: "token_station", model: "vendor/test", input_tokens: 100, output_tokens: 20, total_tokens: 120, elapsed_ms: 1500, status: "completed", cost_usd: 0 },
+    { provider: "gemini", model: "test", status: "cancelled", input_tokens: null, cost_usd: null },
+  ]);
+  assert.equal(value.summary, "2 requests");
+  assert.match(value.rows[0].detail, /Input: Not reported/);
+  assert.match(value.rows[0].timing, /Cost: Not reported/);
+  assert.match(value.rows[1].title, /Token Station/);
+  assert.match(value.rows[1].timing, /1.50 s.*\$0.000000/);
+  assert.match(usageView([{ input_tokens: -1, cost_usd: Infinity }]).rows[0].timing, /Not reported/);
+});
+
+test("history reconciliation requests a read-only lookup operation", async () => {
+  const calls = [], instance = client(async (path, body, source) => { calls.push({ path, body, source }); return ready(); });
+  await instance.reconcile();
+  assert.deepEqual(calls, [{ path: "reconcile", body: { source: "live" }, source: "live" }]);
+});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 function client(request) { const value = new ChatClient({ request, createId: () => "message-1" }); value.status = ready(); return value; }
 

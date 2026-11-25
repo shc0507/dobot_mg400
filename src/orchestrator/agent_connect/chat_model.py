@@ -1,17 +1,26 @@
 """Interpret one lab request with a model. This module sends no device commands."""
 
 import http.client
+import inspect
 import json
 import math
 import os
 import threading
 import urllib.error
 import urllib.request
+from time import monotonic
 
 from labkit.errors import ServiceError
 
 from .chat_completions_stream import read_stream
+from .chat_model_usage import notify, usage_report
 from .chat_providers import build_payload, extract_text, request_parts
+from .chat_request_runtime import (
+    ModelRequestCancelled,
+    RequestControl,
+    check_cancelled,
+    request_handlers,
+)
 from .model_profiles import (
     DEFAULT_BASE_URLS,
     ModelProfileError,
@@ -118,28 +127,48 @@ def _finite_values(value):
 
 
 def _request(
-    payload, *, api_key, provider="openai", base_url=None, model=DEFAULT_MODEL, route="direct"
+    payload,
+    *,
+    api_key,
+    provider="openai",
+    base_url=None,
+    model=DEFAULT_MODEL,
+    route="direct",
+    cancelled=None,
 ):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    control = RequestControl(cancelled, TIMEOUT_S)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirect(), *request_handlers(control)
+    )
     url, headers = request_parts(
         provider, model, normalize_base_url(provider, base_url, route=route), api_key, route=route
     )
     req = urllib.request.Request(
         url,
-        data=json.dumps(payload, allow_nan=False).encode(),
+        data=json.dumps(payload, allow_nan=False, separators=(",", ":")).encode(),
         headers=headers,
         method="POST",
     )
-    try:
+
+    def read_response():
+        control.check()
         with opener.open(req, timeout=TIMEOUT_S) as response:
+            control.check()
             if route == "token_station":
                 return read_stream(
-                    response, loads=_loads, max_bytes=MAX_RESPONSE_BYTES, timeout_s=TIMEOUT_S
+                    response,
+                    loads=_loads,
+                    max_bytes=MAX_RESPONSE_BYTES,
+                    timeout_s=TIMEOUT_S,
+                    cancelled=cancelled,
                 )
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ServiceError(502, "The model response is too large. No command was sent.")
         return _loads(raw)
+
+    try:
+        return control.run(read_response)
     except urllib.error.HTTPError as error:
         messages = {
             400: "The model API refused the request. Check the model and endpoint.",
@@ -288,7 +317,8 @@ class OpenAIInterpreter:
             self._profile = replacement
         return self.status()
 
-    def interpret(self, context):
+    def interpret(self, context, *, cancelled=None, on_usage=None, on_activity=None):
+        check_cancelled(cancelled)
         with self._lock:
             profile = dict(self._profile or {})
         key = profile.get("api_key")
@@ -320,7 +350,10 @@ class OpenAIInterpreter:
             DECISION_SCHEMA,
             route=profile["route"],
         )
+        started, response, outcome = monotonic(), None, "failed"
+        notify(on_activity, "requesting", "Sending the request to the active model.")
         try:
+            check_cancelled(cancelled)
             if self._transport is None:
                 response = _request(
                     payload,
@@ -329,10 +362,34 @@ class OpenAIInterpreter:
                     base_url=profile["base_url"],
                     model=profile["model"],
                     route=profile["route"],
+                    cancelled=cancelled,
                 )
             else:
-                response = self._transport(payload, api_key=key)
-            return _decision(response, profile["provider"], route=profile["route"])
+                kwargs = {"api_key": key}
+                try:
+                    parameters = inspect.signature(self._transport).parameters.values()
+                    if any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        or parameter.name == "cancelled"
+                        and parameter.kind != inspect.Parameter.POSITIONAL_ONLY
+                        for parameter in parameters
+                    ):
+                        kwargs["cancelled"] = cancelled
+                except (TypeError, ValueError):
+                    pass
+                response = RequestControl(cancelled, TIMEOUT_S).run(
+                    lambda: self._transport(payload, **kwargs)
+                )
+            check_cancelled(cancelled)
+            decision = _decision(response, profile["provider"], route=profile["route"])
+            check_cancelled(cancelled)
+            notify(on_activity, "received", "Received one complete model decision.")
+            check_cancelled(cancelled)
+            outcome = "completed"
+            return decision
+        except ModelRequestCancelled:
+            outcome = "cancelled"
+            raise
         except ServiceError:
             if self._transport is None:
                 raise
@@ -348,3 +405,7 @@ class OpenAIInterpreter:
             raise ServiceError(
                 502, "The model did not return one valid decision. No command was sent."
             ) from None
+        finally:
+            notify(
+                on_usage, usage_report(profile, response, (monotonic() - started) * 1000, outcome)
+            )

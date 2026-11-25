@@ -6,14 +6,16 @@
     const id = principal?.id || principal?.session_id;
     const operatorId = operator?.id || operator?.session_id;
     const connected = status?.connected === true;
-    const paired = status?.paired === true;
+    const continuity = status?.local_agent?.continuity;
+    const paired = status?.paired === true || continuity?.paired === true;
     const revoked = status?.client_status === "revoked";
     const pending = status?.client_status === "pending";
     const approved = !revoked && !pending && (status?.client_status === "approved" || status?.approved === true || connected);
     const mine = Boolean(approved && connected && id && operatorId && id === operatorId);
     const simulation = status?.simulation || null;
     const running = ["running", "pending", "waiting"].includes(simulation?.status);
-    const role = revoked ? "Access revoked" : !paired ? "Use an invitation" : !approved ? "Use a new invitation" : !connected ? "Access granted · Disconnected" : mine ? status?.equipment_mode === "physical" ? "Operator · Physical commands" : "Operator · Simulated actions" : "Observer";
+    const restoring = paired && ["pending", "connecting", "retrying"].includes(continuity?.state);
+    const role = restoring ? "Restoring observer connection" : paired && continuity?.state === "offline" ? "Saved pairing · Offline" : revoked ? "Access revoked" : !paired ? "Use an invitation" : !approved ? "Use a new invitation" : !connected ? "Access granted · Disconnected" : mine ? status?.equipment_mode === "physical" ? "Operator · Physical commands" : "Operator · Simulated actions" : "Observer";
     return { connected, paired, approved, mine, simulation, running, revoked, role };
   }
   function processStatus(status, now = Date.now() / 1000) {
@@ -37,7 +39,7 @@
         const status = await this.request("status", undefined, source);
         if (generation === this.generation) { this.status = status; this.error = ""; }
       } catch (error) {
-        if (generation === this.generation) { this.status = null; this.error = error.message; }
+        if (generation === this.generation) { this.status = error.localAgent ? { local_agent: error.localAgent } : null; this.error = error.message; }
       } finally { this.reading = false; if (generation === this.generation) this.changed(); }
     }
     async action(path, body = {}) {
@@ -83,7 +85,7 @@
     try {
       const response = await fetch(url, options);
       const body = await response.json();
-      if (!response.ok) { const error = new Error(body.error || "The Console refused the request."); error.status = response.status; throw error; }
+      if (!response.ok) { const error = new Error(body.error || "The Console refused the request."); error.status = response.status; error.localAgent = body.local_agent; throw error; }
       return body;
     } finally { clearTimeout(timeout); }
   }
@@ -96,12 +98,12 @@
     const warning = status?.watchdog?.active;
     $("agent-control-watchdog").hidden = !warning;
     $("agent-control-watchdog").textContent = warning ? `${warning.sender?.name ? warning.sender.name + ": " : ""}Agent connection lost. Motion control is released. Furnace follows its existing run/recovery behavior.` : "";
-    $("agent-pair-form").hidden = state.approved;
+    $("agent-pair-form").hidden = state.approved || Boolean(status?.local_agent?.continuity?.paired);
     $("agent-pair").disabled = client.busy;
-    $("agent-control-name").textContent = status?.name || (state.connected && status?.principal?.kind === "agent" ? status.principal.name : null) || (state.paired ? "Agent" : "No agent registered");
-    $("agent-control-session").textContent = !state.approved && state.paired ? "Use a new invitation from the Console." : state.connected ? processStatus(status) : status?.local_agent?.error || (state.approved ? "Connect, then grant control from the Console." : "The data stream works without an operator grant.");
+    $("agent-control-name").textContent = status?.name || status?.local_agent?.continuity?.name || (state.connected && status?.principal?.kind === "agent" ? status.principal.name : null) || (state.paired ? "Agent" : "No agent registered");
+    $("agent-control-session").textContent = state.connected ? processStatus(status) : status?.local_agent?.continuity?.message || status?.local_agent?.error || (!state.approved && state.paired ? "Use a new invitation from the Console." : state.approved ? "Connect, then grant control from the Console." : "The data stream works without an operator grant.");
     $("agent-control-connect").disabled = !state.approved || state.connected || client.busy;
-    $("agent-control-disconnect").disabled = !state.connected || client.busy;
+    $("agent-control-disconnect").disabled = !(state.connected || status?.local_agent?.continuity?.connect_intent) || client.busy;
     $("agent-control-release").disabled = !state.mine || client.busy;
     $("agent-control-start").disabled = !state.mine || state.running || client.busy;
     $("agent-control-step").disabled = !state.mine || !state.running || client.busy;

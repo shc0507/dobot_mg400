@@ -432,5 +432,6 @@ def test_profile_switch_during_request_keeps_one_consistent_snapshot(monkeypatch
             "base_url": DEFAULT_BASE_URLS["anthropic"],
             "model": "test-model",
             "route": "direct",
+            "cancelled": None,
         }
     ]

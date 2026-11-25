@@ -42,7 +42,20 @@
       documents: documents.length ? documents : adapterDocuments,
     };
   }
-  function phaseLabel(phase) { return Object.hasOwn(phases, phase) ? phases[phase] : "Activity update"; }
+  function phaseLabel(phase) { return phase === "reconciled" ? "Previous command result" : Object.hasOwn(phases, phase) ? phases[phase] : "Activity update"; }
+  function usageView(entries) {
+    const rows = Array.isArray(entries) ? entries : [];
+    const count = value => Number.isInteger(value) && value >= 0 ? value.toLocaleString() : "Not reported";
+    return {
+      summary: `${rows.length} request${rows.length === 1 ? "" : "s"}`,
+      rows: rows.slice().reverse().map(row => ({
+        title: `${row.route === "token_station" ? "Token Station" : providerName(row.provider)} · ${row.model || "Unknown model"}`,
+        detail: `Input: ${count(row.input_tokens)} · Output: ${count(row.output_tokens)} · Total: ${count(row.total_tokens)}`,
+        timing: `${Number.isFinite(row.elapsed_ms) && row.elapsed_ms >= 0 ? (row.elapsed_ms / 1000).toFixed(2) + " s" : "Time not reported"} · ${row.status || "Unknown result"} · Cost: ${typeof row.cost_usd === "number" && Number.isFinite(row.cost_usd) && row.cost_usd >= 0 ? "$" + row.cost_usd.toFixed(6) : "Not reported"}`,
+        at: row.at,
+      })),
+    };
+  }
   function activity(status) {
     const latest = status?.activity?.at(-1);
     if (status?.busy && latest) return phaseLabel(latest.phase);
@@ -179,6 +192,13 @@
     addProfile({ name, route = "direct", provider, model, base_url, api_key }) { return this.changeProfile("profiles", { name: name.trim(), route, provider: route === "token_station" ? "openai" : provider, model: model.trim(), base_url: base_url.trim(), api_key }); }
     activateProfile(profileId) { return this.changeProfile("profiles/activate", { profile_id: profileId }); }
     deleteProfile(profileId) { return this.changeProfile("profiles/delete", { profile_id: profileId }); }
+    async reconcile() {
+      const generation = this.generation;
+      try {
+        const value = await this.request("reconcile", { source: this.source }, this.source);
+        if (generation === this.generation) this.apply(value);
+      } catch (error) { if (generation === this.generation) { this.error = error.message; this.changed(); } }
+    }
     async cancel() {
       if (this.cancelling) return;
       const generation = this.generation;
@@ -311,6 +331,7 @@
       }
       if (atEnd) list.scrollTop = list.scrollHeight;
     }
+    let renderedUsage = null;
     function render() {
       const value = client.status;
       $("chat-source").textContent = client.source === "live" ? "Olares · Live equipment" : "Local simulation";
@@ -323,6 +344,20 @@
       $("chat-activity").classList.toggle("working", client.busy);
       renderMessages(value?.messages || []);
       timeline.render(value?.activity || [], client.source);
+      $("chat-history-status").textContent = value?.history?.message || "";
+      $("chat-reconcile").hidden = !value?.recovery_pending?.length;
+      $("chat-reconcile").disabled = Boolean(value?.busy);
+      const usage = usageView(value?.usage), usageKey = JSON.stringify([client.source, usage]);
+      $("chat-usage-summary").textContent = usage.summary;
+      if (usageKey !== renderedUsage) {
+        renderedUsage = usageKey; $("chat-usage-list").replaceChildren();
+        for (const row of usage.rows) {
+          const item = node("li");
+          item.append(node("strong", row.title), node("p", row.detail), node("p", row.timing));
+          if (row.at) item.append(node("small", new Date(row.at).toLocaleString()));
+          $("chat-usage-list").append(item);
+        }
+      }
     }
     const client = new ChatClient({ request, changed: render });
     const profileForm = new ProfileForm({ route: $("chat-route"), provider: $("chat-provider"), providerLabel: $("chat-provider-label"), model: $("chat-model"), baseUrl: $("chat-base-url"), endpoint: $("chat-endpoint-settings"), endpointTitle: $("chat-endpoint-title"), endpointNote: $("chat-endpoint-note") });
@@ -340,6 +375,7 @@
       }
     };
     $("chat-cancel").onclick = () => client.cancel();
+    $("chat-reconcile").onclick = () => client.reconcile();
     $("chat-open-manual").onclick = () => selectTab("manual", true);
     for (const button of document.querySelectorAll("[data-chat-example]")) button.onclick = () => { $("chat-message").value = button.dataset.chatExample; $("chat-message").focus(); render(); };
     addEventListener("portal-test-mode", event => client.setSource(event.detail ? "mock" : "live"));
@@ -347,7 +383,7 @@
     addEventListener("pageshow", () => client.start());
     render(); client.start(); return client;
   }
-  const exports = { activity, phaseLabel, tabFromHash, providerName, profileView, isLiteralStop, adapterSummary, ActivityTimeline, ProfileForm, ChatClient, mount };
+  const exports = { activity, phaseLabel, usageView, tabFromHash, providerName, profileView, isLiteralStop, adapterSummary, ActivityTimeline, ProfileForm, ChatClient, mount };
   if (typeof module !== "undefined") module.exports = exports;
   root.AgentChatPortal = exports;
   if (typeof document !== "undefined") mount();

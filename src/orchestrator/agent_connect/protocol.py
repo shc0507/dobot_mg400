@@ -118,6 +118,24 @@ def bundle():
                     "feedback_fresh": nullable_bool,
                     "axes": {"type": "array", "items": axis},
                     "reference_revision": {"type": ["integer", "null"]},
+                    "stage_reference": {
+                        "type": ["object", "null"],
+                        "required": [
+                            "reference_revision",
+                            "reference_source",
+                            "stop_epoch",
+                            "limits_digest",
+                        ],
+                        "properties": {
+                            "reference_revision": {"type": ["integer", "null"], "minimum": 0},
+                            "reference_source": {
+                                "enum": ["reference_revision", "limits_port_calibration"]
+                            },
+                            "stop_epoch": {"type": "integer", "minimum": 0},
+                            "limits_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        },
+                        "additionalProperties": False,
+                    },
                     "fault": {"type": ["object", "string", "null"]},
                     "last_command": {"type": ["object", "null"]},
                     "robot_error": nullable_bool,

@@ -526,10 +526,14 @@ The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays
 - The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
 - `arm_radial_scale` and `calibration_radius_mm`: the board run gives the reported radial moves of the arm this scale factor about this radius. The factor is valid only near the run poses, from X -79 to 41 and from Y -316 to -236. The mapping functions do not use it.
 - `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
+- `arm`: along the reach, the arm reports a longer move than the real one between a look pose and a touch. In the link frame, the mapping multiplies the reach part of the vector from the flange to the point by `radial_scale`. It adds `radial_drift` times the flange radius of the look pose minus `radius_mm`. Sideways moves of the arm are true.
+- `tool`: `offset_xy_mm` is the place of the cup centre from the flange axis, in the flange frame.
+- `touch_fit`: the data counts and the errors of the touch fit.
 - The fit error in pixels.
 
 `vision.wrist_camera.load()` reads the file. The `read_markers` and `detect` commands of the vision service use it for the wrist camera.
-`surface_points()` gives the arm x and y of image points on a level surface. `locate()` gives the arm x and y and the touch Z of 1 point that 2 or more poses see. The touch Z is the flange Z at which the tip of the cup touches the surface.
+`surface_points()` gives the arm x and y of image points on a level surface. A move to the result puts the cup over the point. Keep the tool rotation R of the look pose for that move: the cup offset turns with R. `surface_pixels()` is the reverse of `surface_points()`.
+`locate()` gives the arm x and y and the touch Z of 1 point that 2 or more poses see. The touch Z is the flange Z at which the tip of the cup touches the surface.
 For `surface_points()`, use a pose with the lens 170 mm or more above the surface. A view from a shorter distance can be 2 mm off.
 Calibrate again after a change of the lens focus, the camera mount, or the capture size.
 
@@ -548,22 +552,36 @@ It stores the result only if the fit error is at most 1 pixel.
 It writes the recorded poses and board corners to `work/wrist-camera/run.json`.
 To repeat the fit without motion, run `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`.
 
-### Measure the camera height above the tool tip
+### Fit the cup offset and the arm scales with touches
 
-The board run does not give `camera_above_tip_mm`. Measure it with a touch:
+The board run does not see the tool. The touch fit compares the camera with the flange places at which the cup had a seal on a chip.
 
-1. Find a flat marker with `locate()` from 3 or more poses. Read its height, the 4th value of the result.
-2. Make sure that the camera body has free space at the touch pose. The camera is 63 mm from the tool axis.
-3. Put the tool over the marker. Set suction to on and move down in steps of 0.1 mm near the surface. The cup has a seal when the line pressure falls from about -185 hPa to about -690 hPa.
-4. The value is the flange Z of the first step with a seal, minus the height from step 1.
+1. Put 8 or more chips on a level surface. Find the touch Z of a chip top: the touch Z of the surface plus the chip thickness. Do not use the Z of the first seal with suction on. Suction lifts a thin chip to the cup before the cup touches it.
+2. Take looks of the chips from 8 or more poses.
+3. Pick each chip and put it down at a different place, with a turn of the tool of up to 60 degrees. Take a look from the same pose before and after each move. Make 12 or more moves.
+4. Write the records to a JSON file with `touch_z`, `looks` and `moves`. The docstring of `vision.wrist_camera.fit_touch()` gives the fields.
+5. Run `uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json`.
+6. Commit the new `config/cameras/wrist.json`.
 
-The `run` and `fit` commands keep the stored value. Measure it again after a change of the camera mount or the cup.
+The command stores the result only if the error of the sealed places is at most 0.4 mm.
+A new board fit sets the arm scales to 1 and the cup offset to 0. Run the touch fit again after a board fit.
+
+### The camera height above the tool tip
+
+The touch fit gives `camera_above_tip_mm`. It takes the sideways moves of the arm as true distances, so the touch Z of the chip tops must be correct.
+Do not take the value from a height that `locate()` gives from moves along the reach. That height has the scale error of the arm.
+The same rule applies to the touch Z of `surface_points()`: for a chip, give the touch Z of the surface plus the chip thickness.
+The `run` and `fit` commands keep the stored value. Fit it again after a change of the camera mount or the cup.
 
 ### Limits of the wrist calibration
 
 - The board points are in the middle of the image. The left edge and the area where the arm is in view have no points.
 - Each board corner is a free point, so the board does not have to be flat. The measured length gives the scale.
 - The fit uses the Z steps of the arm as true distances.
+- The arm terms are valid near the looks and the touches of the touch fit: look poses from X -79 to 41 and from Y -316 to -236, at Z 126 to 164, and touches near Z 23. There the result of `surface_points()` is within 0.5 mm of the place where the cup has a seal.
+- On the stage plate, the result is within 0.5 mm from a pose with the lens 200 mm or more above the surface.
+- The wrist camera weights know chips only on the tray plate. On the bare stage plate, `detect` does not find a chip.
+- The pad of the cup is 4 mm wide. A chip that is narrower than about 4 mm needs the cup within 0.2 mm of the middle of its width, so a pick routine must be able to touch again 0.5 mm to the side.
 
 ## Stop and shutdown
 

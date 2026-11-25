@@ -45,14 +45,7 @@ def pixels_per_mm(model, pose, touch_z):
 
 def to_pixels(model, pose, points, touch_z):
     """Pixels of arm x, y points on the level surface that the tip touches at touch_z."""
-    points = np.asarray(points, float).reshape(-1, 2)
-    height = touch_z - model["mount"]["camera_above_tip_mm"]
-    arm = np.column_stack([points, np.full(len(points), height)])
-    j1 = np.full(len(arm), np.arctan2(pose[1], pose[0]))
-    flange = np.array(pose[:3], float)
-    linked = wrist_camera.link_points(arm, flange, j1, model["mount"]["offset_xy_mm"])
-    rotation = cv2.Rodrigues(np.array(model["mount"]["rotation_link_to_camera"], float))[0]
-    return wrist_camera.project(model["camera_matrix"], model["distortion"], rotation, linked)
+    return wrist_camera.surface_pixels(model, points, pose, touch_z)
 
 
 def tray_markers(gray):

@@ -354,9 +354,10 @@ H264_NVENC = (
 
 
 # With NVENC, a browser that plays HEVC gets H.265: the same quality at 2.5 Mbit/s as H.264
-# at 3 Mbit/s. The go2rtc 1.9.14 release does not unpack RTP aggregation packets (go2rtc
-# issue 2633), so a small frame that ffmpeg sends together with its SEI reaches the browser
-# as 1 unknown NAL unit and the decoder stops. Without SEI, ffmpeg sends each frame alone.
+# at 3 Mbit/s. The previews get 2 Mbit/s so that all of them fit the VPN link (see below).
+# The go2rtc 1.9.14 release does not unpack RTP aggregation packets (go2rtc issue 2633), so
+# a small frame that ffmpeg sends together with its SEI reaches the browser as 1 unknown
+# NAL unit and the decoder stops. Without SEI, ffmpeg sends each frame alone.
 # NVENC cuts a 3840x2160 frame into 2 slices, which ffmpeg also aggregates. A large preview
 # therefore needs go2rtc built with deploy/go2rtc/aggregation-packets.patch.
 H265_NVENC = (
@@ -393,8 +394,9 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
 
     With nvenc, the previews use the GPU encoder. It needs 3 Mbit/s for the quality
     that libx264 gives at 4 Mbit/s at 1280x720. Each H.264 preview then also has an
-    H.265 preview, <name>_h265, at 2.5 Mbit/s. A camera above 1280x720 gets only an H.265
-    preview, at 6 Mbit/s and its own resolution, unless it is the microscope side stream.
+    H.265 preview, <name>_h265, at 2 Mbit/s. A camera above 1280x720 gets only an H.265
+    preview at its own resolution, unless it is the microscope side stream: 6 Mbit/s for
+    the wrist camera, which shows what the arm sees, and 3 Mbit/s for any other camera.
 
     The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
     previews through RTSP. The microscope preview comes from the microscope service.
@@ -431,13 +433,16 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
     )
     if nvenc:
         streams += "".join(
-            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate={'2500k' if width > 640 else '2M'}\n"
-            for name, (width, _, _) in zip(configured.streams, configured.modes)
-            if name in configured.preloaded
+            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate=2M\n" for name in configured.preloaded
         )
+        # The relayed VPN link carries about 22 Mbit/s. At 6 Mbit/s for each large preview and
+        # 2.5 Mbit/s for the others, the previews filled it, and the queue of the largest one
+        # grew to several seconds of video. With these rates they need about 19 Mbit/s.
+        devices = dict(zip(configured.streams, configured.devices))
+        wrist = {name for name, device in devices.items() if device in configured.wrist}
         streams += "".join(
             f"  {name}_h265: ffmpeg:{ports.url('go2rtc', f'api/stream.mjpeg?src={name}')}"
-            "#input=mjpeg#video=h265#bitrate=6M\n"
+            f"#input=mjpeg#video=h265#bitrate={'6M' if name in wrist else '3M'}\n"
             for name in configured.large(side)
         )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
@@ -448,7 +453,7 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
     )
     if nvenc:
-        streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n"
+        streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2M\n"
     preload = "".join(f"  {name}: video\n" for name in configured.held)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (

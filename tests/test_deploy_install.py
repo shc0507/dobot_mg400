@@ -44,11 +44,13 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
-    # The tests write their own asset manifests, so the copy leaves out the bench twin assets.
+    # The tests write their own asset manifests, so the copy leaves out the bench twin assets
+    # and the wrist camera weights.
     registry = code / "deploy/services.toml"
     twin = 'assets = ["twin-model", "twin-collision"]'
-    assert twin in registry.read_text()
-    registry.write_text(registry.read_text().replace(twin, "assets = []"))
+    wrist = ', "vision-wrist-weights"]'
+    assert twin in registry.read_text() and wrist in registry.read_text()
+    registry.write_text(registry.read_text().replace(twin, "assets = []").replace(wrist, "]"))
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
     commands = []

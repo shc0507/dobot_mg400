@@ -404,6 +404,11 @@ The destination is `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`, with perm
 The manifest records the license as `AGPL-3.0`, as declared by Roboflow.
 Downloads fail if the release does not contain the file.
 
+The `vision-wrist-weights` entry specifies `chip-wrist-yolo26s-seg-v1.pt` in this repository's `vision-wrist-model-v1` release. It is the detector weights for the wrist camera.
+Its size is 23,501,597 bytes. Its SHA-256 is `1683fca75712b6ae0675d23599dcff0e737a33b1a4ac3ba1c3918e71c2d9598b`.
+The destination is `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with permissions `0640`. The asset belongs to `vision`.
+Installation does not require it. Without it, the vision service uses `vision-weights` for the wrist camera. See [Settings](vision.en.md#settings).
+
 The `twin-model` entry specifies `twin.glb` in this repository's `twin-model-v2` release. It is the 3D bench model of the Lab Console Twin workspace.
 Its size is 3,447,272 bytes. Its SHA-256 is `1cf153e44ffe8d68d1f3edb60b896b7d8fcacf02f62f419b220bfc8d9d7028bc`.
 The destination is `/var/lib/mg400/twin/twin.glb`, with permissions `0640`. The asset belongs to `orch`.

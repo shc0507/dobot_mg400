@@ -59,6 +59,7 @@ Command-line options override environment settings. Empty environment values use
 The wrist camera has weights of its own: `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with a 1280x1280 model input.
 When a wrist camera is configured and this file is there, startup also loads it, and `detect` uses it for the wrist camera.
 Without the file, `detect` uses the main weights for all cameras. The `weights` field of a `detect` result shows the file that the service used.
+The file is the `vision-wrist-weights` asset. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)).
 
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.

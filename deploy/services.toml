@@ -16,7 +16,7 @@ units = ["mg400-vision.service"]
 optional = true
 venv = ".venv-vision"
 groups = ["vision", "vision-gpu"]
-assets = ["vision-weights"]
+assets = ["vision-weights", "vision-wrist-weights"]
 
 [[service]]
 name = "thermal"

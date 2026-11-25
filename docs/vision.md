@@ -59,6 +59,7 @@ GPU 内存配置在模型加载前执行。
 腕部相机有单独的权重文件 `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`，模型输入为 1280x1280。
 如果配置了腕部相机，并且该文件存在，服务在启动时同时加载它，`detect` 对腕部相机使用它。
 如果文件不存在，`detect` 对所有摄像头使用主权重。`detect` 结果的 `weights` 字段给出服务所用的文件。
+该文件是资源 `vision-wrist-weights`。要安装它，运行 `install.py --fetch-assets`（见[外部资源](deploy.md#外部资源)）。
 
 标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。

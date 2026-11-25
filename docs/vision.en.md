@@ -610,16 +610,19 @@ The output is a Markdown report. It shows the counts per frame group, the Chip p
 
 ### Labeled frames from the wrist camera
 
-`scripts/wrist_chip_dataset.py` makes a labeled set from wrist camera frames of the tray. No person marks a chip and no trained model is used.
-The tray plate is plain grey. The script finds each object that differs from the tray around it, and it uses the flange pose of each frame and the [wrist camera calibration](#wrist-camera-calibration) to find the same object in all frames.
+`scripts/wrist_chip_dataset.py` makes a labeled set from wrist camera frames of the tray. No person marks a chip, and the script uses no trained detector.
+The outline of a chip does not change. The script takes the outline of each chip 1 time, from several views of 1 layout. For a later layout, the script moves and turns each stored outline until it agrees with the object in each frame.
 
 ```bash
-uv run python scripts/wrist_chip_dataset.py FRAMES OUT
+python scripts/wrist_chip_dataset.py OUT LAYOUT [LAYOUT ...] --shapes SHAPES --sam SAM
 ```
 
-- `FRAMES` contains the `3840x2160` frames and `frames.json`, a list of `{"image": "name.jpg", "pose": [x, y, z, r]}` with the flange pose of each frame.
-- `OUT` gets `images/` and `labels/`, which `scripts/vision_eval.py` can read. Each label is the rectangle around 1 chip, as a YOLO polygon of class `0`.
-- The script finds the tray from its corner markers `0`, `1` and `2`. Each marker must be in 2 frames or more.
-- A chip is an object that is at the same place on the tray in 60% of the frames or more.
-- The script does not write a frame that has an object which is not a chip, or a chip in view without an object. It prints the counts.
-- An object must be 3 mm or more from the edge of the tray and from the corner tiles, and its color must be different from the grey of the tray.
+- Each `LAYOUT` folder contains the `3840x2160` frames of 1 layout of the chips and `frames.json`. This file is a list of `{"image": "name.jpg", "pose": [x, y, z, r]}` with the flange pose of each frame. Do not move a chip between the frames of a layout.
+- `OUT` gets `images/` and `labels/`, which `scripts/vision_eval.py` can read. Each label is the stored outline of 1 chip at its place in that frame. It is a YOLO polygon of class `0` with 32 corners or fewer. The file name starts with the name of the `LAYOUT` folder.
+- `SHAPES` is a JSON file with the outline of each chip in mm. If the file does not exist, the script makes the outlines from `LAYOUT` number 1 and writes the file. The script does not change a file that exists.
+- `SAM` is a Segment Anything weights file of `ultralytics`, for example `sam2.1_l.pt`. You must run the script in an environment that has `ultralytics`, such as the vision environment.
+- The tray plate is plain grey. The script finds each object that differs from the tray around it, and Segment Anything gives the outline of that object.
+- The script finds the tray from its corner markers `0`, `1` and `2`. Each marker must be in 2 frames or more of a layout.
+- A chip is an object that is at the same place on the tray in 60% of the frames of a layout or more. Use 3 views or more from different sides. The top face of a chip is the area that 80% of the views have in common.
+- The script does not write a frame that has an object which is not a known chip. It also does not write a frame that has a chip in view without an object. It prints the counts and the place of each chip in each layout.
+- An object must be 3 mm or more from the edge of the tray and from the corner tiles. Its color must be different from the grey of the tray.

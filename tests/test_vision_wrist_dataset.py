@@ -107,43 +107,117 @@ def test_tray_is_located_from_its_markers_and_masked_without_the_tiles():
         wrist_dataset.locate_tray(model, seen[:1])
 
 
-def test_chips_are_registered_and_labeled_and_problems_are_reported():
-    model = camera()
-    frames = [(render(model, pose), pose) for pose in POSES]
-    chips = wrist_dataset.register_chips(model, TRAY, frames)
-    assert len(chips) == 2
-    found = sorted(tuple(chip) for chip in chips)
-    assert found[0] == pytest.approx((-80.0, -216.0), abs=0.5)
-    assert found[1] == pytest.approx((-15.0, -320.0), abs=0.5)
-    lines, problems = wrist_dataset.label_frame(model, TRAY, chips, *frames[0])
-    assert len(lines) == 2 and not problems
-    values = np.array(lines[0].split()[1:], float).reshape(4, 2)
-    assert lines[0].startswith("0 ") and np.all((values >= 0) & (values <= 1))
-    speck = render(model, POSES[0], speck=(-40.0, -260.0))
-    assert wrist_dataset.label_frame(model, TRAY, chips, speck, POSES[0])[1] == {
-        "object that is not a chip": 1
-    }
-    gone = render(model, POSES[0], chips=CHIPS[:1])
-    lines, problems = wrist_dataset.label_frame(model, TRAY, chips, gone, POSES[0])
-    assert len(lines) == 1 and problems == {"chip without an object": 1}
+def segment(image, boxes):
+    """Outline of the thing in each box that differs from the plate: stands in for the model."""
+    outlines = []
+    for x0, y0, x1, y1 in boxes:
+        left, top = max(int(x0) - 8, 0), max(int(y0) - 8, 0)
+        crop = image[top : int(y1) + 8, left : int(x1) + 8].astype(np.int32)
+        plate = np.median(crop.reshape(-1, 3), axis=0)
+        differs = (np.abs(crop - plate).max(axis=2) > 30).astype(np.uint8)
+        contours = cv2.findContours(differs, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0]
+        outlines.append(max(contours, key=cv2.contourArea).reshape(-1, 2) + [left, top])
+    return outlines
 
 
-def test_dataset_script_writes_images_and_labels_and_drops_problem_frames(tmp_path):
+# A chip with a notch: its 2 ends differ.
+NOTCHED = wrist_dataset.centred(
+    np.array([(-6, -2.2), (6, -2.2), (6, 0.4), (1.5, 0.4), (1.5, 2.2), (-6, 2.2)], float)
+)[0]
+
+
+def test_a_stored_outline_is_fitted_with_a_shift_and_a_turn():
+    for angle, place in ((33.0, (-40.0, -250.0)), (200.0, (10.3, -300.7))):
+        polygon = wrist_dataset.turned(NOTCHED, angle) + place
+        x, y, found, share = wrist_dataset.fit(NOTCHED, polygon)
+        assert (x, y) == pytest.approx(place, abs=0.1) and share > 0.95
+        assert (found - angle + 180) % 360 - 180 == pytest.approx(0, abs=1.0)
+        x, y, found, share = wrist_dataset.fit(NOTCHED, polygon, near=angle + 5)
+        assert (x, y) == pytest.approx(place, abs=0.1) and found == pytest.approx(angle, abs=1.0)
+    moved = NOTCHED + (0.7, -0.4)
+    x, y, found, share = wrist_dataset.fit(NOTCHED, moved, near=0.0, turn=False)
+    assert (x, y, found) == pytest.approx((0.7, -0.4, 0.0), abs=0.1) and share > 0.95
+
+
+def test_the_outline_of_a_chip_comes_from_views_that_do_not_agree_on_its_place():
+    views = []
+    for number in range(6):
+        direction = np.radians(60 * number)
+        side = 0.7 * np.array([np.cos(direction), np.sin(direction)])  # the side face in this view
+        hull = cv2.convexHull(np.vstack([NOTCHED, NOTCHED + side]).astype(np.float32))
+        seen = hull.reshape(-1, 2) if number % 2 else NOTCHED
+        views.append(
+            seen + (-80.0, -216.0) + 0.8 * np.array([np.sin(direction), np.cos(direction)])
+        )
+    shape = wrist_dataset.chip_shape(views)
+    area = cv2.contourArea(shape.astype(np.float32))
+    assert area == pytest.approx(cv2.contourArea(NOTCHED.astype(np.float32)), rel=0.05)
+    assert wrist_dataset.fit(shape, NOTCHED, near=0.0)[3] > 0.93
+
+
+def write_layout(folder, model, chips, speck_in=None):
+    folder.mkdir()
+    entries = []
+    for number, pose in enumerate([*POSES, POSES[0]]):
+        image = render(model, pose, chips, speck=(-40.0, -260.0) if number == speck_in else None)
+        cv2.imwrite(str(folder / f"f{number}.png"), image)
+        entries.append({"image": f"f{number}.png", "pose": list(pose)})
+    (folder / "frames.json").write_text(json.dumps(entries))
+
+
+def label_masks(model, path, pose):
+    """The labels of 1 frame as masks."""
+    masks = []
+    for line in path.read_text().splitlines():
+        points = np.array(line.split()[1:], float).reshape(-1, 2) * SIZE
+        mask = np.zeros((SIZE[1], SIZE[0]), np.uint8)
+        cv2.fillPoly(mask, [np.round(points).astype(np.int32)], 1)
+        masks.append(mask)
+    return masks
+
+
+def test_layouts_are_labeled_with_the_stored_outlines_and_problem_frames_are_dropped(tmp_path):
     path = ROOT / "scripts/wrist_chip_dataset.py"
     spec = importlib.util.spec_from_file_location("wrist_chip_dataset_test", path)
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)
-    model, frames_dir, out = camera(), tmp_path / "frames", tmp_path / "out"
-    frames_dir.mkdir()
-    entries = []
-    for number, pose in enumerate([*POSES, POSES[0]]):
-        image = render(model, pose, speck=(-40.0, -260.0) if number == 3 else None)
-        cv2.imwrite(str(frames_dir / f"f{number}.png"), image)
-        entries.append({"image": f"f{number}.png", "pose": list(pose)})
-    (frames_dir / "frames.json").write_text(json.dumps(entries))
-    counts = script.build(frames_dir, out, model=model)
+    model, out, shapes = camera(), tmp_path / "out", tmp_path / "shapes.json"
+    # After a shuffle the same 2 chips lie at other places with other angles.
+    moved = [
+        (-30.0, -300.0, 5.0, 12.0, 100.0, CHIPS[0][5]),
+        (-70.0, -240.0, 4.0, 15.0, 20.0, CHIPS[1][5]),
+    ]
+    write_layout(tmp_path / "first", model, CHIPS, speck_in=3)
+    write_layout(tmp_path / "second", model, moved)
+    counts = script.build(out, [tmp_path / "first"], shapes, segment, model=model)
     assert counts["frames"] == 4 and counts["chips"] == 2 and counts["kept"] == 3
     assert counts["labels"] == 6 and counts["problems"] == {"object that is not a chip": 1}
-    assert sorted(p.name for p in (out / "labels").iterdir()) == ["f0.txt", "f1.txt", "f2.txt"]
-    assert len((out / "labels/f0.txt").read_text().splitlines()) == 2
-    assert (out / "images/f1.png").exists() and not (out / "images/f3.png").exists()
+    stored = json.loads(shapes.read_text())["shapes_mm"]
+    sizes = sorted(sorted(cv2.minAreaRect(np.float32(shape))[1]) for shape in stored)
+    assert sizes[0] == pytest.approx([4, 15], abs=0.7) and sizes[1] == pytest.approx(
+        [5, 12], abs=0.7
+    )
+    assert not (out / "images/first_f3.png").exists()
+
+    counts = script.build(out, [tmp_path / "second"], shapes, segment, model=model)
+    assert counts["kept"] == 4 and counts["labels"] == 8 and not counts["problems"]
+    assert json.loads(shapes.read_text())["shapes_mm"] == stored  # the outlines stay as they are
+    places = sorted(counts["layouts"]["second"].values())
+    assert places[0][:2] == pytest.approx([-70.0, -240.0], abs=0.6)
+    assert places[1][:2] == pytest.approx([-30.0, -300.0], abs=0.6)
+    for number, pose in enumerate([*POSES, POSES[0]]):
+        truth = []
+        for x, y, width, length, angle, _ in moved:
+            mask = np.zeros((SIZE[1], SIZE[0]), np.uint8)
+            polygon(mask, model, pose, cv2.boxPoints(((x, y), (width, length), angle)), TOP, 1)
+            truth.append(mask)
+        for label in label_masks(model, out / f"labels/second_f{number}.txt", pose):
+            share = max((label & mask).sum() / (label | mask).sum() for mask in truth)
+            assert share > 0.8
+
+    # A chip that is gone from 1 frame: that frame is not written.
+    gone = cv2.imread(str(tmp_path / "second/f1.png"))
+    cv2.imwrite(str(tmp_path / "second/f1.png"), render(model, POSES[1], moved[:1]))
+    counts = script.build(tmp_path / "again", [tmp_path / "second"], shapes, segment, model=model)
+    assert gone is not None and counts["kept"] == 3
+    assert counts["problems"] == {"chip without an object": 1}

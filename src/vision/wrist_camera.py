@@ -46,8 +46,11 @@ OUTLIER_PX = 2.5
 MAX_RMS_PX = 1.0
 # Without a touch fit: the arm moves as it reports and the cup is on the flange axis.
 NO_ARM = {"radial_scale": 1.0, "radial_drift": 0.0, "radius_mm": 0.0}
-LOOK_SIGMA_MM = 0.15
-MOVE_SIGMA_MM = 0.3
+# Weights of the touch fit. The looks of 1 point differ by more than their noise, and a chip
+# can slip by some tenths of a millimetre at a pick or a put. The sealed place is the truth.
+LOOK_SIGMA_MM = 0.5
+MOVE_SIGMA_MM = 0.4
+SEAL_SIGMA_MM = 0.15
 MIN_MOVES = 12
 
 
@@ -415,6 +418,7 @@ def fit_touch(model, looks, moves, touch_z):
     "put": [x, y], "pose_after", "pixel_after"}. The pick has the tool rotation of
     pose_before, and the put has that rotation plus `turn` degrees. `across` is the unit
     vector across the width of the chip: the cup seals only near the middle of the width.
+    Leave `across` out when the direction is not known.
 
     The chip turns about the flange axis, so the looks before and after a move give the
     place of the flange axis against the camera. The sealed places then give the cup offset.
@@ -434,7 +438,7 @@ def fit_touch(model, looks, moves, touch_z):
     pose_before = np.array([move["pose_before"] for move in moves], float)[:, :4]
     pose_after = np.array([move["pose_after"] for move in moves], float)[:, :4]
     picked, put = (np.array([move[key] for move in moves], float) for key in ("picked_at", "put"))
-    across = np.array([move["across"] for move in moves], float)
+    across = np.array([move.get("across") or (0.0, 0.0) for move in moves], float)
     turn = np.array([move["turn"] for move in moves], float)
     radius = float(np.mean(np.hypot(seen_from[:, 0], seen_from[:, 1])))
     mount, arm = model["mount"], model["arm"]
@@ -478,7 +482,7 @@ def fit_touch(model, looks, moves, touch_z):
     def error(x):
         spread, closure, seal = parts(x)
         return np.concatenate(
-            [spread.ravel() / LOOK_SIGMA_MM, closure.ravel() / MOVE_SIGMA_MM, seal / MOVE_SIGMA_MM]
+            [spread.ravel() / LOOK_SIGMA_MM, closure.ravel() / MOVE_SIGMA_MM, seal / SEAL_SIGMA_MM]
         )
 
     x = [*mount["offset_xy_mm"], _height(model), 0.0, arm["radial_scale"], arm["radial_drift"]]

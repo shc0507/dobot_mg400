@@ -158,11 +158,12 @@ def main(argv=None):
     parser.add_argument("--px-per-mm", type=float, required=True, help="image scale on the tray")
     parser.add_argument("--confidence", type=float, help="default: the vision service threshold")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--input-size", type=int, default=640, help="model input, pixels")
     args = parser.parse_args(argv)
     if not args.px_per_mm > 0:
         parser.error("--px-per-mm must be positive.")
     try:
-        localizer = Localizer(args.weights, device=args.device)
+        localizer = Localizer(args.weights, device=args.device, input_size=args.input_size)
         frames, settings = evaluate(args.dataset, localizer, confidence=args.confidence)
     except (FileNotFoundError, ValueError, ImportError) as error:
         parser.exit(1, f"{error}\n")

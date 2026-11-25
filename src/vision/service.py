@@ -43,6 +43,9 @@ from vision.tray import TrayCheckError, cross_check_slots, locate_tray, validate
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
+# The wrist camera sees small chips from above: it has weights of its own and a larger input.
+WRIST_WEIGHTS = "/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt"
+WRIST_INPUT_SIZE = 1280
 MAX_RESULT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 16 * 1024
 
@@ -295,6 +298,7 @@ class VisionService:
         demo=False,
         frames=None,
         weights=DEFAULT_WEIGHTS,
+        wrist_weights=WRIST_WEIGHTS,
         device=None,
         gpu_fraction=0.15,
         fixture_dir=FIXTURES,
@@ -327,6 +331,7 @@ class VisionService:
         if type(self.camera_count) is not int or not 0 <= self.camera_count <= 5:
             raise ValueError("Frame source camera_count must be an integer from 0 through 5.")
         self.weights, self.device, self.gpu_fraction = weights, device, gpu_fraction
+        self.wrist_weights = wrist_weights
         self.fixture_dir = Path(fixture_dir)
         self._factory = localizer_factory
         self._torch_loader = torch_loader or (lambda: importlib.import_module("torch"))
@@ -346,7 +351,7 @@ class VisionService:
         self._startup_done = threading.Event()
         self._startup_done.set()
         self._poller = self._worker = None
-        self._model = None
+        self._model = self._wrist_detector = None
         self._started = self._starting = self._closed = False
         self._connected = False
         self._active = None
@@ -511,6 +516,7 @@ class VisionService:
             self._quit.clear()
             self._startup_cancel.clear()
             self._startup_done.clear()
+        wrist = None
         try:
             with self._inference:
                 self._check_startup()
@@ -527,8 +533,15 @@ class VisionService:
                         torch.cuda.set_per_process_memory_fraction(self.gpu_fraction, device=index)
                     self.device = selected
                     model = (self._factory or Localizer)(self.weights, device=selected)
+                    cameras = range(1, len(self._devices) + 1)
+                    if any(map(self._is_wrist, cameras)) and Path(self.wrist_weights).is_file():
+                        wrist = (self._factory or Localizer)(
+                            self.wrist_weights, device=selected, input_size=WRIST_INPUT_SIZE
+                        )
                 self._check_startup()
                 model.predict(Image.new("RGB", (640, 640)))
+                if wrist is not None:
+                    wrist.predict(Image.new("RGB", (WRIST_INPUT_SIZE, WRIST_INPUT_SIZE)))
             self._check_startup()
             poller = threading.Thread(target=self._poll, name="vision-lease", daemon=True)
             # Publish only after start succeeds. close() never joins an
@@ -537,7 +550,7 @@ class VisionService:
             with self._lock:
                 self._poller = poller
                 self._check_startup()
-                self._model = model
+                self._model, self._wrist_detector = model, wrist
                 self._started = True
                 self._connected = self.demo
                 self._fault = None
@@ -560,6 +573,12 @@ class VisionService:
     def _poll(self):
         while not self._quit.wait(0.1):
             self.lease.poll()
+
+    def _is_wrist(self, camera):
+        """Only the wrist camera has a by-id device name."""
+        return camera <= len(self._devices) and self._devices[camera - 1].startswith(
+            "/dev/v4l/by-id/"
+        )
 
     def _wrist_points(self, image, items, args):
         """Add robot_mm, the arm x and y of each center, for items on 1 level surface."""
@@ -673,8 +692,7 @@ class VisionService:
                 )
             ):
                 raise ValueError("Arm coordinates need flange_mm [x, y, z, r] and touch_z_mm.")
-            device = self._devices[camera - 1] if camera <= len(self._devices) else ""
-            if not device.startswith("/dev/v4l/by-id/"):
+            if not self._is_wrist(camera):
                 raise ValueError("Arm coordinates need the wrist camera.")
         region = args.get("region")
         if "region" in args and (
@@ -897,7 +915,8 @@ class VisionService:
             }
             annotated = image
         elif job["action"] == "detect":
-            annotated, result = self._model.predict(image)
+            wrist = self._wrist_detector is not None and self._is_wrist(job["camera"])
+            annotated, result = (self._wrist_detector if wrist else self._model).predict(image)
             result = copy.deepcopy(result)
         else:
             region = job["region"] or [0, 0, image.width, image.height]

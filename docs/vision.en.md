@@ -56,6 +56,10 @@ Command-line options override environment settings. Empty environment values use
 | `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Calibration acceptance limit, in mm RMS. Must be greater than 0 and at most 1 |
 | `MG400_VISION_CACHE_DIR` | None | `/var/lib/mg400/vision/yolo`. Used as the Ultralytics `YOLO_CONFIG_DIR` |
 
+The wrist camera has weights of its own: `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with a 1280x1280 model input.
+When a wrist camera is configured and this file is there, startup also loads it, and `detect` uses it for the wrist camera.
+Without the file, `detect` uses the main weights for all cameras. The `weights` field of a `detect` result shows the file that the service used.
+
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Invalid configuration exits with status 2, and systemd does not restart the service. A model load, camera or serving failure exits with status 1, and systemd restarts the service after 3 s.
@@ -600,6 +604,7 @@ Evaluation rules:
 - The script sends each frame to `Localizer.predict`, as the vision service does. That function crops an image that is wider than 4:3 to its centered 4:3 region (1280x720 becomes 960x720). Then it stretches the region to 640x640. Detection coordinates stay in full original-image pixels.
 - The script reads only `.jpg`, `.jpeg`, and `.png` files in `images/`.
 - `--weights` defaults to `MG400_VISION_WEIGHTS`. `--device` defaults to `cpu`. To use the GPU, set `--device cuda`.
+- `--input-size` sets the model input and defaults to `640`. For the wrist camera weights, set `--input-size 1280`.
 - The script uses the default confidence threshold of `Localizer.predict`, `0.39`, as the service does. To evaluate a different threshold, set `--confidence`.
 - A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
 - An unmatched detection is a false detection. An unmatched label is a missed label.

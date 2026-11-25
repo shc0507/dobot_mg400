@@ -111,13 +111,19 @@ def test_command_passes_the_confidence_and_prints_the_weights(
     weights = tmp_path / "model.pt"
     weights.write_bytes(b"weights")
     localizer = FakeLocalizer({}, weights)
-    monkeypatch.setattr(evaluation, "Localizer", lambda path, device: localizer)
+    options = []
+    monkeypatch.setattr(
+        evaluation, "Localizer", lambda path, **given: options.append(given) or localizer
+    )
     evaluation.main([str(dataset), "--px-per-mm", "1.5", "--confidence", "0.5"])
+    assert options == [{"device": "cpu", "input_size": 640}]
     text = capsys.readouterr().out
     assert localizer.calls == [{"confidence": 0.5}] * 3
     assert f"`model.pt` (sha256 `{hashlib.sha256(b'weights').hexdigest()}`)" in text
     assert "Confidence threshold: 0.5." in text
     assert "Chip precision: n/a. Chip recall: 0.000 (0/1)." in text
     assert "Center error" not in text
+    evaluation.main([str(dataset), "--px-per-mm", "1.5", "--input-size", "1280"])
+    assert options[1] == {"device": "cpu", "input_size": 1280}
     with pytest.raises(SystemExit):
         evaluation.main([str(dataset), "--px-per-mm", "0"])

@@ -1640,7 +1640,7 @@ def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
     assert "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n" in rendered
 
 
-def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
+def test_nvenc_adds_h265_previews_without_sei_at_2_mbit(module):
     modes = [(1280, 720, 30), (640, 480, 30), (1280, 720, 30)]
     rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True)
     h265 = next(line for line in rendered.splitlines() if line.startswith("  h265: "))
@@ -1649,10 +1649,10 @@ def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
     assert "-forced-idr 1" in h265 and "-force_key_frames expr:gte(t,n_forced)" in h265
     # go2rtc 1.9.14 breaks an RTP aggregation packet of SEI and a small frame.
     assert h265.endswith('-bsf:v filter_units=remove_types=39|40"')
-    assert "  camera1_h265: ffmpeg:camera1#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera1_h265: ffmpeg:camera1#video=h265#bitrate=2M\n" in rendered
     assert "  camera2_h265: ffmpeg:camera2#video=h265#bitrate=2M\n" in rendered
-    assert "  camera3_h265: ffmpeg:camera3#video=h265#bitrate=2500k\n" in rendered
-    assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera3_h265: ffmpeg:camera3#video=h265#bitrate=2M\n" in rendered
+    assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2M\n" in rendered
     assert "_h265" not in module.render_go2rtc(DEVICES, modes=modes)
     assert "hevc_nvenc" not in module.render_go2rtc(DEVICES, modes=modes)
 
@@ -1663,7 +1663,7 @@ def test_nvenc_gives_a_large_camera_an_h265_preview_with_arrival_timestamps(modu
     # RTP cannot carry a 3840 pixel wide JPEG: the encoder reads the MJPEG stream over HTTP.
     assert (
         "  camera1_h265: ffmpeg:http://127.0.0.1:1984/api/stream.mjpeg?src=camera1"
-        "#input=mjpeg#video=h265#bitrate=6M\n"
+        "#input=mjpeg#video=h265#bitrate=3M\n"
     ) in rendered
     assert "camera1_h264" not in rendered and "camera1: video\n" not in rendered
     # The microscope side stream runs only during an objective switch.
@@ -1811,7 +1811,7 @@ def test_fifth_camera_is_the_wrist_camera_by_its_serial(module):
     assert (
         f"  camera5: v4l2:device?video={wrist}&input_format=mjpeg&video_size=1280x720" in rendered
     )
-    assert "  camera5_h265: ffmpeg:camera5#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera5_h265: ffmpeg:camera5#video=h265#bitrate=2M\n" in rendered
     assert "  camera5: video\n" in rendered
     with pytest.raises(ValueError, match="Invalid camera device path"):
         module.camera_devices("/dev/v4l/by-id/usb camera-video-index0")
@@ -1846,6 +1846,9 @@ def test_go2rtc_holds_the_wrist_camera_open_at_a_large_mode(module):
     rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=True)
     assert "preload:\n  camera2: video\n  camera3: video\nstreams:\n" in rendered
     assert f"  camera3: v4l2:device?video={wrist}&input_format=mjpeg&video_size=3840" in rendered
+    # The wrist preview shows what the arm sees and keeps 6 Mbit/s. Other large previews get
+    # 3 Mbit/s, so that all previews fit the VPN link.
+    assert "api/stream.mjpeg?src=camera1#input=mjpeg#video=h265#bitrate=3M\n" in rendered
     assert "api/stream.mjpeg?src=camera3#input=mjpeg#video=h265#bitrate=6M\n" in rendered
     assert "camera3_h264" not in rendered
 

@@ -19,10 +19,11 @@ that factor: a scale about the base axis is 5 mm wrong away from those poses.
 
 The board fit does not see the tool, so it cannot give the place of the cup against the
 camera. `fit_touch` gives that from picks: the flange places where the cup sealed on a
-chip, and looks before and after each move. It also gives the terms of the arm. The arm
-reports a longer move than the real one between a look pose and a touch, by about 1%
-along the reach and less sideways. The mapping multiplies the vector from the flange to
-the point by these 2 scales in the link frame. It does not scale positions about the base.
+chip, and looks before and after each move. It also gives the terms of the arm. Along
+the reach, the arm reports a longer move than the real one between a look pose and a
+touch. Sideways moves are true. The mapping multiplies the reach part of the vector from
+the flange to the point by a scale, in the link frame. It does not scale positions about
+the base.
 """
 
 import json
@@ -44,12 +45,10 @@ SQUARE_SIGMA_MM = 0.05
 OUTLIER_PX = 2.5
 MAX_RMS_PX = 1.0
 # Without a touch fit: the arm moves as it reports and the cup is on the flange axis.
-NO_ARM = {"radial_scale": 1.0, "sideways_scale": 1.0, "radial_drift": 0.0, "radius_mm": 0.0}
+NO_ARM = {"radial_scale": 1.0, "radial_drift": 0.0, "radius_mm": 0.0}
 LOOK_SIGMA_MM = 0.15
 MOVE_SIGMA_MM = 0.3
 MIN_MOVES = 12
-# Looks from 1 height do not tell a longer camera distance from larger arm scales.
-MIN_HEIGHT_RANGE_MM = 20.0
 
 
 def board():
@@ -284,7 +283,6 @@ def load(path=CONFIG):
         or not 0 < document["rms_px"] <= MAX_RMS_PX
         or not 0.9 < document["arm_radial_scale"] < 1.1
         or not 0.9 < arm["radial_scale"] < 1.1
-        or not 0.9 < arm["sideways_scale"] < 1.1
         or not abs(arm["radial_drift"]) < 0.1
         or np.abs(tool).max() > 10
         or (height is not None and not 0 < height < 200)
@@ -315,7 +313,7 @@ def _lines(model, normal, poses, tool=True):
     """
     mount, arm = model["mount"], model["arm"]
     rotation = np.array(mount["rotation_link_to_camera"], float)
-    stretch = np.array([arm["radial_scale"], arm["sideways_scale"], 1.0])
+    stretch = np.array([arm["radial_scale"], 1.0, 1.0])
     link = np.column_stack([normal, np.ones(len(normal))]) @ rotation
     start = np.tile(np.array([*mount["offset_xy_mm"], 0.0]) * stretch, (len(poses), 1))
     radius = np.hypot(poses[:, 0], poses[:, 1])
@@ -375,7 +373,7 @@ def surface_pixels(model, points, pose, touch_z):
     centre, _ = _lines(model, np.zeros((len(points), 2)), poses)
     drop = touch_z - _height(model) - centre[:, 2]
     arm = np.column_stack([(points - centre[:, :2]) / drop[:, None], np.ones(len(points))])
-    stretch = [model["arm"]["radial_scale"], model["arm"]["sideways_scale"], 1.0]
+    stretch = [model["arm"]["radial_scale"], 1.0, 1.0]
     turned = poses * [1.0, -1.0, 1.0, 1.0]  # the turn by -J1
     link = _turn(turned, arm) / stretch * np.sign(drop)[:, None]
     camera = link @ np.array(model["mount"]["rotation_link_to_camera"], float).T
@@ -421,7 +419,9 @@ def fit_touch(model, looks, moves, touch_z):
     The chip turns about the flange axis, so the looks before and after a move give the
     place of the flange axis against the camera. The sealed places then give the cup offset.
     Return the model with a new mount offset, yaw, camera height, arm terms and cup offset.
-    The camera height stays as stored when all looks are from nearly 1 height.
+    The fit takes the sideways moves of the arm as true: they give the camera height. So
+    touch_z must be the real height of the points. Suction lifts a thin chip to the cup
+    before the cup touches it, so the Z of the first seal is above the chip top.
     """
     keys = sorted({str(look["point"]) for look in looks})
     if len(moves) < MIN_MOVES or len(looks) < 8 * len(keys) or not keys:
@@ -451,11 +451,10 @@ def fit_touch(model, looks, moves, touch_z):
             },
             "arm": {
                 "radial_scale": float(x[4]),
-                "sideways_scale": float(x[5]),
-                "radial_drift": float(x[6]),
+                "radial_drift": float(x[5]),
                 "radius_mm": radius,
             },
-            "tool": {"offset_xy_mm": [float(x[7]), float(x[8])]},
+            "tool": {"offset_xy_mm": [float(x[6]), float(x[7])]},
         }
 
     def places(trial, normal, poses):
@@ -473,25 +472,17 @@ def fit_touch(model, looks, moves, touch_z):
         # The chip from the flange axis: at the pick, and after the put.
         held = places(trial, before, pose_before) - picked
         left = places(trial, after, pose_after) - put
-        cup = _spin(pose_before[:, 3], np.tile(x[7:9], (len(moves), 1)))
+        cup = _spin(pose_before[:, 3], np.tile(x[6:8], (len(moves), 1)))
         return spread, left - _spin(turn, held), np.einsum("ij,ij->i", across, held - cup)
-
-    heights = np.concatenate([seen_from[:, 2], pose_before[:, 2], pose_after[:, 2]])
-    keep_height = 1e3 if np.ptp(heights) < MIN_HEIGHT_RANGE_MM else 0.0
 
     def error(x):
         spread, closure, seal = parts(x)
         return np.concatenate(
-            [
-                spread.ravel() / LOOK_SIGMA_MM,
-                closure.ravel() / MOVE_SIGMA_MM,
-                seal / MOVE_SIGMA_MM,
-                [keep_height * (x[2] - _height(model))],
-            ]
+            [spread.ravel() / LOOK_SIGMA_MM, closure.ravel() / MOVE_SIGMA_MM, seal / MOVE_SIGMA_MM]
         )
 
-    x = [*mount["offset_xy_mm"], _height(model), 0.0, arm["radial_scale"], arm["sideways_scale"]]
-    x, _ = _minimize(error, np.array([*x, arm["radial_drift"], *model["tool"]["offset_xy_mm"]]))
+    x = [*mount["offset_xy_mm"], _height(model), 0.0, arm["radial_scale"], arm["radial_drift"]]
+    x, _ = _minimize(error, np.array([*x, *model["tool"]["offset_xy_mm"]]))
     spread, closure, seal = parts(x)
     result = candidate(x)
     result["touch_fit"] = {

@@ -526,7 +526,7 @@ The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays
 - The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
 - `arm_radial_scale` and `calibration_radius_mm`: the board run gives the reported radial moves of the arm this scale factor about this radius. The factor is valid only near the run poses, from X -79 to 41 and from Y -316 to -236. The mapping functions do not use it.
 - `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
-- `arm`: between a look pose and a touch, the arm reports a longer move than the real one. In the link frame, the mapping multiplies the vector from the flange to the point by `radial_scale` along the reach and by `sideways_scale` across the reach. Along the reach it adds `radial_drift` times the flange radius of the look pose minus `radius_mm`.
+- `arm`: along the reach, the arm reports a longer move than the real one between a look pose and a touch. In the link frame, the mapping multiplies the reach part of the vector from the flange to the point by `radial_scale`. It adds `radial_drift` times the flange radius of the look pose minus `radius_mm`. Sideways moves of the arm are true.
 - `tool`: `offset_xy_mm` is the place of the cup centre from the flange axis, in the flange frame.
 - `touch_fit`: the data counts and the errors of the touch fit.
 - The fit error in pixels.
@@ -556,8 +556,8 @@ To repeat the fit without motion, run `uv run python scripts/wrist_camera_calibr
 
 The board run does not see the tool. The touch fit compares the camera with the flange places at which the cup had a seal on a chip.
 
-1. Put 8 or more chips on a level surface. Measure the touch Z of a chip top.
-2. Take looks of the chips from 8 or more poses. Use 2 heights that differ by 20 mm or more.
+1. Put 8 or more chips on a level surface. Find the touch Z of a chip top: the touch Z of the surface plus the chip thickness. Do not use the Z of the first seal with suction on. Suction lifts a thin chip to the cup before the cup touches it.
+2. Take looks of the chips from 8 or more poses.
 3. Pick each chip and put it down at a different place, with a turn of the tool of up to 60 degrees. Take a look from the same pose before and after each move. Make 12 or more moves.
 4. Write the records to a JSON file with `touch_z`, `looks` and `moves`. The docstring of `vision.wrist_camera.fit_touch()` gives the fields.
 5. Run `uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json`.
@@ -568,8 +568,9 @@ A new board fit sets the arm scales to 1 and the cup offset to 0. Run the touch 
 
 ### The camera height above the tool tip
 
-The touch fit gives `camera_above_tip_mm` when its looks are from 2 heights. With looks from 1 height, the fit keeps the stored value.
-Do not take the value from a height that `locate()` gives. That height has the scale error of the arm moves.
+The touch fit gives `camera_above_tip_mm`. It takes the sideways moves of the arm as true distances, so the touch Z of the chip tops must be correct.
+Do not take the value from a height that `locate()` gives from moves along the reach. That height has the scale error of the arm.
+The same rule applies to the touch Z of `surface_points()`: for a chip, give the touch Z of the surface plus the chip thickness.
 The `run` and `fit` commands keep the stored value. Fit it again after a change of the camera mount or the cup.
 
 ### Limits of the wrist calibration
@@ -577,7 +578,7 @@ The `run` and `fit` commands keep the stored value. Fit it again after a change 
 - The board points are in the middle of the image. The left edge and the area where the arm is in view have no points.
 - Each board corner is a free point, so the board does not have to be flat. The measured length gives the scale.
 - The fit uses the Z steps of the arm as true distances.
-- The arm scales are valid near the looks and the touches of the touch fit: look poses from X -79 to 41 and from Y -316 to -236, at Z 126 to 164, and touches near Z 23. There the result of `surface_points()` is within 0.5 mm of the place where the cup has a seal.
+- The arm terms are valid near the looks and the touches of the touch fit: look poses from X -79 to 41 and from Y -316 to -236, at Z 126 to 164, and touches near Z 23. There the result of `surface_points()` is within 0.5 mm of the place where the cup has a seal.
 - On the stage plate, the result is within 0.5 mm from a pose with the lens 200 mm or more above the surface.
 
 ## Stop and shutdown

@@ -231,6 +231,48 @@ def test_marker_command_fails_when_the_surface_is_above_the_lens(wrist_service):
     assert result != "ok"
 
 
+@pytest.mark.parametrize("installed", [True, False])
+def test_the_wrist_camera_uses_its_own_weights_at_a_larger_input(tmp_path, installed):
+    wrist_weights = tmp_path / "wrist.pt"
+    if installed:
+        wrist_weights.write_bytes(b"weights")
+    loads, warmups = [], []
+
+    def factory(weights, **options):
+        loads.append((weights, options))
+
+        def predict(image):
+            warmups.append(image.size)
+            return image, {"detections": [], "weights": str(weights)}
+
+        return SimpleNamespace(predict=predict)
+
+    frames = SimpleNamespace(
+        camera_count=2,
+        configuration=SimpleNamespace(devices=(FIXED, WRIST)),
+        read=Mock(return_value=Image.new("RGB", (1280, 720))),
+    )
+    service = VisionService(
+        frames=frames,
+        weights="main.pt",
+        wrist_weights=wrist_weights,
+        torch_loader=lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+        localizer_factory=factory,
+        calibration_directory=tmp_path,
+    )
+    service.start()
+    try:
+        wrist_load = [(wrist_weights, {"device": "cpu", "input_size": 1280})]
+        assert loads == [("main.pt", {"device": "cpu"})] + wrist_load * installed
+        assert warmups == [(640, 640)] + [(1280, 1280)] * installed
+        _, output = run_command(service, action="detect", camera=2)
+        assert output["weights"] == (str(wrist_weights) if installed else "main.pt")
+        _, output = run_command(service, action="detect", camera=1)
+        assert output["weights"] == "main.pt"
+    finally:
+        service.close(wait_s=1)
+
+
 def test_a_new_fit_keeps_the_stored_camera_height(tmp_path, monkeypatch, capsys):
     script = load_script()
     out = tmp_path / "wrist.json"

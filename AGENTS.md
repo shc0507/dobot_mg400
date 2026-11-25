@@ -80,6 +80,7 @@ Read only the files that the task needs. The tests are larger than the code, so 
 | Camera-to-robot calibration | `src/vision/calibration.py`, `src/orchestrator/skills/calibrate.py`, `src/orchestrator/rehearsal.py` | `test_vision_calibration.py`, `test_orchestrator_rehearsal.py` | [vision.md](docs/vision.md#相机到机器人校准) |
 | Calibration drift check | `src/vision/calibration.py`, `service.py`, `src/orchestrator/skills/vision.py` | `test_vision_drift.py` | [vision.md](docs/vision.md#校准漂移检查) |
 | Wrist camera calibration | `src/vision/wrist_camera.py`, `scripts/wrist_camera_calibrate.py`, `config/cameras/wrist.json` | `test_vision_wrist_camera.py` | [vision.md](docs/vision.md#腕部相机校准) |
+| Wrist camera chip dataset | `src/vision/wrist_dataset.py`, `scripts/wrist_chip_dataset.py` | `test_vision_wrist_dataset.py` | [vision.md](docs/vision.md#腕部相机的带标注画面) |
 | Tray geometry and slot cross-checks | `src/vision/tray.py`, `config/trays/`, `src/vision/service.py` (`observe_slots`), `src/orchestrator/skills/vision.py` | `test_vision_tray.py`, `test_recipe_tray_transfer.py` | [vision.md](docs/vision.md#托盘几何与交叉检查) |
 | Thermal camera | `src/thermal_cam/` | `test_thermal_*.py` | [thermal.md](docs/thermal.md) |
 | Toupcam capture and recording | `src/toupcam_camera/camera.py`, `capture.py` | `test_toupcam_camera.py` | Module docstrings; keep vendor `toupcam.py` unchanged |

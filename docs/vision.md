@@ -56,6 +56,11 @@ GPU 内存配置在模型加载前执行。
 | `MG400_VISION_CALIBRATION_RMS_MM` | 无 | `1`，校准验收阈值，单位为 mm RMS。必须大于 0 且不大于 1 |
 | `MG400_VISION_CACHE_DIR` | 无 | `/var/lib/mg400/vision/yolo`，用作 Ultralytics 的 `YOLO_CONFIG_DIR` |
 
+腕部相机有单独的权重文件 `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`，模型输入为 1280x1280。
+如果配置了腕部相机，并且该文件存在，服务在启动时同时加载它，`detect` 对腕部相机使用它。
+如果文件不存在，`detect` 对所有摄像头使用主权重。`detect` 结果的 `weights` 字段给出服务所用的文件。
+该文件是资源 `vision-wrist-weights`。要安装它，运行 `install.py --fetch-assets`（见[外部资源](deploy.md#外部资源)）。
+
 标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 配置无效时，退出码为 2，systemd 不重启服务。模型加载、相机或服务运行失败时，退出码为 1，systemd 在 3 s 后重启服务。
@@ -601,6 +606,7 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 - 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数先把宽于 4:3 的图像裁成居中的 4:3 区域（1280x720 裁成 960x720），再拉伸到 640x640。检测坐标仍按完整原图像素报告。
 - 脚本只读取 `images/` 中的 `.jpg`、`.jpeg` 和 `.png` 文件。
 - `--weights` 默认读取 `MG400_VISION_WEIGHTS`。`--device` 默认为 `cpu`。使用 GPU 时，设置 `--device cuda`。
+- `--input-size` 设置模型输入尺寸，默认为 `640`。评估腕部相机权重时，设置 `--input-size 1280`。
 - 脚本使用 `Localizer.predict` 的默认置信度阈值 `0.39`，与服务相同。如果要评估其他阈值，设置 `--confidence`。
 - 检测框与标签框的 IoU（交并比）不小于 0.5 时，二者匹配。脚本按置信度从高到低匹配。每个标签最多匹配 1 个检测。
 - 未匹配的检测计为误检。未匹配的标签计为漏检。
@@ -608,3 +614,22 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 - 中心误差是匹配框的中心距离。`--px-per-mm` 把像素换算为毫米。
 
 输出是 Markdown 报告。报告列出各组帧的计数、芯片精确率和召回率、中心误差，以及有误检或漏检的帧。
+
+### 腕部相机的带标注画面
+
+`scripts/wrist_chip_dataset.py` 用腕部相机拍摄的托盘画面生成带标注的数据集。不需要人标注芯片，也不使用训练过的检测模型。
+芯片的轮廓不变。脚本用 1 个布局的多个视角取 1 次每个芯片的轮廓。对之后的布局，脚本把每个已保存的轮廓平移和旋转，使它与每张画面中的物体重合。
+
+```bash
+python scripts/wrist_chip_dataset.py OUT LAYOUT [LAYOUT ...] --shapes SHAPES --sam SAM
+```
+
+- 每个 `LAYOUT` 文件夹包含芯片的 1 个布局的 `3840x2160` 画面和 `frames.json`。该文件是 `{"image": "name.jpg", "pose": [x, y, z, r]}` 的列表，给出每张画面的法兰位姿。同一个布局的画面之间不得移动芯片。
+- `OUT` 得到 `images/` 和 `labels/`，`scripts/vision_eval.py` 可以读取。每个标注是 1 个芯片的已保存轮廓在该画面中的位置，写成类别 `0` 的 YOLO 多边形，角点不超过 32 个。文件名以 `LAYOUT` 文件夹的名称开头。
+- `SHAPES` 是 JSON 文件，保存每个芯片的轮廓，单位是 mm。文件不存在时，脚本用第 1 个 `LAYOUT` 生成轮廓并写出该文件。脚本不修改已有的文件。
+- `SAM` 是 `ultralytics` 的 Segment Anything 权重文件，例如 `sam2.1_l.pt`。必须在装有 `ultralytics` 的环境中运行脚本，例如视觉环境。
+- 托盘板是纯灰色。脚本找出与周围托盘不同的每个物体，Segment Anything 给出该物体的轮廓。
+- 脚本用托盘角上的标记 `0`、`1` 和 `2` 找到托盘。每个标记必须出现在同一个布局的 2 张或更多画面中。
+- 在同一个布局 60% 或更多的画面中位于托盘同一位置的物体才算芯片。使用 3 个或更多不同方向的视角。芯片的顶面是 80% 的视角共有的区域。
+- 画面中有不是已知芯片的物体，或者视野内的芯片位置上没有物体时，脚本不写出该画面。脚本打印这些数量和每个布局中每个芯片的位置。
+- 物体必须距托盘边缘和角上的标记块 3 mm 或更远，颜色必须与托盘的灰色不同。

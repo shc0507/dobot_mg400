@@ -134,7 +134,7 @@ def test_vision_uses_the_isolated_environment():
         "optional": True,
         "venv": ".venv-vision",
         "groups": ["vision", "vision-gpu"],
-        "assets": ["vision-weights"],
+        "assets": ["vision-weights", "vision-wrist-weights"],
     }
 
 

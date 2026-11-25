@@ -56,6 +56,11 @@ Command-line options override environment settings. Empty environment values use
 | `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Calibration acceptance limit, in mm RMS. Must be greater than 0 and at most 1 |
 | `MG400_VISION_CACHE_DIR` | None | `/var/lib/mg400/vision/yolo`. Used as the Ultralytics `YOLO_CONFIG_DIR` |
 
+The wrist camera has weights of its own: `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with a 1280x1280 model input.
+When a wrist camera is configured and this file is there, startup also loads it, and `detect` uses it for the wrist camera.
+Without the file, `detect` uses the main weights for all cameras. The `weights` field of a `detect` result shows the file that the service used.
+The file is the `vision-wrist-weights` asset. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)).
+
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Invalid configuration exits with status 2, and systemd does not restart the service. A model load, camera or serving failure exits with status 1, and systemd restarts the service after 3 s.
@@ -600,6 +605,7 @@ Evaluation rules:
 - The script sends each frame to `Localizer.predict`, as the vision service does. That function crops an image that is wider than 4:3 to its centered 4:3 region (1280x720 becomes 960x720). Then it stretches the region to 640x640. Detection coordinates stay in full original-image pixels.
 - The script reads only `.jpg`, `.jpeg`, and `.png` files in `images/`.
 - `--weights` defaults to `MG400_VISION_WEIGHTS`. `--device` defaults to `cpu`. To use the GPU, set `--device cuda`.
+- `--input-size` sets the model input and defaults to `640`. For the wrist camera weights, set `--input-size 1280`.
 - The script uses the default confidence threshold of `Localizer.predict`, `0.39`, as the service does. To evaluate a different threshold, set `--confidence`.
 - A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
 - An unmatched detection is a false detection. An unmatched label is a missed label.
@@ -607,3 +613,22 @@ Evaluation rules:
 - The center error is the distance between the box centers of a match. `--px-per-mm` converts pixels to millimetres.
 
 The output is a Markdown report. It shows the counts per frame group, the Chip precision and recall, the center errors, and the frames with false or missed detections.
+
+### Labeled frames from the wrist camera
+
+`scripts/wrist_chip_dataset.py` makes a labeled set from wrist camera frames of the tray. No person marks a chip, and the script uses no trained detector.
+The outline of a chip does not change. The script takes the outline of each chip 1 time, from several views of 1 layout. For a later layout, the script moves and turns each stored outline until it agrees with the object in each frame.
+
+```bash
+python scripts/wrist_chip_dataset.py OUT LAYOUT [LAYOUT ...] --shapes SHAPES --sam SAM
+```
+
+- Each `LAYOUT` folder contains the `3840x2160` frames of 1 layout of the chips and `frames.json`. This file is a list of `{"image": "name.jpg", "pose": [x, y, z, r]}` with the flange pose of each frame. Do not move a chip between the frames of a layout.
+- `OUT` gets `images/` and `labels/`, which `scripts/vision_eval.py` can read. Each label is the stored outline of 1 chip at its place in that frame. It is a YOLO polygon of class `0` with 32 corners or fewer. The file name starts with the name of the `LAYOUT` folder.
+- `SHAPES` is a JSON file with the outline of each chip in mm. If the file does not exist, the script makes the outlines from `LAYOUT` number 1 and writes the file. The script does not change a file that exists.
+- `SAM` is a Segment Anything weights file of `ultralytics`, for example `sam2.1_l.pt`. You must run the script in an environment that has `ultralytics`, such as the vision environment.
+- The tray plate is plain grey. The script finds each object that differs from the tray around it, and Segment Anything gives the outline of that object.
+- The script finds the tray from its corner markers `0`, `1` and `2`. Each marker must be in 2 frames or more of a layout.
+- A chip is an object that is at the same place on the tray in 60% of the frames of a layout or more. Use 3 views or more from different sides. The top face of a chip is the area that 80% of the views have in common.
+- The script does not write a frame that has an object which is not a known chip. It also does not write a frame that has a chip in view without an object. It prints the counts and the place of each chip in each layout.
+- An object must be 3 mm or more from the edge of the tray and from the corner tiles. Its color must be different from the grey of the tray.

@@ -580,6 +580,8 @@ The `run` and `fit` commands keep the stored value. Fit it again after a change 
 - The fit uses the Z steps of the arm as true distances.
 - The arm terms are valid near the looks and the touches of the touch fit: look poses from X -79 to 41 and from Y -316 to -236, at Z 126 to 164, and touches near Z 23. There the result of `surface_points()` is within 0.5 mm of the place where the cup has a seal.
 - On the stage plate, the result is within 0.5 mm from a pose with the lens 200 mm or more above the surface.
+- The wrist camera weights know chips only on the tray plate. On the bare stage plate, `detect` does not find a chip.
+- The pad of the cup is 4 mm wide. A chip that is narrower than about 4 mm needs the cup within 0.2 mm of the middle of its width, so a pick routine must be able to touch again 0.5 mm to the side.
 
 ## Stop and shutdown
 

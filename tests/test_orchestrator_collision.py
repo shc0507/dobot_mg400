@@ -136,3 +136,16 @@ def test_the_check_says_when_it_cannot_run(tmp_path):
         check(OVER_TRAY, [600.0, 0.0, 163.7, 0.0])
     with pytest.raises(collision.Unavailable, match="not finite"):
         check(OVER_TRAY, [float("nan"), 0.0, 163.7, 0.0])
+
+
+def test_a_move_that_starts_inside_a_swept_box_is_refused(tmp_path):
+    path = stage_world(tmp_path)
+    start = [60.0, -236.0, 163.8, -31.3]  # inside the box of the block over the travel
+    for target in ([60.0, -236.0, 200.0, -31.3], [-39.0, -236.0, 163.8, -31.3]):
+        problem = collision.check(start, target, path=path, stage={})
+        assert problem["obstacle"] == "block" and problem["swept"] is True
+        assert problem["along_mm"] == 0 and problem["start_clearance_mm"] == 0
+    assert (
+        collision.check(start, [60.0, -236.0, 200.0, -31.3], path=path, stage={"stage_top": 45.0})
+        is None
+    )

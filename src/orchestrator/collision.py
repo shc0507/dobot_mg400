@@ -18,7 +18,8 @@ them, in the frame of the robot controller (User 0, Tool 0 = flange face centre)
 margin at the start is a near obstacle: the move must not go closer to it. The move
 must keep the margin to all other obstacles. A clearance of 0 means contact or overlap.
 The depth of an overlap is not known, so a move that starts in contact with an obstacle
-is not checked against that obstacle.
+is not checked against that obstacle. A move that starts in contact with the box of a
+stage part at an unknown position is refused.
 """
 
 import json
@@ -34,9 +35,10 @@ STEP_MM = 2.0
 STEP_DEG = 1.0
 ARM_JOINTS = ("J1", "J2", "J3", "J4")
 STAGE_JOINTS = ("stage_bottom", "stage_top", "insert")
-# Model joint travel in mm (the joint ranges of the bench twin rig).
+# Model joint travel in mm: the joint ranges of the bench twin rig. Bottom stops at -34 mm,
+# where the lower plate meets the robot base column (a 25 mm gap at the measured -8.45 mm).
 STAGE_TRAVEL_MM = {
-    "stage_bottom": (-80.0, 40.0),
+    "stage_bottom": (-34.0, 40.0),
     "stage_top": (-70.0, 45.0),
     "insert": (-100.0, 150.0),
 }
@@ -296,9 +298,12 @@ def check(start, target, *, joints=None, stage=None, path=None, margin=MARGIN_MM
     # Obstacles that are inside the margin at the start, each with its start clearance.
     arm, near, far = world.arm(samples[0][2]), {}, world.env
     while far:
-        clearance, _, obstacle = world.clearance(arm, world.manager(far))
+        clearance, part, obstacle = world.clearance(arm, world.manager(far))
         if clearance >= margin:
             break
+        if clearance == 0 and obstacle.get("swept"):
+            # The box is larger than the part, so contact at the start is not known to be real.
+            return _problem(0.0, part, obstacle, 0.0, samples[0][1], 0.0)
         name = obstacle["object"]
         near[name] = (clearance, world.manager([item for item in far if item[0]["object"] == name]))
         far = [item for item in far if item[0]["object"] != name]

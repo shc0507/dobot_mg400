@@ -15,6 +15,12 @@ TABLE_TOUCH_Z = -189.0
 REAL = ArmError(j2_zero_deg=0.4, j3_zero_deg=0.9, rear_arm_mm=-1.2, forearm_mm=0.5)
 
 
+@pytest.fixture(autouse=True)
+def arm_without_error(monkeypatch):
+    """These tests simulate an arm that moves as it reports."""
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError())
+
+
 def load_script():
     path = ROOT / "scripts/arm_calibrate.py"
     spec = importlib.util.spec_from_file_location("arm_calibrate_test", path)

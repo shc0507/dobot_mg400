@@ -94,3 +94,14 @@ def test_the_reported_pose_of_a_real_place_maps_back_to_it(pose):
 def test_a_place_outside_the_arm_is_refused():
     with pytest.raises(ValueError, match="outside the arm"):
         kinematics.joints_from_plane(700.0, 0.0)
+
+
+def test_the_stored_error_moves_no_pose_by_more_than_some_millimetres():
+    for reach in (210.0, 280.0, 350.0):
+        for z in (160.0, 20.0, -70.0, -180.0):
+            try:
+                kinematics.joints_from_plane(reach, z)
+            except ValueError:
+                continue
+            real = kinematics.true_pose((reach, 0.0, z, 0.0))
+            assert math.dist(real[:3], (reach, 0.0, z)) < 6.0

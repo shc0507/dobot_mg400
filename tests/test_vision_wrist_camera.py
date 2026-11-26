@@ -11,10 +11,17 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from mg400 import kinematics
 from vision import wrist_camera
 from vision.service import VisionService, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def arm_without_error(monkeypatch):
+    """These tests simulate an arm that moves as it reports."""
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError())
 
 
 def load_script():
@@ -422,8 +429,6 @@ def test_run_refuses_a_start_that_was_not_checked():
 
 
 def test_the_mapping_uses_the_real_place_of_the_flange(monkeypatch):
-    from mg400 import kinematics
-
     error = kinematics.ArmError(0.4, 0.9, -2.5, 0.6)
     monkeypatch.setattr(kinematics, "ERROR", error)
     model = wrist_camera.load()

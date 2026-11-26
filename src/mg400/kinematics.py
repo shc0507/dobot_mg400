@@ -34,8 +34,10 @@ class ArmError(NamedTuple):
     j3_scale: float = 0.0
 
 
-# No calibration run is stored: the arm moves as it reports.
-ERROR = ArmError()
+# From `scripts/arm_calibrate.py fit`: views with J2 -16 to 15 degrees and J3 -16 to 24
+# degrees. The views do not separate a short rear arm from a J2 angle scale, so the values
+# are not verified for J2 above 45 degrees (poses near the table).
+ERROR = ArmError(j3_zero_deg=0.88, rear_arm_mm=-2.50)
 
 
 def plane_from_joints(j2_deg, j3_deg, error=None):

@@ -417,6 +417,7 @@ def test_robot_move_is_refused_when_the_twin_shows_a_collision(monkeypatch):
         ({"clearance_mm": 6.2}, "The margin is 10 mm."),
         ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "At the start it is 3 mm away."),
         ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "a move must not go closer"),
+        ({"swept": True}, "The stage position is unknown (no Auto calibrate)"),
     ],
 )
 def test_robot_move_refusal_names_the_clearance(monkeypatch, change, text):

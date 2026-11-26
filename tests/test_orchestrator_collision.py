@@ -67,7 +67,8 @@ def test_a_move_that_starts_in_contact_is_checked_against_the_other_obstacles():
     assert check(touching, [-137.2, -245.1, 21.5, -31.3])["group"] == "fixtures"
 
 
-def test_a_stage_joint_moves_its_obstacles(tmp_path):
+def stage_world(tmp_path):
+    """The fixture world with a block on a stage_top carriage, 89 mm beyond the move end."""
     world = json.loads(WORLD.read_text())
     world["nodes"].append(
         {
@@ -80,15 +81,13 @@ def test_a_stage_joint_moves_its_obstacles(tmp_path):
             "coef": None,
         }
     )
-    lo, hi = (960.0, -260.0, 100.0), (1000.0, -220.0, 200.0)
+    lo, hi = (130.0, -260.0, 100.0), (170.0, -220.0, 200.0)
     corners = [
         [(lo, hi)[i][0], (lo, hi)[j][1], (lo, hi)[k][2]]
         for i in (0, 1)
         for j in (0, 1)
         for k in (0, 1)
     ]
-    faces = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1]]
-    faces += [[2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]]
     world["shapes"].append(
         {
             "object": "block",
@@ -96,16 +95,35 @@ def test_a_stage_joint_moves_its_obstacles(tmp_path):
             "node": "carriage",
             "body": "env",
             "verts": corners,
-            "faces": faces,
+            "faces": collision.BOX_FACES,
         }
     )
     path = tmp_path / "world.json"
     path.write_text(json.dumps(world))
-    move = ([-39, -236, 163.8, -31.3], [41, -236, 163.8, -31.3])
-    for stage in (None, {}, {"stage_top": None}, {"stage_top": "x"}, {"stage_top": 100.0}):
-        assert collision.check(*move, path=path, stage=stage) is None
-    problem = collision.check(*move, path=path, stage={"stage_top": -900.0, "insert": None})
+    return path
+
+
+STAGE_MOVE = ([-39, -236, 163.8, -31.3], [41, -236, 163.8, -31.3])
+
+
+def test_a_stage_joint_moves_its_obstacles(tmp_path):
+    path = stage_world(tmp_path)
+    for value in (0.0, 45.0):
+        assert collision.check(*STAGE_MOVE, path=path, stage={"stage_top": value}) is None
+    problem = collision.check(*STAGE_MOVE, path=path, stage={"stage_top": -70.0, "insert": None})
     assert problem["obstacle"] == "block" and problem["group"] == "stage"
+
+
+def test_an_unknown_stage_joint_sweeps_its_obstacles_over_the_travel(tmp_path):
+    """The block reaches x 60 at the travel end -70 mm, so the move is refused."""
+    path = stage_world(tmp_path)
+    for stage in (None, {}, {"stage_top": None}, {"stage_top": "x"}, {"stage_top": float("nan")}):
+        problem = collision.check(*STAGE_MOVE, path=path, stage=stage)
+        assert problem["obstacle"] == "block" and problem["clearance_mm"] == 0
+    world = collision.World(path, {})
+    (block,) = [shape for shape, _ in world.env if shape["object"] == "block"]
+    xs = [vertex[0] for vertex in block["verts"]]
+    assert block["node"] is None and (min(xs), max(xs)) == (60.0, 215.0)
 
 
 def test_the_check_says_when_it_cannot_run(tmp_path):
@@ -118,3 +136,16 @@ def test_the_check_says_when_it_cannot_run(tmp_path):
         check(OVER_TRAY, [600.0, 0.0, 163.7, 0.0])
     with pytest.raises(collision.Unavailable, match="not finite"):
         check(OVER_TRAY, [float("nan"), 0.0, 163.7, 0.0])
+
+
+def test_a_move_that_starts_inside_a_swept_box_is_refused(tmp_path):
+    path = stage_world(tmp_path)
+    start = [60.0, -236.0, 163.8, -31.3]  # inside the box of the block over the travel
+    for target in ([60.0, -236.0, 200.0, -31.3], [-39.0, -236.0, 163.8, -31.3]):
+        problem = collision.check(start, target, path=path, stage={})
+        assert problem["obstacle"] == "block" and problem["swept"] is True
+        assert problem["along_mm"] == 0 and problem["start_clearance_mm"] == 0
+    assert (
+        collision.check(start, [60.0, -236.0, 200.0, -31.3], path=path, stage={"stage_top": 45.0})
+        is None
+    )

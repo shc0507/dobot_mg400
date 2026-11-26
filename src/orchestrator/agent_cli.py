@@ -258,6 +258,11 @@ def _collision(agent, state, target):
             f"from {where}. At the start it is {problem['start_clearance_mm']:g} mm away. "
             f"Inside the {collision.MARGIN_MM:g} mm margin, a move must not go closer."
         )
+    if problem.get("swept"):
+        text += (
+            " The stage position is unknown (no Auto calibrate), so the check uses the full"
+            " stage travel."
+        )
     return failure(
         "collision", f"{text} No command was sent. {skip}", device="robot", collision=problem
     )

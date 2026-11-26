@@ -20,9 +20,13 @@ joints are ``None``. A stage connect resets the Arduino: the counts return to 0
 and the mode to full step, so the joints stay ``None`` until half-step is set
 again, and the offsets need a new snapshot unless the stage did not move.
 
-Encoder stages report shaft rotations. Their model geometry remains uncalibrated
-until a rotation-to-model mapping defines each axis's scale, direction and zero.
-The device rows retain fresh encoder rotations, but model travel stays unknown.
+Encoder stages report shaft rotations. ``ENCODER_STAGE`` maps them:
+mm = sign * MM_PER_ROTATION * rotations + offset. The rotation count has a fixed
+reference only after Auto calibrate (phase ``done``: 0 at the lower switch). A connect,
+Reset position or a limit change clears it. So a joint is known only for an axis with
+fresh encoder feedback, calibration ``done`` and a mapping with a sign and an offset.
+Otherwise it is ``None``, and the arm move collision check sweeps the stage parts over
+the full travel of that joint.
 """
 
 from pathlib import Path
@@ -41,6 +45,12 @@ STAGE = {  # model joint: (motor, sign, pulses per mm, offset mm)
     "stage_bottom": ("bottom", -1, 80.0, -19.93),
     "stage_top": ("top", -1, 80.0, -2.41),
     "insert": ("insert", -1, 80.0, 55.94),
+}
+MM_PER_ROTATION = 5.0  # 5 mm ball screw lead on every stage axis
+ENCODER_STAGE = {  # model joint: (motor, sign, offset mm at the lower switch); None = not measured
+    "stage_bottom": ("bottom", None, None),
+    "stage_top": ("top", None, None),
+    "insert": ("insert", None, None),
 }
 # The model shows objective 1 (10x) at work; 1 turret step = 72 deg (direction not checked).
 WORKING_OBJECTIVE = 1
@@ -72,6 +82,7 @@ def _stage(state):
             row["motors"][motor["id"]]["position_rotations"] = (
                 motor.get("position_rotations") if encoder_fresh(state, motor) else None
             )
+            row["motors"][motor["id"]]["calibration"] = motor.get("calibration")
         row["feedback_fresh"] = all(
             row["motors"].get(motor, {}).get("position_rotations") is not None
             for motor in ("bottom", "top", "insert")
@@ -132,6 +143,30 @@ def _number(value):
     return value if type(value) in (int, float) else None
 
 
+def stage_joints(stage):
+    """Model stage joint values in mm from the stage row (None = unknown)."""
+    motors = stage.get("motors", {}) if stage.get("available") else {}
+    if stage.get("closed_loop"):
+        out = {}
+        for name, (motor, sign, offset) in ENCODER_STAGE.items():
+            axis = motors.get(motor, {})
+            rotations = _number(axis.get("position_rotations"))
+            known = (
+                rotations is not None
+                and axis.get("calibration") == "done"
+                and sign is not None
+                and offset is not None
+            )
+            out[name] = round(sign * MM_PER_ROTATION * rotations + offset, 2) if known else None
+        return out
+    same_mode = stage.get("microstep") == STAGE_MICROSTEP
+    out = {}
+    for name, (motor, sign, ppm, offset) in STAGE.items():
+        pulses = _number(motors.get(motor, {}).get("position")) if same_mode else None
+        out[name] = round(sign * pulses / ppm + offset, 2) if pulses is not None else None
+    return out
+
+
 def joints(rows):
     """Model joint values from the device rows (None = unknown)."""
     out = {}
@@ -139,17 +174,7 @@ def joints(rows):
     j = robot.get("joints") if robot.get("available") else None
     for k in range(4):
         out[f"J{k + 1}"] = _number(j[k]) if isinstance(j, list) and len(j) == 4 else None
-    stage = rows.get("stage", {})
-    same_mode = (
-        stage.get("available")
-        and not stage.get("closed_loop")
-        and stage.get("microstep") == STAGE_MICROSTEP
-    )
-    for name, (motor, sign, ppm, offset) in STAGE.items():
-        pulses = (
-            _number(stage.get("motors", {}).get(motor, {}).get("position")) if same_mode else None
-        )
-        out[name] = round(sign * pulses / ppm + offset, 2) if pulses is not None else None
+    out.update(stage_joints(rows.get("stage", {})))
     scope = rows.get("microscope", {})
     objective = scope.get("objective_id") if scope.get("available") else None
     out["turret"] = (
@@ -170,11 +195,7 @@ def signals(rows):
         "stage_stale": not (stage.get("available") and stage.get("feedback_fresh")),
         "stage_moving": bool(stage.get("busy"))
         or any(m.get("mode") not in (None, "idle") for m in stage.get("motors", {}).values()),
-        "stage_calibrated": bool(
-            stage.get("available")
-            and not stage.get("closed_loop")
-            and stage.get("microstep") == STAGE_MICROSTEP
-        ),
+        "stage_calibrated": all(value is not None for value in stage_joints(stage).values()),
         "furnace_c": pv,
         "furnace_hot": pv is not None and pv >= HOT_C,
         "furnace_running": furnace.get("control_mode") not in (None, "STOPPED"),

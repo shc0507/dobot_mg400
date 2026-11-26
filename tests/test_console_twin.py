@@ -225,3 +225,40 @@ def test_unreachable_devices_are_reported_without_an_error(rig, monkeypatch):
         row == {"available": False, "reason": "unreachable"} for row in body["devices"].values()
     )
     assert body["signals"]["robot_stale"] and body["signals"]["stage_stale"]
+
+
+def test_encoder_stage_maps_calibrated_rotations_to_model_joints(monkeypatch):
+    monkeypatch.setattr(
+        twin,
+        "ENCODER_STAGE",
+        {
+            "stage_bottom": ("bottom", 1, -20.0),
+            "stage_top": ("top", -1, 10.0),
+            "insert": ("insert", 1, 0.0),
+        },
+    )
+    raw = {
+        "connected": True,
+        "closed_loop": True,
+        "motors": [
+            {
+                "id": name,
+                "mode": "idle",
+                "position_rotations": value,
+                "telemetry_fresh": True,
+                "encoder": "ok",
+                "calibration": "done",
+            }
+            for name, value in (("bottom", 2.0), ("top", 1.5), ("insert", 3.0))
+        ],
+    }
+    rows = {"stage": dict(twin._stage(raw), available=True)}
+    joints = twin.joints(rows)
+    assert (joints["stage_bottom"], joints["stage_top"], joints["insert"]) == (-10.0, 2.5, 15.0)
+    assert twin.signals(rows)["stage_calibrated"] is True
+
+    # A connect or Reset position leaves the phase "none": the count has no fixed zero.
+    raw["motors"][1]["calibration"] = "none"
+    rows = {"stage": dict(twin._stage(raw), available=True)}
+    assert twin.joints(rows)["stage_top"] is None and twin.joints(rows)["stage_bottom"] == -10.0
+    assert twin.signals(rows)["stage_calibrated"] is False

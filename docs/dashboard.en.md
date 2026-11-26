@@ -240,12 +240,13 @@ Schema versions `1` and `2` retain their millimetre coordinates and source metad
 
 ### Twin workspace
 
-The Twin workspace shows a 3D bench model with live robot, microscope turret and furnace state. It polls 4 times per second while open. It sends no commands and takes no control. Encoder stage readings use rotations, but stage geometry remains uncalibrated.
+The Twin workspace shows a 3D bench model with live robot, microscope turret and furnace state. It polls 4 times per second while open. It sends no commands and takes no control. Encoder stage readings use rotations. The stage geometry follows them only for calibrated axes.
 
 - The page loads three.js r128 from `cdn.jsdelivr.net`. The browser must have internet access for this workspace.
 - The model is the `twin-model` asset at `/var/lib/mg400/twin/twin.glb`. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)). To build a new model, run `build.py -- --console <path>` in the twin authoring folder, outside the repository. The model shows the bench as in the first bench video. Joint value 0 is that state.
 - Robot J1 to J4 come from the robot joints. When the robot feedback is stale, the robot is see-through. During an alarm, the robot is red.
-- Encoder stage coordinates have no calibrated mapping to the model. Stage geometry remains see-through. Do not apply the old pulse-to-millimetre mapping to rotations. A future mapping must define each axis's millimetres per rotation, direction and model-zero offset.
+- An encoder stage joint is mm = sign × 5 mm/rotation × rotations + offset (`ENCODER_STAGE` in `workspaces/twin.py`; the ball screw lead is 5 mm). The rotation count has a fixed zero only after **Auto calibrate** (phase `done`: 0 at the lower switch). A connect, **Reset position** or a limit change clears it. An axis without fresh feedback, phase `done` or a measured sign and offset has no joint value, and the stage geometry stays see-through. Do not apply the old pulse-to-millimetre mapping to rotations.
+- The sign and the offset of each axis are not measured yet. To measure them, run **Auto calibrate** on the axis, then compare the wrist camera positions of the upper plate markers 18 and 20 with the model. The Bottom axis moves the stage along arm +X or −X; the Top axis moves it along arm Y.
 - While the stage moves, the stage and the insert axis are blue.
 - The turret turns 72 degrees for each objective from objective 1. The turn direction is not checked. The focus does not move in the model.
 - Above 50 °C the furnace glows. The glow is full at 1000 °C. A tag above the furnace shows PV.

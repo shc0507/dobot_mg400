@@ -113,8 +113,8 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 机器人服务检查关节范围、速度和报警，不检查障碍物。因此 `robot move` 在发送命令前，先用台面孪生检查这次移动。
 
 - 移动是法兰从当前 `actual` 位姿到目标的直线。检查每隔 2 mm 取 1 个点。
-- 检查使用资源 `twin-collision`，位于 `/var/lib/mg400/twin/collision.json`（见[外部资源](deploy.md#外部资源)）。位移台取实时台面工作区报告的位置。位置未知时，取模型中的位移台位置。
-- 孪生显示接触或间隙小于 10 mm 时，命令行拒绝移动，`error.code` 为 `collision`。不发送任何命令。`collision` 对象给出 `obstacle`、`group`、`arm_part`、`clearance_mm`、`along_mm`（沿直线的距离）、`pose`（该点的法兰位姿）和 `start_clearance_mm`。
+- 检查使用资源 `twin-collision`，位于 `/var/lib/mg400/twin/collision.json`（见[外部资源](deploy.md#外部资源)）。位移台取实时台面工作区报告的位置。某个位移台轴的位置未知时，该轴移动的每个零件变成一个盒子，盒子包住零件在该轴整个模型行程内的范围。轴的位置未知时，检查不使用模型位置。从这种盒子内部开始的移动被拒绝。
+- 孪生显示接触或间隙小于 10 mm 时，命令行拒绝移动，`error.code` 为 `collision`。不发送任何命令。`collision` 对象给出 `obstacle`、`group`、`arm_part`、`clearance_mm`、`along_mm`（沿直线的距离）、`pose`（该点的法兰位姿）、`start_clearance_mm` 和 `swept`（障碍物是位置未知的位移台零件时为 `true`）。
 - 起点处距离小于 10 mm 的障碍物是近处障碍物。移动不得更靠近它。此时 `start_clearance_mm` 是数值。允许远离它的移动。
 - 起点处已与某个障碍物接触时，不对该障碍物做检查。孪生不给出重叠深度。
 - 检查无法运行时，命令行同样拒绝移动：资源缺失，或直线上有 1 个点没有关节解。
@@ -134,7 +134,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 托盘台在碰撞模型中是 1 块空的平板。支腿、板厚和四角标记块是估计值。
 - 每个形状是凸包。凸包填满零件的凹处，因此检查可能拒绝台面上实际畅通的移动。
 - 显微镜的调焦和转盘保持在模型位置。
-- 对编码器位移台，实时台面工作区不给出位移台位置。此时检查把位移台保持在模型位置。
+- 编码器位移台的轴只有在 **Auto calibrate** 之后才有已知位置（见[实时台面](dashboard.md#实时台面工作区)）。在此之前，位移台零件在行程内任何位置附近的移动都被拒绝。要在那里移动，先标定位移台；或在机主监视的示教移动中使用 `--no-collision-check`。
 
 规划移动时，使用仓库外孪生建模目录的碰撞工具：`tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`、`descend X Y R --top Z`（首次接触时的法兰 Z）和 `pose X Y Z R`。
 

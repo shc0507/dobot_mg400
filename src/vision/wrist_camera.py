@@ -24,6 +24,10 @@ the reach, the arm reports a longer move than the real one between a look pose a
 touch. Sideways moves are true. The mapping multiplies the reach part of the vector from
 the flange to the point by a scale, in the link frame. It does not scale positions about
 the base.
+
+The mapping uses the real places of the flange, from `mg400.kinematics`: the camera is where
+the flange really is, and a result is the pose to command. With no stored ArmError the real
+place is the reported one.
 """
 
 import json
@@ -31,6 +35,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+from mg400 import kinematics
 
 CONFIG = Path(__file__).resolve().parents[2] / "config/cameras/wrist.json"
 IMAGE_SIZE = (3840, 2160)
@@ -310,9 +316,9 @@ def _turn(poses, vectors):
 def _lines(model, normal, poses, tool=True):
     """Return a start point and a direction for each row of normalised pixels and poses.
 
-    The lines are in reported arm coordinates: the point start + t direction at the height
-    of a surface is the flange x, y that puts the cup over the point of the surface, with
-    the tool rotation r of the pose. tool=False gives the place of the flange axis.
+    The lines are in real arm coordinates: the point start + t direction at the height
+    of a surface is the real flange x, y that puts the cup over the point of the surface,
+    with the tool rotation r of the pose. tool=False gives the place of the flange axis.
     """
     mount, arm = model["mount"], model["arm"]
     rotation = np.array(mount["rotation_link_to_camera"], float)
@@ -321,13 +327,45 @@ def _lines(model, normal, poses, tool=True):
     start = np.tile(np.array([*mount["offset_xy_mm"], 0.0]) * stretch, (len(poses), 1))
     radius = np.hypot(poses[:, 0], poses[:, 1])
     start[:, 0] += arm["radial_drift"] * (radius - arm["radius_mm"])
-    centre = poses[:, :3] + _turn(poses, start)
+    centre = _real(poses) + _turn(poses, start)
     if tool:
         angle = np.radians(poses[:, 3])
         x, y = model["tool"]["offset_xy_mm"]
         centre[:, 0] -= np.cos(angle) * x - np.sin(angle) * y
         centre[:, 1] -= np.sin(angle) * x + np.cos(angle) * y
     return centre, _turn(poses, link * stretch)
+
+
+def _real(poses):
+    """Real flange x, y, z of reported poses."""
+    if kinematics.ERROR == kinematics.ArmError():
+        return np.array(poses[:, :3], float)
+    return np.array([kinematics.true_pose(pose)[:3] for pose in poses], float)
+
+
+def _on_surface(model, centre, directions, touch_z):
+    """Flange x, y to command so that the lines meet a level surface at the touch.
+
+    touch_z is the reported flange z of the touch. The real height of the flange at the
+    touch changes a little with the place, so the result comes from 3 rounds.
+    """
+    height = _height(model)
+    if kinematics.ERROR == kinematics.ArmError():
+        distance = (touch_z - height - centre[:, 2]) / directions[:, 2]
+        if np.any(distance <= 0):
+            raise ValueError("A pixel does not look at the surface")
+        return (centre + distance[:, None] * directions)[:, :2]
+    place = centre[:, :2]
+    for _ in range(3):
+        level = np.array([kinematics.true_pose((x, y, touch_z))[2] for x, y in place])
+        distance = (level - height - centre[:, 2]) / directions[:, 2]
+        if np.any(distance <= 0):
+            raise ValueError("A pixel does not look at the surface")
+        real = centre + distance[:, None] * directions
+        place = np.array(
+            [kinematics.reported_pose((x, y, z))[:2] for (x, y, _), z in zip(real, level)]
+        )
+    return place
 
 
 def _poses(pose, count):
@@ -339,9 +377,9 @@ def _poses(pose, count):
 def rays(model, pixels, pose):
     """Return the start point and a direction of the line of each pixel, for 1 arm pose.
 
-    The frame is the arm frame. Its z is the flange z of the pose, so the start point has
-    the z of the flange and not of the lens. The lines include the scales of the arm and
-    the cup offset: see `surface_points`.
+    The frame is the real arm frame. Its z is the real flange z of the pose, so the start
+    point has the z of the flange and not of the lens. The lines include the scales of the
+    arm and the cup offset: see `surface_points`.
     """
     normal = _normal(model, pixels)
     centre, directions = _lines(model, normal, _poses(pose, len(normal)))
@@ -363,10 +401,7 @@ def surface_points(model, pixels, pose, touch_z):
     with the lens 170 mm or more above the surface: a nearer view can be 2 mm off.
     """
     centre, directions = rays(model, pixels, pose)
-    distance = (touch_z - _height(model) - centre[2]) / directions[:, 2]
-    if np.any(distance <= 0):
-        raise ValueError("A pixel does not look at the surface")
-    return (centre + distance[:, None] * directions)[:, :2]
+    return _on_surface(model, np.tile(centre, (len(directions), 1)), directions, touch_z)
 
 
 def surface_pixels(model, points, pose, touch_z):
@@ -374,7 +409,9 @@ def surface_pixels(model, points, pose, touch_z):
     points = np.asarray(points, float).reshape(-1, 2)
     poses = _poses(pose, len(points))
     centre, _ = _lines(model, np.zeros((len(points), 2)), poses)
-    drop = touch_z - _height(model) - centre[:, 2]
+    real = _real(np.column_stack([points, np.full(len(points), float(touch_z))]))
+    points = real[:, :2]
+    drop = real[:, 2] - _height(model) - centre[:, 2]
     arm = np.column_stack([(points - centre[:, :2]) / drop[:, None], np.ones(len(points))])
     stretch = [model["arm"]["radial_scale"], 1.0, 1.0]
     turned = poses * [1.0, -1.0, 1.0, 1.0]  # the turn by -J1
@@ -396,8 +433,10 @@ def locate(model, pixels, poses):
         raise ValueError("The poses do not give 2 different viewing directions")
     point = np.linalg.solve(normal, target)
     height = model["mount"].get("camera_above_tip_mm")
-    touch_z = None if height is None else float(point[2] + height)
-    return float(point[0]), float(point[1]), touch_z, float(point[2])
+    # The point is in real coordinates. Give the pose to command for a touch.
+    x, y, z = kinematics.reported_pose((point[0], point[1], point[2] + (height or 0.0)))[:3]
+    touch_z = None if height is None else float(z)
+    return float(x), float(y), touch_z, float(z - (height or 0.0))
 
 
 def _spin(degrees, vectors):
@@ -464,8 +503,7 @@ def fit_touch(model, looks, moves, touch_z):
     def places(trial, normal, poses):
         """Flange x, y that puts the flange axis over each point."""
         centre, directions = _lines(trial, normal, poses, tool=False)
-        distance = (touch_z - _height(trial) - centre[:, 2]) / directions[:, 2]
-        return (centre + distance[:, None] * directions)[:, :2]
+        return _on_surface(trial, centre, directions, touch_z)
 
     def parts(x):
         trial = candidate(x)

@@ -11,10 +11,17 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from mg400 import kinematics
 from vision import wrist_camera
 from vision.service import VisionService, create_app
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def arm_without_error(monkeypatch):
+    """These tests simulate an arm that moves as it reports."""
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError())
 
 
 def load_script():
@@ -419,3 +426,58 @@ def test_run_refuses_a_start_that_was_not_checked():
     far = {a: (x / 2, y / 2) for a, (x, y) in near.items()}
     with pytest.raises(RuntimeError, match="below the camera"):
         script.check_start(script.START, far, 24.0)
+
+
+def test_the_mapping_uses_the_real_place_of_the_flange(monkeypatch):
+    error = kinematics.ArmError(0.4, 0.9, -2.5, 0.6)
+    monkeypatch.setattr(kinematics, "ERROR", error)
+    model = wrist_camera.load()
+    model = {**model, "arm": dict(wrist_camera.NO_ARM), "tool": {"offset_xy_mm": [0.0, 0.0]}}
+    mount = model["mount"]
+    rotation = np.array(mount["rotation_link_to_camera"], float)
+    touch = (-20.0, -290.0, 22.5)  # the reported pose at which the cup touches the point
+    point = np.array(kinematics.true_pose(touch))
+    point[2] -= mount["camera_above_tip_mm"]
+    looks, pixels = [(-39.0, -236.0, 163.8, -25.2), (1.0, -276.0, 125.8, -25.2)], []
+    for look in looks:
+        flange = np.array([kinematics.true_pose(look)[:3]])
+        j1 = np.array([np.arctan2(look[1], look[0])])
+        linked = wrist_camera.link_points(point[None], flange, j1, mount["offset_xy_mm"])
+        camera = linked @ rotation.T
+        pixels.append(
+            wrist_camera.project(model["camera_matrix"], model["distortion"], np.zeros(3), camera)[
+                0
+            ]
+        )
+
+    place = wrist_camera.surface_points(model, [pixels[0]], looks[0], touch[2])[0]
+    assert place == pytest.approx(touch[:2], abs=0.01)
+    back = wrist_camera.surface_pixels(model, [touch[:2]], looks[0], touch[2])[0]
+    assert back == pytest.approx(pixels[0], abs=0.05)
+    x, y, touch_z, _ = wrist_camera.locate(model, pixels, looks)
+    assert (x, y, touch_z) == pytest.approx(touch, abs=0.02)
+
+    # Without the stored error the same pixel maps to another place: the arm error.
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError())
+    plain = wrist_camera.surface_points(model, [pixels[0]], looks[0], touch[2])[0]
+    assert np.linalg.norm(plain - touch[:2]) > 0.3
+
+
+def test_a_point_outside_the_arm_maps_without_a_failure(monkeypatch):
+    model = wrist_camera.load()
+    pose = (-39.0, -236.0, 163.8, -25.2)
+    far = wrist_camera.surface_points(model, [[1900.0, 1150.0], [3600.0, 2000.0]], pose, -189.0)
+    assert np.hypot(*far[1]) > 470  # no arm pose puts the cup there
+
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError(0.4, 0.9, -2.5, 0.6))
+    corrected = wrist_camera.surface_points(
+        model, [[1900.0, 1150.0], [3600.0, 2000.0]], pose, -189.0
+    )
+
+    assert np.isfinite(corrected).all()
+    assert np.linalg.norm(corrected[1] - far[1]) < 12
+    back = wrist_camera.surface_pixels(model, corrected, pose, -189.0)
+    assert back == pytest.approx(np.array([[1900.0, 1150.0], [3600.0, 2000.0]]), abs=0.5)
+    assert np.isfinite(
+        wrist_camera.locate(model, [[3600.0, 2000.0]] * 2, [pose, (1.0, -276.0, 125.8, -25.2)])[:2]
+    ).all()

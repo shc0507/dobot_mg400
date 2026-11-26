@@ -113,8 +113,8 @@ A robot service with no syncing client cannot confirm a stop. It sends `ResetRob
 The robot service checks the joint range, the speed and the alarms. It does not check obstacles. Thus `robot move` checks the move against the bench twin before it sends the command.
 
 - The move is a straight line of the flange from the current `actual` pose to the target. The check samples it at intervals of 2 mm.
-- The check uses the `twin-collision` asset at `/var/lib/mg400/twin/collision.json` (see [External assets](deploy.en.md#external-assets)). It puts the stage at the position that the Twin workspace reports. If that position is unknown, it uses the stage position of the model.
-- The CLI refuses the move with `error.code` `collision` when the twin shows contact or a clearance below 10 mm. No command is sent. The `collision` object gives `obstacle`, `group`, `arm_part`, `clearance_mm`, `along_mm` (the distance along the line), `pose` (the flange pose at that point) and `start_clearance_mm`.
+- The check uses the `twin-collision` asset at `/var/lib/mg400/twin/collision.json` (see [External assets](deploy.en.md#external-assets)). It puts the stage at the position that the Twin workspace reports. If the position of a stage axis is unknown, each part that the axis moves becomes a box that holds the part over the full model travel of the axis. The check never uses the model position for an unknown axis.
+- The CLI refuses the move with `error.code` `collision` when the twin shows contact or a clearance below 10 mm. No command is sent. The `collision` object gives `obstacle`, `group`, `arm_part`, `clearance_mm`, `along_mm` (the distance along the line), `pose` (the flange pose at that point), `start_clearance_mm` and `swept` (`true` when the obstacle is a stage part at an unknown position).
 - An obstacle that is nearer than 10 mm at the start is a near obstacle. The move must not go closer to it. `start_clearance_mm` is then a number. A move away from it is permitted.
 - A move that starts in contact with an obstacle is not checked against that obstacle. The twin does not give the depth of an overlap.
 - The CLI also refuses the move when the check cannot run: the asset is missing, or a point of the line has no joint solution.
@@ -134,7 +134,7 @@ The twin does not show all of the bench:
 - The tray table is in the collision world as an empty flat plate. Its legs, its plate thickness and its corner tiles are estimates.
 - Each shape is a convex hull. A hull fills the hollows of its part, so the check can refuse a move that is free on the bench.
 - The focus and the turret of the microscope stay at their model positions.
-- The Twin workspace gives no stage position for an encoder stage. The check then keeps the stage at its model position.
+- An encoder stage axis has a known position only after **Auto calibrate** (see [Twin workspace](dashboard.en.md#twin-workspace)). Until then, the check refuses moves near the stage parts anywhere in their travel. To move there, calibrate the stage, or use `--no-collision-check` for a taught move that the owner monitors.
 
 To plan a move, use the collision tool of the twin authoring folder, outside the repository: `tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`, `descend X Y R --top Z` (the flange Z of the first contact) and `pose X Y Z R`.
 

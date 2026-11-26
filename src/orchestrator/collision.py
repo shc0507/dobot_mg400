@@ -8,6 +8,9 @@ them, in the frame of the robot controller (User 0, Tool 0 = flange face centre)
   world = parent world @ rest @ (rotation or translation along ``axis`` by the value).
   The value of a ``robot`` node is the sum of ``coef[k] * Jk``. Other nodes use the
   value of their joint: ``stage_bottom``, ``stage_top`` and ``insert`` in mm.
+  When a stage joint value is unknown, each obstacle that the joint moves becomes the
+  box that holds it over the full ``STAGE_TRAVEL_MM`` of every unknown joint, in the frame
+  of the stage. The check never uses the model state for an unknown stage joint.
 - ``shapes``: ``object``, ``entity``, ``node`` (``None`` = fixed), ``body`` (``arm`` or
   ``env``), ``verts`` and ``faces`` in the node frame.
 
@@ -31,6 +34,15 @@ STEP_MM = 2.0
 STEP_DEG = 1.0
 ARM_JOINTS = ("J1", "J2", "J3", "J4")
 STAGE_JOINTS = ("stage_bottom", "stage_top", "insert")
+# Model joint travel in mm (the joint ranges of the bench twin rig).
+STAGE_TRAVEL_MM = {
+    "stage_bottom": (-80.0, 40.0),
+    "stage_top": (-70.0, 45.0),
+    "insert": (-100.0, 150.0),
+}
+# Box corners in index order 4i + 2j + k (x from i, y from j, z from k) and their faces.
+BOX_FACES = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1]]
+BOX_FACES += [[2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]]
 # Seeds for the joint solution when the service gives no joints: J2 and J3 ranges of the
 # MG400 and the range of J3 - J2, in degrees.
 J2_RANGE, J3_RANGE, ELBOW_RANGE = (-25, 85), (-25, 105), (-60, 60)
@@ -60,7 +72,7 @@ def _translation(vector):
 
 class World:
     def __init__(self, path=None, stage=None):
-        """stage: model joint values in mm. A missing or unknown value is the model state."""
+        """stage: model joint values in mm. A missing or unknown value sweeps the joint."""
         path = Path(WORLD if path is None else path)
         try:
             import fcl
@@ -86,25 +98,68 @@ class World:
             if not ready:
                 raise Unavailable(f"The collision world {path} has a broken joint tree.")
             self._nodes.extend(ready)
-        self._shape = {}  # id of an FCL geometry -> its shape
-        arm, env = [], []
-        for shape in document["shapes"]:
-            if shape["body"] not in {"arm", "env"}:
-                continue
-            faces = np.array([[3, *face] for face in shape["faces"]], int).ravel()
-            geometry = fcl.Convex(np.array(shape["verts"], float), len(shape["faces"]), faces)
-            self._shape[id(geometry)] = shape
-            (arm if shape["body"] == "arm" else env).append((shape, geometry))
-        self._arm = arm
-        self._geometry = [geometry for _, geometry in arm + env]  # FCL results refer to them
         stage = stage if isinstance(stage, dict) else {}
         fixed = {
             name: float(stage[name])
             for name in STAGE_JOINTS
             if type(stage.get(name)) in (int, float) and math.isfinite(stage[name])
         }
+        self._shape = {}  # id of an FCL geometry -> its shape
+        self._sweep_frames = {}  # joint values -> frames, while unknown joints are swept
+        arm, env = [], []
+        for shape in document["shapes"]:
+            if shape["body"] not in {"arm", "env"}:
+                continue
+            if shape["body"] == "env":
+                shape = self._swept(shape, fixed, nodes)
+            faces = np.array([[3, *face] for face in shape["faces"]], int).ravel()
+            geometry = fcl.Convex(np.array(shape["verts"], float), len(shape["faces"]), faces)
+            self._shape[id(geometry)] = shape
+            (arm if shape["body"] == "arm" else env).append((shape, geometry))
+        self._arm = arm
+        self._geometry = [geometry for _, geometry in arm + env]  # FCL results refer to them
         self.env = self._objects(env, self._frames(fixed))
         self._seeds = None
+
+    def _swept(self, shape, fixed, nodes):
+        """The shape, or a fixed box that holds it over the travel of its unknown stage joints."""
+        chain, name = [], shape["node"]
+        while name is not None:
+            chain.append(nodes[name])
+            name = nodes[name]["parent"]
+        unknown = [
+            node for node in chain if node["joint"] in STAGE_JOINTS and node["joint"] not in fixed
+        ]
+        if not unknown:
+            return shape
+        ends = [STAGE_TRAVEL_MM[node["joint"]] for node in unknown]
+        verts = np.c_[np.array(shape["verts"], float), np.ones(len(shape["verts"]))]
+        # The frame of the outermost unknown joint at 0: the travel is along its axes.
+        base = self._cached_frames(fixed)[unknown[-1]["name"]]
+        local = []
+        for corner in np.array(np.meshgrid(*ends)).reshape(len(ends), -1).T:
+            values = {
+                **fixed,
+                **{node["joint"]: v for node, v in zip(unknown, corner, strict=True)},
+            }
+            frame = np.linalg.solve(base, self._cached_frames(values)[shape["node"]])
+            local.append((frame @ verts.T).T[:, :3])
+        local = np.vstack(local)
+        lo, hi = local.min(axis=0), local.max(axis=0)
+        box = [
+            [(lo, hi)[i][0], (lo, hi)[j][1], (lo, hi)[k][2], 1.0]
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ]
+        world = (base @ np.array(box).T).T[:, :3]
+        return {**shape, "node": None, "verts": world.tolist(), "faces": BOX_FACES, "swept": True}
+
+    def _cached_frames(self, values):
+        key = tuple(sorted(values.items()))
+        if key not in self._sweep_frames:
+            self._sweep_frames[key] = self._frames(values)
+        return self._sweep_frames[key]
 
     def _frames(self, values):
         joints = [values.get(name, 0.0) for name in ARM_JOINTS]
@@ -218,6 +273,7 @@ def _problem(clearance, arm, obstacle, along, pose, start_clearance=None):
         "along_mm": round(along, 1),
         "pose": [round(float(value), 1) for value in pose],
         "start_clearance_mm": None if start_clearance is None else round(start_clearance, 1),
+        "swept": bool(obstacle.get("swept")),
     }
 
 
@@ -227,8 +283,9 @@ def check(start, target, *, joints=None, stage=None, path=None, margin=MARGIN_MM
     joints: the joint angles at the start, when they are known. stage: model joint values.
     Return None when the move is clear. Otherwise return the first contact, or the smallest
     clearance when there is no contact: ``obstacle``, ``group``, ``arm_part``,
-    ``clearance_mm``, ``along_mm``, ``pose`` and ``start_clearance_mm`` (a number for a near
-    obstacle). Raise Unavailable when the check cannot run.
+    ``clearance_mm``, ``along_mm``, ``pose``, ``start_clearance_mm`` (a number for a near
+    obstacle) and ``swept`` (the obstacle is a stage part at an unknown position).
+    Raise Unavailable when the check cannot run.
     """
     world = World(path, stage)
     if not (isinstance(joints, (list, tuple)) and len(joints) == 4):

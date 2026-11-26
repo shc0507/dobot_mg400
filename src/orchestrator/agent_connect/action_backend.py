@@ -257,11 +257,11 @@ class ActionBackend:
                 and not self.furnace_enabled
             ):
                 reason = FURNACE_DISABLED
-            if not reason and spec["route"] in {"turret", "frame"}:
+            if not reason and spec["route"] in {"turret", "frame", "operating-settings"}:
                 if self._preview() is None and (
                     spec["route"] == "frame" or not descriptions.get("microscope")
                 ):
-                    reason = "The reviewed turret image simulator is unavailable."
+                    reason = "The microscope service or preview is unavailable."
             if not reason and spec["route"] == "command":
                 if spec["command"] not in descriptions.get(spec["device"], {}).get("commands", {}):
                     reason = "The reviewed service does not expose this action."
@@ -351,8 +351,7 @@ class ActionBackend:
                 for row in rows
                 if isinstance(row, dict) and "id" in row and "name" in row
             ]
-        for action in ("select", "load", "delete"):
-            actions["turret." + action] = {"id": copy.deepcopy(profiles)}
+        actions["turret.select"] = {"id": copy.deepcopy(profiles)}
         entry = self._stage_cache()
         constraints = {"stage": self._stage_constraints(entry)}
         return {
@@ -651,17 +650,11 @@ class ActionBackend:
         elif preconditions:
             raise ValueError("This action cannot apply stage motion preconditions.")
         if (
-            spec["route"] in {"turret", "frame"}
+            spec["route"] in {"turret", "frame", "operating-settings"}
             and self._preview() is None
             and (spec["route"] == "frame" or not self._description("microscope", fresh=True))
         ):
-            raise ValueError("The reviewed turret image simulator is unavailable.")
-        if action == "turret.upload":
-            from microscope.turret_calibration import validate_profile as validate_turret
-
-            if len(params["profile"].encode("utf-8")) > 2097152:
-                raise ValueError("The turret profile exceeds 2 MiB.")
-            validate_turret(json.loads(params["profile"]))
+            raise ValueError("The microscope service or preview is unavailable.")
         return plan
 
     def _validate_profile_action(self, action, params):
@@ -705,17 +698,21 @@ class ActionBackend:
         if "source_reference" in plan and plan["source_reference"] != self._source_reference():
             raise ValueError("The simulated source reference changed. Submit a new request.")
         route = spec["route"]
-        if route in {"turret", "frame"}:
+        if route in {"turret", "frame", "operating-settings"}:
             preview = self._preview()
             if preview is None:
                 if route == "frame" or not self._description("microscope", fresh=True):
-                    raise ValueError("The reviewed turret image simulator is unavailable.")
+                    raise ValueError("The microscope service or preview is unavailable.")
                 self._take("microscope", page, context)
                 result = context.dispatch(
                     self.service.console.operator,
                     "microscope",
                     page,
-                    "api/turret-calibration/" + spec["command"],
+                    (
+                        "api/" + spec["command"]
+                        if route == "operating-settings"
+                        else "api/turret-calibration/" + spec["command"]
+                    ),
                     params,
                 )
                 return {
@@ -724,6 +721,15 @@ class ActionBackend:
                     ),
                     "result": {"simulated": self.simulated, **result},
                     "error": result.get("error"),
+                }
+            if route == "operating-settings":
+                if spec["command"] == "autofocus-settings":
+                    result = context.dispatch(preview.autofocus_settings, params)
+                else:
+                    result = context.dispatch(preview.travel_limit, params["pulses"])
+                return {
+                    "status": "succeeded",
+                    "result": {"simulated": True, "state": result},
                 }
             if route == "frame":
                 result = context.dispatch(preview.frame)
@@ -953,7 +959,7 @@ class ActionBackend:
         if manager is not None:
             manager.cancel(page)
         if spec["route"] in {"frame", "profile"} or (
-            spec["route"] == "turret" and self._preview() is not None
+            spec["route"] in {"turret", "operating-settings"} and self._preview() is not None
         ):
             return {"status": "unknown", "outcome": "unconfirmed", "simulated": self.simulated}
         try:

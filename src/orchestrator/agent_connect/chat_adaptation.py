@@ -10,8 +10,8 @@ from .actions import descriptors
 
 DOCS = "https://github.com/shc0507/dobot_mg400/blob/main/docs/agent-connect/"
 REVIEWED_DOCUMENTS = {
-    "project-knowledge.md": "564833ec58dbc8e29eac36aa8d7c6cdd24f302891494072ea5a96ac7255b4451",
-    "communication-contract.md": "8045e18a5066b696d1ab318b3387c5cf1c34c0b1108c801702e90d26c2f4492c",
+    "project-knowledge.md": "67deb09c72874e786f28683d2315d5bc3ad26697c4556fb16a9549b572c7d82f",
+    "communication-contract.md": "4a6b931ef41a5cf5896778ed0dd2525735b447cc9ab163258df63117f4c743d3",
 }
 
 

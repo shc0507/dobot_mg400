@@ -183,6 +183,22 @@ def create_app(service, *, base_path="/"):
     def turret_calibration_state():
         return jsonify(service.turret_calibration_state())
 
+    @app.get(prefix + "/api/focus-travel-limit")
+    def focus_travel_limit():
+        return jsonify(service.focus_travel_limit())
+
+    @app.post(prefix + "/api/focus-travel-limit")
+    def set_focus_travel_limit():
+        return jsonify(service.set_focus_travel_limit(body(), request.headers["X-MG400-Client"]))
+
+    @app.get(prefix + "/api/autofocus-settings")
+    def autofocus_settings():
+        return jsonify(service.autofocus_settings())
+
+    @app.post(prefix + "/api/autofocus-settings")
+    def set_autofocus_settings():
+        return jsonify(service.set_autofocus_settings(body(), request.headers["X-MG400-Client"]))
+
     @app.post(prefix + "/api/turret-calibration/<action>")
     def turret_calibration_action(action):
         return jsonify(

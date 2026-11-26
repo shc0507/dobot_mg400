@@ -4,7 +4,7 @@
 
 The `microscope` package provides autofocus, objective switching, image calibration, and side-camera capture on Linux.
 It runs without a desktop or Tk.
-The contract service enforces focus-reference, travel-limit, and turret-clearance checks.
+The contract service checks the selected profile and objective identity before a turret switch.
 The Furnace workspace of the Lab Console uses the service for daily controls. Direct algorithm calls do not acquire the service lease or provide its interlocks.
 Before real motion, an operator must establish safe focus travel and clearance from the furnace window.
 
@@ -68,16 +68,17 @@ Cleanup failures produce a nonzero exit status.
 Objective IDs: `0` = 5x, `1` = 10x, `2` = 20x, `3` = 50x.
 
 Real startup requires reference-aware firmware.
-The `H-06` measured values of the current microscope are fixed in `src/microscope/calibrate.py`:
+The supervised command-line tools use these fixed values from `src/microscope/calibrate.py`:
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `FOCUS_LIMITS` | `0,10000` | Focus limits in `MICRO 4` pulses, including zero |
-| `SWITCH_FOCUS` | `0` | Clearance position. Without a home switch, it must be `0` |
+| `FOCUS_LIMITS` | `0,10000` | Legacy tool focus bounds in `MICRO 4` pulses; these do not measure the current Console's physical position |
+| `SWITCH_FOCUS` | `0` | Legacy tool clearance origin; the Console switches at the current focus height |
 | `HOME_SWITCH` | `False` | No focus home switch |
 | `NUDGE_WINDOW` | `20` | Turret window for `objective_nudge`, in full steps from `0` through `20`. When it is `0`, the service refuses every nudge |
 
-Change these constants after you replace the microscope or measure it again.
+Verify the legacy tool measurements before using those tools. The Console uses an operator-set cumulative focus travel budget instead.
+For each Console operation, the service sets a relative pulse origin and firmware bounds at plus or minus the budget. These bounds are not measured mechanical endpoints.
 
 Do not copy demo limits to hardware.
 Route paths below are relative to the base path `/`.
@@ -88,28 +89,33 @@ The control lease lasts 3 seconds and must be renewed during work.
 | Route | Use |
 | --- | --- |
 | `GET /api/describe` | Contract version, supported commands, objective IDs and names, and lease behavior. |
-| `GET /api/state` | Focus position and zero state, limits, objective ID, turret offset, camera state, busy state, faults, and command result. |
+| `GET /api/state` | Focus position and reference, limits, objective ID, turret offset, selected profile, visual alignment, motor power, cameras, faults, and command result. |
 | `GET /api/events` | Service event history. |
 | `GET /api/turret-calibration` | Manual calibration session, draft, saved profiles, and selection. |
-| `POST /api/turret-calibration/<action>` | `begin`, `record`, `finish`, `cancel`, `save`, `load`, `select`, `delete`, or `upload`, with microscope control. |
+| `POST /api/turret-calibration/<action>` | `begin`, `record`, `record_initial`, `finish`, `cancel`, `save`, `load`, `select`, `delete`, or `upload`, with microscope control. Calibration does not drive motors. |
 | `GET /api/turret-calibration/profile/<id>` | Download a saved profile as JSON. |
+| `GET /api/focus-travel-limit`, `POST /api/focus-travel-limit` | Read `focus_travel_limit_pulses`. A human or authorized agent can set it with `{"pulses": 20000}` while holding an idle microscope lease. This changes no motor position. |
+| `GET /api/autofocus-settings`, `POST /api/autofocus-settings` | Read the 4 search half-ranges. With an idle microscope lease, a human or authorized agent can set any nonempty subset of `five_x_half_range_pulses`, `ten_x_half_range_pulses`, `twenty_x_half_range_pulses`, and `fifty_x_half_range_pulses`. All supplied values must be valid; the service then saves them together and leaves omitted fields unchanged. |
 | `POST /api/heartbeat`, `POST /api/renew`, `POST /api/release` | Acquire, renew, or release ordinary control. |
 | `POST /api/command` | Submit an action and its parameters. A `202` response returns a command ID, not a completion proof. |
 | `POST /api/stop` | Stop from any client with an `X-MG400-Client` header, without a controlling lease. Read its `confirmed`, `pending`, or `unconfirmed` result. |
 
-The command actions are `select_objective` with `id`, `objective_nudge` with `steps`, `autofocus` with `mode` (`full` or `local`), `focus_move` with relative `steps`, `home_focus`, and `snapshot` with an optional `path`.
+The motion actions include `select_objective` with `id`, `objective_nudge` with `steps`, `autofocus` with `mode` (`full` or `local`), and `focus_move` with relative `steps`.
+`rough_focus_5x` approaches the saved initial 5x camera Y. `autofocus_sequence` runs 5x → 10x → 20x → 50x and stops on failure. Both have no parameters and require a freshly identified 5x objective before movement. `snapshot` accepts an optional `path`.
+All 6 motion actions require a selected, complete `schema_version: 5` profile that matches the configured side camera. Older profiles cannot operate these commands.
 Read the command ID in `last_command` and its result before the next action.
-Each `select_objective` turn follows a completed clearance move and a fresh stationary-position check.
-Before it moves, `select_objective` checks 1 side-camera frame. With a selected turret profile, this check requires only an objective marker in focus and fully visible. It then moves focus to clearance and uses a new frame to identify the objective against the profile. Without a selected profile, it uses the previous locator before moving.
-If the initial image check fails, nothing moves, the focus zero stays known, and the service latches no fault. If profile identification fails after the clearance move, no turret turn starts. `last_command.message` gives the cause.
+`select_objective` accepts any objective in any order. It requires neither prior autofocus nor a fresh sharpness check.
+Before it moves, `select_objective` checks the current objective marker against the selected profile. The marker must be clear and fully visible.
+It keeps the current focus height while aligning the target objective by its recorded X. It commands no focus movement. It does not restore a per-lens camera Y or run autofocus on the target lens.
+If an image check fails, the command stops before its next move. `last_command.message` gives the cause.
 The turret has a gap between objective `3` and objective `0`.
-`select_objective` turns the turret through the objectives between the current and the target objective. It never turns across the gap.
+`select_objective` can pass intermediate objectives without autofocus. It never turns across the gap.
 If a turret turn fails, `objective_id` is `null`.
 
 `objective_nudge` turns the turret `steps` full steps at the current focus position. It does not move to the clearance position first. The `steps` value is `-10`, `-1`, `1`, or `10`.
 A nudge uses the turret call of the supervised setup console: `MICRO 4`, turret speed `40` pulses/second, and `4` pulses for each full step.
 The service checks the end position, then disables the turret motor.
-A nudge requires a known zero.
+A nudge requires a ready profile and a known turret offset. Before movement, the service checks the current marker and establishes a relative focus reference.
 
 In `GET /api/state`, `objective_offset_steps` is the turret offset: the full steps of nudges after `select_objective` aligned an objective.
 `objective_offset_limit_steps` is the value of `NUDGE_WINDOW`.
@@ -122,73 +128,67 @@ If the identified objective differs from the objective of the offset, the offset
 The offset is `null` when the service starts, and after a nudge or a turret turn fails or stops.
 While the offset is `null`, the service refuses nudges. First select an objective other than the current one.
 
-Focus moves and autofocus stay within the configured limits and require a known zero.
-A full autofocus scan uses a window centered inside the measured range.
-A local scan uses a smaller window near the current position.
-The service first moves the scan center inside the limits when clearance is at a range endpoint.
+Focus moves and autofocus use a fresh relative pulse reference. Only rough 5x positioning uses camera Y. It can make small automatic moves to measure direction and response before approaching the initial point.
+Autofocus uses microscope-image sharpness. Each objective has its own configurable search half-range in quarter-step pulses. Defaults are `5000` for 5x, 10x and 20x, and `3000` for 50x. Saved settings override these defaults. Neither the search range nor the cumulative travel budget proves a physical travel range.
 Snapshot creates a new PNG under the run root. It refuses an existing destination with HTTP 400 before dispatch.
 Its returned `captured_at` preserves the source clock. Real and demo main-camera frames use host wall time. Side-camera frames use monotonic receive time.
 These values do not measure sensor exposure time.
 
-## Focus zero and control handoff
+## Focus reference and control handoff
 
-With a configured home switch, `home_focus` establishes zero and installs the configured firmware limits.
-Without a switch, an operator must place focus at the verified clearance position before setting zero.
-That position is `0`. The service does not move to an unknown clearance position automatically.
-The current focus gears can slip. Pulse counts are relative to the last zero.
-Before each use, refocus the 50x objective on the sample and set zero in the console (see [Lab Console operation](#lab-console-operation)).
-This focus position is the clearance zero. Positive focus motion raises the objectives.
+The Console uses 4 turret X records and 1 initial 5x image. It has no **Set focus zero** button.
+The initial image provides a rough starting point, not proof that the current sample is in focus. Other objectives do not use recorded camera Y for focus.
+Select objectives directly in any order. Run **Autofocus** separately when needed. The operator is responsible for physical clearance and selection order.
+The optional combined sequence starts at 5x, approaches its initial point, and verifies autofocus before each next objective. It keeps focus powered between objectives and checks the final lens again after releasing focus. Failure or Stop prevents further steps.
+Focus pulse counts are relative measurements. The gears can slip, and the released focus motor does not hold position.
+The service checks fresh camera observations before profile-based movement. `focus_reference: "relative_command"` means the pulse position belongs to the current command, not an absolute physical coordinate.
+The manual/rough budget defaults to `20000` quarter-step pulses. It must be an integer from `1` to `2147483647`. Choose a value suitable for the mechanism. The service saves it in `/var/lib/mg400/calibration/microscope/focus-travel-limit.json`.
+Each autofocus half-range accepts integers from `4` to `1000000`. The service saves all ranges in `/var/lib/mg400/calibration/microscope/autofocus-settings.json`. An older file with only the 5x setting keeps that value and uses the defaults for the other lenses. A single autofocus command has a cumulative budget of `16` times its half-range, plus the manual/rough budget for 5x positioning. The combined budget is `16` times the sum of the 4 half-ranges, plus the manual/rough budget. Each command freezes its settings when accepted. The service does not silently shrink the search to the manual budget.
 
-`set_focus_zero` is an ordinary command without parameters. The lease holder sends it with `POST /api/command`. Other clients receive HTTP 409.
-A `202` response returns a command ID. Read the command result before the next action.
-The service refuses this command with HTTP 409 when a home switch is configured.
-The service checks stationary axes, sets `MICRO 4`, establishes zero, installs limits, and verifies the firmware result.
+After work, release control through `POST /api/release` before another client acquires control.
+Release does not extend the lease. A later operation must check the current reference again.
 
-After zero succeeds, release control through `POST /api/release` before another client acquires control.
-A healthy idle release can retain the verified reference only until the former lease's remaining deadline.
-The fresh check requires stationary axes, enabled focus, and matching zero, limits, and firmware session.
-The next client must acquire control before that deadline. Release does not grant an additional lease period.
-If the check fails or the deadline expires, the service stops and disables both motors and invalidates zero.
-
-Explicit stop, lease expiry, firmware reset, and focus-reference changes invalidate the service's zero.
-The service refuses a focus move past the limits with HTTP 409 before motion. Zero stays known.
-A refused or failed command also stops both motors and invalidates zero. A command that cannot identify the objective keeps zero.
-A refused or failed camera command (snapshot, recording, stabilization) does not stop the motors, change zero, or lock the service.
+Successful motion releases focus and clears its internal pulse reference. Autofocus success also requires a final sharpness check after release. The next motion requires a new camera observation.
+Explicit stop, lease expiry, firmware reset, and focus-reference changes also invalidate the reference.
+The service checks each requested focus move against the active firmware bounds before sending its movement pulses.
+A command can pass admission with HTTP `202`, then fail an image or travel check in its worker. Read `last_command.result` and `last_command.message`.
+Accepted visual commands that fail request Stop/Disable cleanup and clear the reference. Failure to identify an objective does not preserve that reference.
+A request rejected during admission starts no command. For example, a missing ready profile or a known out-of-range turret nudge returns HTTP `409`.
+A refused or failed camera-only command (snapshot, recording, stabilization) does not stop the motors, change the reference, or lock the service.
 Unknown command or stop outcomes latch a fault and lock ordinary commands.
 Stop remains available, but successful stop does not clear that fault.
 `stop_recording` and `record_with_sequence` with `enabled: false` also remain available.
-After resolving the cause, reconnect through a controlled service restart and establish zero again.
-Never retry unknown motion automatically or re-establish zero from a cached position.
+After resolving the cause, reconnect through a controlled service restart and check the selected profile and current camera view.
+Never retry unknown motion automatically or establish a reference from a cached position.
 
 ## Lab Console operation
 
 The microscope service has no web page. Operate the microscope in the Furnace workspace of the Lab Console:
 
 1. On the microscope card, select **Take control**. If another client holds the lease, the console cannot get control. It does not take over automation control.
-2. Before motion, read the focus position and zero state on the card.
-3. Choose a saved complete profile in **Lens calibration** beside the objective buttons. The 5x, 10x, 20x and 50x buttons use that profile. The selection persists after a service restart. Buttons show the objective magnifications from `id.names` of `select_objective` in `GET /api/describe`. An objective without a name shows its ID.
+2. Open **Operate**. Read the selected profile, autofocus status, last rough-position observation, and motor power state.
+3. Choose a saved complete profile in **Lens calibration** beside the objective buttons. The 5x, 10x, 20x and 50x buttons use its recorded X. The selection persists after a service restart. Buttons show the objective magnifications from `id.names` of `select_objective` in `GET /api/describe`. An objective without a name shows its ID.
 4. At working focus, open **Turret** and use **−10**, **−1**, **+1**, or **+10** to turn the turret in full steps. The text beside them shows the turret offset and its limit.
-5. Use **Autofocus** (local) or **Full autofocus** to focus automatically.
+5. Use **Autofocus** for the current lens. It uses the configured half-range and the service's `local` mode. At 5x, the service first approaches the initial point. To run the full order automatically, seat 5x, then select **Focus 5× → 50×**.
 6. Enter a pulse count between **−** and **+**, then use **−** or **+** to jog within the limits.
 7. Open **Recording** and use **Save snapshot** to save a snapshot.
 
-When zero is unknown, the objective, nudge, and jog buttons are unavailable.
+When no ready profile is selected, the objective, nudge, jog, rough-position, and autofocus buttons are unavailable. With a ready profile and control, any objective can be selected while idle, without prior autofocus.
 A nudge button is unavailable when the turret offset is unknown, or when the nudge would move the offset outside its limit.
 When `objective_offset_limit_steps` is `0`, the card shows no nudge buttons.
 When a microscope command fails, the card shows the command and its cause until the next command result.
 The console sends each command 1 time and does not retry it. Read the command result before the next action.
 **Stop** does not require control.
-When the console stops renewing, lease expiry stops and disables both motors and invalidates zero.
+When the console stops renewing, lease expiry stops and disables both motors and invalidates the reference.
 
-Set focus zero:
-
-1. Take microscope control.
-2. Focus the 50x objective on the sample. This position is the verified clearance position.
-3. Select **Set focus zero**.
-
-The console sends the zero command 1 time with its own lease. It shows no confirmation dialog.
-The tooltip of **Set focus zero** gives a reminder: the focus gears can slip, so re-zero at the 50x focus before each use.
-The console has no focus homing action, because the lab microscope has no home switch.
+Use **Rough position 5×** to approach the initial 5x image without an autofocus scan. The service checks the seated lens from a fresh frame.
+Set **Manual / rough travel limit** with a custom whole number or a preset: `200`, `500`, `1000`, `2000`, or `20000`. Select **Apply** while idle. This limits cumulative manual/rough focus pulses, not absolute position. For autofocus, select **Lens**, enter **Search half-range**, then select **Apply**. Presets are `100`, `300`, `500`, `1500`, `3000`, `5000`, and `10000`. A half-range of `5000` means ±`5000`, a total span of `10000`. The page shows all 4 saved ranges. Switching the lens retains unsaved edits; Apply saves only the selected lens. An authorized agent can change these operating settings. Calibration editing remains human-only.
+**Autofocus status** shows the lens, phase, scan stage, score, verified steps, actual scan half-range, total movement budget, and failure cause. `autofocus_run.search_half_range_pulses` reports the range frozen for the active or last scan. The total movement budget shows cumulative pulses used and allowed, not the search span. Completed steps come from service verification. During the combined sequence, intermediate steps are verified while powered; the final lens also receives a release check.
+**Calibration** contains the human calibration procedure and profile management. **Stop** remains visible in both subsections.
+Motor power shows whether each motor is enabled, released, or asleep. Movement wakes a sleeping driver before pulses start.
+Camera Y is the last rough 5x observation. It is not continuous position tracking while the service is idle.
+The focus motor releases after a completed visual operation. It stays enabled between moves within that operation, including an autofocus scan.
+Long inactivity puts the drivers to sleep. See [motor firmware](../firmware/microscope-motion-v2/README.en.md).
 
 | Preview route | Result |
 | --- | --- |
@@ -196,7 +196,7 @@ The console has no focus homing action, because the lab microscope has no home s
 | `GET /api/camera/microscope/frame.jpg`, `GET /api/camera/side/frame.jpg` | One JPEG at the full camera size, or `204` when no newer frame is available. |
 | `GET /api/camera/microscope/still.png`, `GET /api/camera/side/still.png` | The latest frame as a lossless PNG at full size, or `204` when no frame is available. It takes no query parameters. |
 
-The side reader runs only during `select_objective`. At other times, the side routes return `503`.
+The side reader runs during objective switching, visual focus operations, and calibration captures. Outside these operations, the side routes can return `503`.
 Preview requests accept an optional nonnegative `after_id` cursor.
 Each JPEG carries `X-Frame-Id` and `X-Captured-At` headers. Main-camera timestamps use host wall time, while side-camera timestamps use monotonic receive time.
 Do not compare timestamps across cameras or treat them as sensor exposure times.
@@ -321,8 +321,8 @@ Do not substitute repository paths or shared public directories for the configur
 The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 For the service and preview, go2rtc owns its V4L2 capture.
-During `select_objective`, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
-The side reader runs only during this command. The preview relay does not serve a side stream above `1280x720`.
+During a camera-guided operation, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
+The reader closes after the operation. The preview relay does not serve a side stream above `1280x720`.
 It uses the newest complete JPEG, drops incomplete frames, and reconnects after a connection failure.
 It rejects redirects and ignores environment proxy settings.
 Keep the cameras on their fixed ports and never reset the shared USB hub.
@@ -355,7 +355,7 @@ Capture errors stop acquisition and remain visible to the caller.
 
 Set `MG400_MICROSCOPE_SERIAL` to the board's `/dev/serial/by-id/` path.
 `MotorController.connect()` explicitly opens the port at `115200` baud and asks `VERSION`.
-The `VERSION microscope-axes 1.x.y` reply enables waits for focus completion replies.
+The `VERSION microscope-axes 1.x.y` and `VERSION microscope-axes 2.x.y` replies enable waits for focus completion replies.
 Modern focus moves wait for `DONE FOCUS POS` after command acceptance.
 Only the exact `ERR UNKNOWN_COMMAND` reply selects the legacy computed wait.
 An unknown version or failed handshake refuses the connection.
@@ -368,23 +368,29 @@ Stop requests can interrupt a completion wait.
 Unknown transport or completion outcomes latch a fault and require an explicit reconnect.
 See the [firmware guide](../firmware/microscope-axes/README.en.md) for commands, wiring, and firmware limits.
 
+The [motion firmware](../firmware/microscope-motion-v2/README.en.md) adds timer pulses, speed ramps, and sleep outputs on D6 and D7.
+It releases idle focus after 30 seconds and sleeps each inactive axis after 120 seconds. The service can release focus earlier after an operation.
+Autofocus with this firmware samples settled positions because speed changes during a move. The search is centered on the current focus position after any rough 5x positioning.
+
 ## Guided turret calibration
 
-Open **Furnace → Turret calibration** and take microscope control. Objective markers use `DICT_4X4_50` and have sides of about `8 mm`: `0` = 5x, `1` = 10x, `2` = 20x, and `3` = 50x.
+Open **Furnace → Microscope → Calibration** and take microscope control. Objective markers use `DICT_4X4_50` and have sides of about `8 mm`: `0` = 5x, `1` = 10x, `2` = 20x, and `3` = 50x.
 
-1. We recommend that you first move the focus manually to the configured clearance position. Keep focus fixed while you record all objectives.
-2. Enter a profile name and select **Start calibration**. This disables only the turret motor. It does not move, enable, or zero focus.
-3. Manually turn each lens into its mechanical detent. Keep its marker in focus and fully visible. Select **Record** for that lens. The service checks 3 fresh frames and retains a preview with the measured corners. Use **Retake** to replace a capture.
-4. After recording all 4 objectives, select **Finish calibration**. Then select **Save & use** to save and select the profile. To end early, select **End session**. Then use **Save profile** to save the incomplete profile. The turret stays disabled. Use **Load draft** to resume an incomplete saved profile.
-5. Choose a complete profile in **Lens calibration** beside the objective buttons. You can also use **Select** in the profile list. **Upload JSON**, **Download**, and **Delete** manage saved profiles. Uploads must match the turret profile format and be no larger than `2 MiB`. Each accepted upload gets a new profile ID.
+1. Enter a profile name and select **Start calibration**. The service releases both motors and checks that they are disabled. All calibration adjustment is by hand.
+2. Choose any objective in the page, then turn that lens into its detent by hand. Use Camera3 to check the marker. Select **Record** to save its turret X after checking a short burst of fresh frames. No motor moves.
+3. Repeat for all 4 objectives, with 1 X record per lens. A retake replaces only that lens's turret record.
+4. Seat 5x and focus the sample by hand using the live microscope image. Select **Record 5× starting point**. This separate image provides rough camera Y only. Select **Finish calibration**, then **Save & use**.
+5. To stop early, select **End session**, then **Save profile**. Use **Load draft** to resume. **Upload JSON**, **Download**, and **Delete** manage profiles. Uploads must match the format and stay within `2 MiB`. Each accepted upload receives a new profile ID.
 
-The service stores profiles under `/var/lib/mg400/calibration/microscope/turret_profiles`. A complete profile contains captures for all 4 objectives. Recorded focus is informational and does not affect profile completeness or selection. Unknown focus stays unknown instead of becoming `0`. The objective buttons use the selected profile, and the selection persists after a service restart.
+The service stores profiles under `/var/lib/mg400/calibration/microscope/turret_profiles`. A ready profile needs all 4 turret records and the separate initial 5x capture. The service checks 3 fresh frames for each capture and stores marker corners and a preview. The selected profile persists after restart.
 
-The selected profile must be complete and match the configured side camera. The current focus zero must be known before automatic movement. The focus axis must reach the configured clearance position before the turret turns. Calibration mode does not infer the current objective from a manually recorded image.
+The selected profile must match the configured side camera. Marker X aligns the turret. Only the initial 5x capture supplies camera Y for rough positioning. Fine focus uses the microscope image. Image coordinates are not a physical height measurement.
 
-Alignment compares the current objective marker with its recorded image coordinates. Keep the camera position, orientation, focus, and zoom fixed. After changing any of them, record all 4 objectives again. The previous locator remains available until a new profile is first selected. After deleting the selected profile, select another complete profile before automatic switching.
+Keep the camera position, orientation, focus, and zoom fixed. After changing any of them, repeat all 4 turret records and the initial 5x capture. A profile does not prove mechanical clearance. The operator must check that the mechanism permits the autofocus search and the chosen objective switches.
 
-The profile format uses `schema_version: 2` and `dictionary: "DICT_4X4_50"`. Each capture stores `shape`, `objective_corners`, and `preview_jpeg`. Recreate older profiles before using them.
+The format uses `schema_version: 5` and `dictionary: "DICT_4X4_50"`. `captures` stores turret records; `initial_5x_capture` stores the separate initial image. Each capture has `shape`, `objective_corners`, and `preview_jpeg`. Reference coordinates use a width of `3840` pixels. Both X and Y scale by the image width, so the reference height follows the actual aspect ratio. Older profiles remain readable and uploadable. **Load draft** copies their turret X records into a new profile ID and requires a new initial 5x capture. It does not change the old saved file or reuse other lenses' Y as focus targets.
+
+Only a human operator creates, edits, uploads, or deletes turret profiles. An agent can select a saved ready profile and use the commands in **Operate**. Selecting a profile starts no motion.
 
 ## Supervised calibration
 
@@ -409,7 +415,7 @@ This ownership excludes competing capture on that device. It does not exclude un
 
 ### Reference and motion rules
 
-These rules apply to calibration.
+These rules apply to the interactive command-line calibration tools below. The Console's guided turret and initial-focus calibration uses its own procedure above.
 The supervised setup console has separate manual measurement rules below.
 
 The measured limits and clearance use `MICRO 4` coordinates.

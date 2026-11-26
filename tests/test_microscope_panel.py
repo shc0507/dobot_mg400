@@ -8,7 +8,12 @@ import cv2
 import numpy as np
 import pytest
 from test_microscope_service import demo_rig as _demo_rig
-from test_microscope_service import service_post, wait_command
+from test_microscope_service import (
+    establish_manual_reference,
+    install_visual_profile,
+    service_post,
+    wait_command,
+)
 
 from labkit.errors import ServiceError
 from labkit.events import EventLog
@@ -438,19 +443,17 @@ def test_stream_disconnect_releases_slot_after_generator_started():
         response.close()
 
 
-def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_rig):
+def test_actual_demo_visual_profile_on_contract_lease_and_ordinary_controls(demo_rig):
     rig = demo_rig()
-    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 409
+    install_visual_profile(rig)
+    assert service_post(rig, "command", {"action": "focus_move", "steps": 10}).status_code == 409
     assert service_post(rig, "heartbeat").status_code == 200
-    assert (
-        service_post(rig, "command", {"action": "set_focus_zero", "confirm": False}).status_code
-        == 400
-    )
-    zero = service_post(rig, "command", {"action": "set_focus_zero"})
-    assert zero.status_code == 202
+    for action in ("set_focus_zero", "home_focus"):
+        assert service_post(rig, "command", {"action": action}).status_code == 400
     assert service_post(rig, "renew").status_code == 200
-    state = wait_command(rig, zero.json["command_id"])
-    assert state["last_command"]["result"] == "ok" and state["focus_zero_known"]
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 62}).status_code == 200
+    )
     for action, args in [
         ("focus_move", {"steps": 10}),
         ("autofocus", {"mode": "local"}),
@@ -460,24 +463,27 @@ def test_actual_demo_operator_zero_on_contract_lease_and_ordinary_controls(demo_
         assert response.status_code == 202, response.json
         state = wait_command(rig, response.json["command_id"])
         assert state["last_command"]["result"] == "ok", state
+        assert not state["focus_zero_known"]
+        assert not rig.port.sim.focus.enabled
     assert rig.client.get("/api/camera/microscope/frame.jpg").status_code == 200
-    # The side reader runs only during select_objective.
+    # Motion opens the side reader only for objective identification and rough positioning.
     assert rig.client.get("/api/camera/side/frame.jpg").status_code == 503
     stop = service_post(rig, "stop", {"wait_s": 1}, actor="other-operator")
     assert stop.status_code == 200 and stop.json["stop"] == "confirmed"
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-def test_focus_zero_refuses_a_client_without_the_lease(demo_rig):
+def test_visual_focus_refuses_a_client_without_the_lease(demo_rig):
     rig = demo_rig()
+    install_visual_profile(rig)
     assert service_post(rig, "heartbeat", actor="automation").status_code == 200
     assert service_post(rig, "heartbeat", actor="operator").status_code == 409
     assert (
-        service_post(rig, "command", {"action": "set_focus_zero"}, actor="operator").status_code
+        service_post(
+            rig, "command", {"action": "focus_move", "steps": 10}, actor="operator"
+        ).status_code
         == 409
     )
-    response = service_post(rig, "command", {"action": "set_focus_zero"}, actor="operator")
-    assert response.status_code == 409
     assert not any(command == "FOCUS ZERO" for command in rig.port.commands)
 
 
@@ -555,6 +561,7 @@ def recording_rig(tmp_path):
 
     from furnace.recordings import private_open
     from microscope.service import MicroscopeConfig
+    from microscope.turret_calibration import TurretProfileStore
 
     camera, readings = RecordingCamera(), RecordingReadings()
     clock = [10.0]
@@ -577,6 +584,7 @@ def recording_rig(tmp_path):
         recordings_root=tmp_path / "recordings",
         recording_finalizer=finalize,
         clock=lambda: clock[0],
+        turret_store=TurretProfileStore(tmp_path / "profiles"),
     )
     service.start(background=False)
     service.lease.acquire("operator")
@@ -587,6 +595,8 @@ def recording_rig(tmp_path):
         clock=clock,
         calls=calls,
         root=tmp_path / "recordings",
+        client=create_app(service).test_client(),
+        port=service._demo_port,
     )
 
     def command(action, args):
@@ -669,7 +679,7 @@ def test_recording_exact_id_start_finish_and_private_retained_outputs(recording_
 @pytest.mark.parametrize("cause", ["reused-id", "unhealthy-arm"])
 def test_failed_recording_start_keeps_motors_and_focus_zero(recording_rig, cause):
     rig = recording_rig
-    assert rig.command("set_focus_zero", {})["focus_zero_known"]
+    establish_manual_reference(rig)
     if cause == "reused-id":
         ident = "d" * 32
         rig.command("start_recording", {"recording_id": ident, "mode": "live"})
@@ -729,17 +739,17 @@ def test_active_recording_authority_is_irreversible(recording_rig, revoke):
     assert state["recording"]["summary"] is None
 
 
-def test_jog_past_focus_limit_is_refused_before_dispatch_during_recording(recording_rig):
+def test_jog_past_focus_travel_budget_keeps_recording_and_sends_no_move(recording_rig):
     rig = recording_rig
-    assert rig.command("set_focus_zero", {})["focus_zero_known"]
+    install_visual_profile(rig)
     ident = "c" * 32
     rig.command("start_recording", {"recording_id": ident, "mode": "live"})
-    # Zero is inside the demo limits -200..200, so -300 leaves them.
-    with pytest.raises(ServiceError, match="exceeds the configured limits") as refused:
-        rig.service.command("focus_move", {"steps": -300}, "operator")
-    assert refused.value.status == 409
-    state = rig.service.snapshot()
-    assert state["focus_zero_known"] and state["recording"]["status"] == "recording"
+    # This is an operation travel budget, not an absolute physical position limit.
+    state = rig.command("focus_move", {"steps": -1001})
+    assert state["last_command"]["result"] == "failed"
+    assert "travel" in state["last_command"]["message"].lower()
+    assert "FOCUS MOVE -1001" not in rig.port.commands
+    assert not state["focus_zero_known"] and state["recording"]["status"] == "recording"
     state = rig.command("stop_recording", {"recording_id": ident})
     assert state["recording"]["status"] == "completed" and rig.calls == [ident]
 
@@ -751,7 +761,7 @@ def test_motor_refusal_or_fault_keeps_recording_until_stop_recording(
     from microscope.motors import CommandRejected
 
     rig = recording_rig
-    rig.command("set_focus_zero", {})
+    install_visual_profile(rig)
     ident = "d" * 32
     rig.command("start_recording", {"recording_id": ident, "mode": "live"})
     recording = rig.service._recording

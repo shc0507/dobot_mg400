@@ -144,6 +144,13 @@ class CacheStateProvider:
                             "focus_position_pulses",
                             "focus_zero_known",
                             "focus_limits_pulses",
+                            "focus_travel_limit_pulses",
+                            "focus_reference",
+                            "turret_profile",
+                            "visual_focus",
+                            "autofocus_run",
+                            "autofocus_settings",
+                            "motor_power",
                             "cameras",
                         ),
                     )

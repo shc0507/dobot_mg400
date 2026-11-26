@@ -69,15 +69,17 @@ function statusBody(overrides = {}) {
       flow: { connected: true, gas_channels: [0, 1, 2].map(i => ({ channel_index: i, gas_name: `Gas ${i + 1}` })) },
     },
     microscope: {
-      connected: true, busy: false, locked: false, objective_id: 2, focus_position_pulses: 1200, focus_zero_known: true,
+      connected: true, busy: false, locked: false, objective_id: 2, focus_position_pulses: 1200, focus_zero_known: false, turret_profile: { ready: true, id: "a".repeat(32) }, motor_power: { objective: { enabled: false, sleeping: true }, focus: { enabled: false, sleeping: false } },
       objective_offset_steps: 0, objective_offset_limit_steps: 20,
-      focus_limits_pulses: [0, 10000], recording: { status: "idle" }, recording_sequence: { armed: false }, stabilization: false,
+      autofocus_run: { phase: "complete", objective_id: 2, verified: true, completed: [2], score: 42.5, error: null },
+      autofocus_settings: { five_x_half_range_pulses: 5000, ten_x_half_range_pulses: 300, twenty_x_half_range_pulses: 300, fifty_x_half_range_pulses: 300 },
+      focus_limits_pulses: [0, 10000], focus_travel_limit_pulses: 1000, recording: { status: "idle" }, recording_sequence: { armed: false }, stabilization: false,
     },
     ...overrides,
   };
 }
 
-async function load({ owns = ["furnace", "microscope"], status = statusBody(), cameras = null, turret = null } = {}) {
+async function load({ owns = ["furnace", "microscope"], status = statusBody(), cameras = null, turret = null, requestOverride = null } = {}) {
   delete require.cache[path];
   const logic = require(path);
   const calls = [];
@@ -108,6 +110,15 @@ async function load({ owns = ["furnace", "microscope"], status = statusBody(), c
     describe: async device => (device === "furnace" ? FURNACE_DESCRIBE : SCOPE_DESCRIBE),
     request: async (name, data) => {
       calls.push(data === undefined ? ["request", name] : ["request", name, data]);
+      if (requestOverride) {
+        const result = requestOverride(name, data);
+        if (result !== undefined) return result;
+      }
+      if (name === "microscope/focus-travel-limit") return { focus_travel_limit_pulses: data?.pulses ?? 1000 };
+      if (name === "microscope/autofocus-settings") {
+        status.microscope.autofocus_settings = { ...status.microscope.autofocus_settings, ...data };
+        return { ...status.microscope.autofocus_settings };
+      }
       return data === undefined ? status : { outcome: "accepted", command_id: "1" };
     },
     consoleRequest: async (url, data) => { calls.push(["console", url, data]); return {}; },
@@ -164,14 +175,6 @@ test("sequence params follow the furnace page rules", () => {
   });
   assert.throws(() => sequenceParams([{ temperature_c: "100", ramp_rate_c_per_min: "0", hold_minutes: "1", gas: {} }], {}, ""), error => error.key === "seq.invalid");
   assert.throws(() => sequenceParams([], {}, ""), error => error.key === "seq.none");
-});
-
-test("focus bar uses the measured limits only", () => {
-  const { focusFraction } = require(path).logic;
-  assert.equal(focusFraction(1200, [0, 10000]), 0.12);
-  assert.equal(focusFraction(null, [0, 10000]), null);
-  assert.equal(focusFraction(5, []), null);
-  assert.equal(focusFraction(20000, [0, 10000]), 1);
 });
 
 test("every English string has a Chinese string", () => {
@@ -355,6 +358,8 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
   role(root, "jog").type("50");
   role(root, "jog-down").click();
   await flush();
+  assert.equal(role(root, "af-full"), undefined);
+  assert.doesNotMatch(root.textContent, /Full autofocus/);
   role(root, "af-local").click();
   await flush();
   role(root, "record").click();
@@ -366,6 +371,36 @@ test("microscope objective, jog, autofocus and recording go through the relay", 
     ["autofocus", { mode: "local" }],
     ["start_recording", { recording_id: "ab".repeat(16), mode: "time_lapse", output_fps: 1, capture_interval_seconds: 30 }],
   ]);
+});
+
+test("direct lens selection allows any order without verified autofocus", async () => {
+  const status = statusBody();
+  status.microscope.objective_id = 0;
+  status.microscope.autofocus_run = { phase: "failed", objective_id: 0, verified: false };
+  const { root, calls, logic, setLang } = await load({ status });
+  for (const id of [3, 1, 0, 2]) {
+    assert.equal(role(root, "objective-" + id).disabled, false);
+    role(root, "objective-" + id).click();
+    await flush();
+    status.microscope.objective_id = id;
+    await logic._internal.poll();
+  }
+  assert.deepEqual(calls.filter(call => call[0] === "relay").map(call => call.slice(2)),
+    [3, 1, 0, 2].map(id => ["select_objective", { id }]));
+  assert.match(root.textContent, /Select any lens directly.*optional autofocus sequence runs 5× → 10× → 20× → 50×/);
+  setLang("zh");
+  assert.match(root.textContent, /可以直接选择任意物镜.*5× → 10× → 20× → 50×/);
+});
+
+test("direct lens selection preserves control, connection, busy, fault and profile guards", async () => {
+  for (const overrides of [{ connected: false }, { busy: true }, { locked: true }, { turret_profile: { ready: false } }]) {
+    const status = statusBody();
+    Object.assign(status.microscope, overrides);
+    const { root } = await load({ status });
+    assert.ok([0, 1, 2, 3].every(id => role(root, "objective-" + id).disabled));
+  }
+  const { root } = await load({ owns: ["furnace"] });
+  assert.ok([0, 1, 2, 3].every(id => role(root, "objective-" + id).disabled));
 });
 
 test("lens calibration stays beside the objective buttons and uses the shared turret lifecycle", async () => {
@@ -416,14 +451,14 @@ test("the 4 turret nudges relay objective_nudge and stay inside the window", asy
   ]);
 });
 
-test("nudges wait for a counted turret offset and the focus zero", async () => {
+test("nudges wait for a counted turret offset and a height profile", async () => {
   const unknown = statusBody();
   unknown.microscope.objective_offset_steps = null;
   let { root } = await load({ status: unknown });
   assert.ok(["nudge-down-10", "nudge-down-1", "nudge-up-1", "nudge-up-10"].every(name => role(root, name).disabled));
   assert.equal(role(root, "nudge-offset").textContent, "Turret offset unknown. Select another objective first.");
   const noZero = statusBody();
-  noZero.microscope.focus_zero_known = false;
+  noZero.microscope.turret_profile = { ready: false };
   ({ root } = await load({ status: noZero }));
   assert.equal(role(root, "nudge-up-1").disabled, true);
   ({ root } = await load({ owns: ["furnace"] }));
@@ -439,23 +474,192 @@ test("nudges are hidden when the service has no nudge window", async () => {
   assert.deepEqual(logic.logic.nudgeSteps(SCOPE_DESCRIBE), [-10, -1, 1, 10]);
 });
 
-test("motion waits for the focus zero, and Set focus zero goes through the relay once without a dialog", async () => {
+test("profile-guided motion does not need a user focus zero", async () => {
   const status = statusBody();
   status.microscope.focus_zero_known = false;
   status.microscope.focus_position_pulses = null;
+  status.microscope.objective_id = 0;
   const { root, calls } = await load({ status });
-  assert.equal(role(root, "objective-0").disabled, true);
-  assert.equal(role(root, "jog-up").disabled, true);
-  assert.equal(role(root, "zero").disabled, false);
-  role(root, "zero").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(calls.filter(call => call[2] === "set_focus_zero"), [["relay", "microscope", "set_focus_zero", {}]]);
-  assert.equal(calls.filter(call => call[1] === "focus-zero").length, 0);
+  assert.equal(role(root, "objective-0").disabled, false);
+  assert.equal(role(root, "jog-up").disabled, false);
+  assert.equal(role(root, "zero"), undefined);
+  assert.equal(role(root, "focus-clearance"), undefined);
+  assert.equal(role(root, "focus-saved-height"), undefined);
+  role(root, "rough-focus-5x").click();
+  await flush();
+  role(root, "autofocus-sequence").click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[0] === "relay"), [
+    ["relay", "microscope", "rough_focus_5x", {}],
+    ["relay", "microscope", "autofocus_sequence", {}],
+  ]);
 });
 
-test("Set focus zero needs microscope control", async () => {
+test("profile absence blocks motion but preserves Stop and calibration access", async () => {
+  const status = statusBody();
+  status.microscope.turret_profile = { ready: false, needs_height_calibration: true };
+  const { root, calls } = await load({ status });
+  assert.equal(role(root, "objective-0").disabled, true);
+  assert.equal(role(root, "af-local").disabled, true);
+  assert.match(role(root, "profile-note").textContent, /record its 5× starting point/);
+  role(root, "scope-tab-calibration").click();
+  assert.equal(role(root, "scope-operate").hidden, true);
+  assert.equal(role(root, "scope-calibration").hidden, false);
+  assert.equal(role(root, "scope-tab-calibration").getAttribute("aria-selected"), "true");
+  role(root, "stop-microscope").click();
+  await flush();
+  assert.ok(calls.some(call => call[0] === "stop" && call[1] === "microscope"));
+  role(root, "scope-tab-operate").click();
+  assert.equal(role(root, "scope-calibration").hidden, true);
+  assert.match(role(root, "motor-power").textContent, /Turret.*Asleep.*Focus.*Released/);
+});
+
+test("rough position and sequence need control but do not rely on a cached lens ID", async () => {
   const { root } = await load({ owns: ["furnace"] });
-  assert.equal(role(root, "zero").disabled, true);
+  assert.equal(role(root, "rough-focus-5x").disabled, true);
+  assert.equal(role(root, "autofocus-sequence").disabled, true);
+  const status = statusBody();
+  status.microscope.objective_id = null;
+  const controlled = await load({ status });
+  assert.equal(role(controlled.root, "rough-focus-5x").disabled, false);
+  assert.equal(role(controlled.root, "autofocus-sequence").disabled, false);
+});
+
+test("human focus travel setting accepts presets and custom pulses without equipment commands", async () => {
+  const { root, calls, notices } = await load();
+  assert.equal(role(root, "focus-travel").value, "1000");
+  assert.ok(role(root, "focus-travel-preset").children.some(option => option.getAttribute("value") === "20000"));
+  assert.match(root.textContent, /manual jogs and rough 5× positioning/);
+  assert.doesNotMatch(root.textContent, /window side|10000 · away/);
+  role(root, "focus-travel-preset").listeners.get("change")({ target: { value: "500" } });
+  assert.equal(role(root, "focus-travel").value, "500");
+  role(root, "focus-travel-apply").click();
+  await flush();
+  assert.match(role(root, "focus-travel-current").textContent, /500/);
+  role(root, "focus-travel").type("735");
+  role(root, "focus-travel-apply").click();
+  await flush();
+  assert.deepEqual(calls.filter(call => call[0] === "request" && call[2]), [
+    ["request", "microscope/focus-travel-limit", { pulses: 500 }],
+    ["request", "microscope/focus-travel-limit", { pulses: 735 }],
+  ]);
+  assert.equal(calls.some(call => call[0] === "relay"), false);
+  for (const value of ["0", "-1", "1.5", "2147483648", ""]) {
+    role(root, "focus-travel").type(value);
+    role(root, "focus-travel-apply").click();
+  }
+  assert.equal(calls.filter(call => call[2]?.pulses).length, 2);
+  assert.match(notices.at(-1)[1], /whole number/);
+  const denied = await load({ owns: ["furnace"] });
+  assert.equal(role(denied.root, "focus-travel-apply").disabled, true);
+});
+
+test("5x search range is separate from manual travel and displays total span", async () => {
+  const { root, calls, notices } = await load();
+  assert.equal(role(root, "af-range").value, "5000");
+  assert.ok(role(root, "af-range-preset").children.some(option => option.getAttribute("value") === "3000"));
+  assert.match(role(root, "af-range-help").textContent, /±5000.*10000 total span/);
+  assert.match(role(root, "af-saved-ranges").textContent, /5×.*±5000.*10×.*±300.*20×.*±300.*50×.*±300/);
+  role(root, "af-range-preset").listeners.get("change")({ target: { value: "1500" } });
+  role(root, "af-range-apply").click();
+  await flush();
+  assert.deepEqual(calls.find(call => call[1] === "microscope/autofocus-settings" && call[2]), ["request", "microscope/autofocus-settings", { five_x_half_range_pulses: 1500 }]);
+  assert.equal(role(root, "focus-travel").value, "1000");
+  assert.match(role(root, "af-range-help").textContent, /±1500.*3000 total span/);
+  for (const value of ["0", "3", "1.5", "1000001", ""]) {
+    role(root, "af-range").type(value); role(root, "af-range-apply").click();
+  }
+  assert.equal(calls.filter(call => call[1] === "microscope/autofocus-settings" && call[2]).length, 1);
+  assert.match(notices.at(-1)[1], /4 to 1000000/);
+  assert.equal(calls.some(call => call[0] === "relay"), false);
+});
+
+test("lens edits survive switches and polls, and Apply changes only the selected lens", async () => {
+  const status = statusBody(), { root, calls, logic } = await load({ status });
+  const selectLens = id => role(root, "af-range-lens").listeners.get("change")({ target: { value: String(id) } });
+  selectLens(1); role(root, "af-range").type("450");
+  selectLens(2); role(root, "af-range").type("600");
+  status.microscope.autofocus_settings = { five_x_half_range_pulses: 5500, ten_x_half_range_pulses: 320, twenty_x_half_range_pulses: 350, fifty_x_half_range_pulses: 400 };
+  await logic._internal.poll();
+  assert.equal(role(root, "af-range").value, "600");
+  assert.match(role(root, "af-draft-note").textContent, /Unsaved value for 20×/);
+  role(root, "af-range-apply").click(); await flush();
+  assert.deepEqual(calls.filter(call => call[1] === "microscope/autofocus-settings" && call[2]), [["request", "microscope/autofocus-settings", { twenty_x_half_range_pulses: 600 }]]);
+  selectLens(1); assert.equal(role(root, "af-range").value, "450");
+  assert.equal(role(root, "af-draft-note").hidden, false);
+  selectLens(0); assert.equal(role(root, "af-range").value, "5500");
+  selectLens(2); assert.equal(role(root, "af-range").value, "600");
+  assert.equal(role(root, "af-draft-note").hidden, true);
+  assert.match(role(root, "af-saved-ranges").textContent, /10×.*±320.*20×.*±600.*50×.*±400/);
+});
+
+test("an old poll and lagging Console cache cannot overwrite a confirmed settings save", async () => {
+  const status = statusBody();
+  let delayed = false, delaySettings = false, finishOld, finishSettings, saved = { ...status.microscope.autofocus_settings };
+  const { root, logic } = await load({ status, requestOverride: (name, data) => {
+    if (name === "status" && delayed) {
+      delayed = false; const old = structuredClone(status);
+      return new Promise(resolve => { finishOld = () => resolve(old); });
+    }
+    if (name === "status") return structuredClone(status);
+    if (name === "microscope/autofocus-settings") {
+      saved = { ...saved, ...data };
+      const snapshot = structuredClone(saved);
+      if (!data && delaySettings) {
+        delaySettings = false;
+        return new Promise(resolve => { finishSettings = () => resolve(snapshot); });
+      }
+      return snapshot;
+    }
+  } });
+  delayed = true;
+  const oldPoll = logic._internal.poll();
+  role(root, "af-range").type("6100"); role(root, "af-range-apply").click(); await flush();
+  finishOld(); await oldPoll;
+  assert.equal(role(root, "af-range").value, "6100");
+  await logic._internal.poll();
+  assert.equal(role(root, "af-range").value, "6100");
+  assert.match(role(root, "af-saved-ranges").textContent, /5×.*±6100/);
+  delaySettings = true;
+  const oldSettings = logic._internal.poll(); await flush();
+  assert.equal(typeof finishSettings, "function");
+  role(root, "af-range").type("6200"); role(root, "af-range-apply").click(); await flush();
+  finishSettings(); await oldSettings;
+  assert.equal(role(root, "af-range").value, "6200");
+  delayed = true;
+  const lateCachedPoll = logic._internal.poll();
+  status.microscope.autofocus_settings = structuredClone(saved);
+  await logic._internal.poll();
+  finishOld(); await lateCachedPoll;
+  assert.equal(role(root, "af-range").value, "6200");
+});
+
+test("autofocus steps reflect verified results and never turn a scan score into success", async () => {
+  const status = statusBody();
+  status.microscope.busy = true;
+  status.microscope.autofocus_run = { phase: "autofocus", objective_id: 1, stage: "fine", verified: false, completed: [0], score: 123.45, sequence: true, search_half_range_pulses: 750 };
+  status.microscope.visual_focus = { travel_used_pulses: 2000, travel_limit_pulses: 12000 };
+  status.microscope.objective_id = 1;
+  let result = await load({ status });
+  assert.match(role(result.root, "af-phase").textContent, /10×.*autofocus.*fine/);
+  assert.match(role(result.root, "af-score").textContent, /123.45/);
+  assert.match(role(result.root, "af-scan-range").textContent, /±750 pulses.*1500 total span/);
+  assert.match(role(result.root, "af-travel").textContent, /Total movement budget.*2000 used.*12000 allowed/);
+  assert.match(role(result.root, "af-step-0").textContent, /Verified/);
+  assert.match(role(result.root, "af-step-1").textContent, /Running/);
+  assert.match(role(result.root, "af-step-2").textContent, /Waiting/);
+  assert.equal(role(result.root, "objective-2").disabled, true);
+  assert.equal(role(result.root, "autofocus-sequence").disabled, true);
+  status.microscope.busy = false;
+  status.microscope.autofocus_run.phase = "failed";
+  status.microscope.autofocus_run.error = "Sharpness verification failed";
+  result = await load({ status });
+  assert.match(role(result.root, "af-step-1").textContent, /Failed/);
+  assert.match(role(result.root, "af-error").textContent, /Sharpness verification failed/);
+  status.microscope.autofocus_run = { phase: "complete", objective_id: 1, verified: true, completed: [0, 1] };
+  result = await load({ status });
+  assert.equal(role(result.root, "objective-2").disabled, false);
+  assert.equal(role(result.root, "objective-3").disabled, false);
 });
 
 test("a furnace fault shows Acknowledge, which is sent once after a confirmation", async () => {

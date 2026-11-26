@@ -248,51 +248,52 @@ Repeat the restart commands and readiness checks above under the same idle condi
 
 ### Microscope test backend
 
-Use `mg400-microscope.service` for the turret calibration test backend to retain 1 device owner.
-The original Console and test Console share the microscope API on port `8770`.
+Use `mg400-microscope.service` to retain 1 microscope device owner.
+The main Console on port `8080` and test Console on port `8082` share its API on port `8770`.
+Use the `8082` microscope UI with the camera-height backend. The older `8080` microscope controls do not provide its calibration workflow.
+
+The shared service loads code from `/opt/mg400-microscope-v2-20261125` and uses `/opt/mg400/.venv/bin/python -m microscope`.
+Prepare the candidate from the current live source, then apply only the reviewed microscope changes. Preserve the other developer's changes in the live baseline.
+Settings remain in `/etc/mg400/mg400.env`. Motion limits come from the candidate's `src/microscope/calibrate.py`.
+Profiles remain in `/var/lib/mg400/calibration/microscope/turret_profiles`. Restart clears the focus reference and unsaved draft, but preserves saved profiles.
+This procedure does not deploy deferred process-ID changes to other device services.
+
 Restart only when the microscope is idle, has no active control lease, and is not recording.
-Restart preserves `/var/lib/mg400/calibration/microscope` but clears the focus reference and unsaved draft.
-
-The test backend reads microscope motion settings from environment variables.
-If the host environment file omits these settings, retain the existing backend's fixed values below in the override.
-
-Deploy the test code first.
-As root, install the override file `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`:
+Before manual firmware upload, stop `mg400-microscope.service` to release the serial port.
+Before starting the service, connect the controller with compatible firmware and complete its wiring.
+After preparing the candidate, install `/etc/systemd/system/mg400-microscope.service.d/mark-motion-v2.conf` as root:
 
 ```ini
 [Service]
-WorkingDirectory=/opt/mg400-twin-test
-Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
-Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
-Environment=MG400_MICROSCOPE_HOME_SWITCH=0
-Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
-ExecStart=
-ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+WorkingDirectory=/opt/mg400-microscope-v2-20261125
+Environment=PYTHONPATH=/opt/mg400-microscope-v2-20261125/src
 ```
 
-After installation, reload systemd and restart the service:
+Keep the base unit's `ExecStart` unchanged. Reload systemd and restart under the idle conditions above:
 
 ```sh
 systemctl daemon-reload
 systemctl restart mg400-microscope.service
 ```
 
-Poll `GET /api/state` and `GET /api/turret-calibration` at `http://127.0.0.1:8770/` until both requests succeed.
+Check `GET /api/state` and `GET /api/turret-calibration` at `http://127.0.0.1:8770/` after startup.
 Confirm that the state reports `connected` as `true` and `fault` as `null`.
+If startup fails, inspect the service logs and controller connection before another start.
 
-The current `deploy/twin.py` does not manage the microscope service or this override file.
-With this override active, run `systemctl stop mg400-microscope.service` before subsequent updates to the test instance backend or dependencies.
-After the update or script rollback, run `systemctl start mg400-microscope.service`.
-Check the APIs above again.
+`deploy/twin.py` updates the test Console. It does not update this microscope candidate or manage its override.
+Stop the microscope under the idle conditions above before updating its candidate code or shared dependencies.
+Then start the service and repeat the API checks. A Console rollback does not roll back this shared backend.
 
-To restore the original backend, remove only this override file.
-Restart the service under the idle conditions above:
+To restore the base service code, remove only this override. Preserve other override files and saved profile data.
+Restart under the idle conditions above:
 
 ```sh
-rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+rm /etc/systemd/system/mg400-microscope.service.d/mark-motion-v2.conf
 systemctl daemon-reload
 systemctl restart mg400-microscope.service
 ```
+
+Check the restored API and profile compatibility before movement. Older backends can require an older profile format.
 
 ## Toupcam library
 
@@ -469,7 +470,7 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 | `MG400_PROXY_PORT` | `8080` | Proxy port, from `1024` to `65535` |
 | `MG400_OPTIONAL_SERVICES` | Empty | Optional service names from the registry, separated by commas |
 | `MG400_ROBOT_HOST` | Address in `config/robot.toml` | Robot address |
-| `MG400_CAMERA_DEVICES` | Empty | 1 to 4 distinct camera devices separated by commas. Empty disables cameras |
+| `MG400_CAMERA_DEVICES` | Empty | 1 to 5 distinct camera devices separated by commas. Empty disables cameras |
 | `MG400_CAMERA_MODES` | Empty | One approved `WIDTHxHEIGHT@FPS` mode per device, in device order |
 | `MG400_STAGE_SERIAL` | Empty | Arduino serial port path. See [Stage configuration](stage-panel.en.md#configuration) |
 | `MG400_VISION_WEIGHTS` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` | Verified local model weights |
@@ -480,8 +481,8 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 Configure the furnace caps and gas map as described in [furnace configuration](furnace.en.md#configuration).
 Configure microscope device selection, focus limits, and camera streams as described in the [microscope guide](microscope.en.md#contract-service).
 
-Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports.
-The camera service provides only configured streams, named `camera1` through `camera4` in device order.
+Use distinct stable camera paths under `/dev/v4l/by-path/` or `/dev/v4l/by-id/`. Port paths distinguish cameras of the same model by their USB ports.
+Configured streams are named `camera1` through `camera5` in device order. This Console displays the first 4 USB camera views; it accepts a fifth shared device without adding wrist-camera controls.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry. If it is set with `MG400_CAMERA_MODES`, the installer, `labctl` and preview service refuse to run.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.

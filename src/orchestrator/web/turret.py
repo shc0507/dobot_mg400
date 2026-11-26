@@ -12,6 +12,7 @@ MAX_PROFILE_BYTES = 2 * 1024 * 1024
 FIELDS = {
     "begin": {"name", "new"},
     "record": {"objective_id"},
+    "record_initial": set(),
     "finish": set(),
     "cancel": set(),
     "save": {"name"},
@@ -74,6 +75,54 @@ def register(blueprint, service):
             else service.console.read("microscope", "api/turret-calibration")
         )
         return jsonify(decorate(value, client))
+
+    @blueprint.route("/microscope/focus-travel-limit", methods=["GET", "POST"])
+    def focus_travel_limit():
+        client = page()
+        if request.method == "GET":
+            value = (
+                preview().travel_limit()
+                if preview() is not None
+                else service.console.read("microscope", "api/focus-travel-limit")
+            )
+            return jsonify(value)
+        data = request.get_json()
+        if not isinstance(data, dict) or set(data) != {"pulses"}:
+            raise ValueError("Send only pulses for the focus travel limit.")
+        pulses = data["pulses"]
+        if type(pulses) is not int or not 1 <= pulses <= 2147483647:
+            raise ValueError("Max focus travel must be an integer from 1 to 2147483647 pulses.")
+        if preview() is not None:
+            return jsonify(preview().travel_limit(pulses))
+        result = service.console.operator("microscope", client, "api/focus-travel-limit", data)
+        if result.get("outcome") != "accepted":
+            return jsonify(result), 409 if result.get("outcome") == "refused" else 502
+        return jsonify(result.get("result"))
+
+    @blueprint.route("/microscope/autofocus-settings", methods=["GET", "POST"])
+    def autofocus_settings():
+        from microscope.focus_travel import AUTOFOCUS_RANGE_FIELDS, MAX_HALF_RANGE
+
+        client = page()
+        if request.method == "GET":
+            value = (
+                preview().autofocus_settings()
+                if preview() is not None
+                else service.console.read("microscope", "api/autofocus-settings")
+            )
+            return jsonify(value)
+        data = request.get_json()
+        if not isinstance(data, dict) or not data or set(data) - set(AUTOFOCUS_RANGE_FIELDS):
+            raise ValueError("Provide at least one known lens autofocus half-range.")
+        for name, pulses in data.items():
+            if type(pulses) is not int or not 4 <= pulses <= MAX_HALF_RANGE:
+                raise ValueError(f"{name} must be an integer from 4 to {MAX_HALF_RANGE} pulses.")
+        if preview() is not None:
+            return jsonify(preview().autofocus_settings(data))
+        result = service.console.operator("microscope", client, "api/autofocus-settings", data)
+        if result.get("outcome") != "accepted":
+            return jsonify(result), 409 if result.get("outcome") == "refused" else 502
+        return jsonify(result.get("result"))
 
     @blueprint.post("/turret/<action>")
     def turret_action(action):

@@ -386,6 +386,7 @@ def test_failed_atomic_save_preserves_previous_profile(tmp_path, complete_profil
         b"\xff",
         b'{"schema_version":1,"schema_version":1}',
     ],
+    ids=["oversized", "object", "array", "non-utf8", "duplicate-key"],
 )
 def test_bad_upload_does_not_write_files(tmp_path, data):
     store = turret.TurretProfileStore(tmp_path)

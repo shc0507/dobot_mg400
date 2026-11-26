@@ -33,6 +33,16 @@
     if (observation.quality !== "valid") return observation.quality === "stale" ? "Outdated" : "Unverified";
     return finite(observation.cache_age_s) && observation.cache_age_s + elapsed <= 3 ? "Current" : "Outdated";
   }
+  function motorPower(value) {
+    if (value?.sleeping === true) return "Asleep";
+    const enabled = value?.enabled === true ? "Enabled" : value?.enabled === false ? "Released" : "Unknown";
+    return value?.sleeping === false ? enabled : enabled === "Unknown" ? "Unknown" : enabled + " · Sleep not reported";
+  }
+  function observedTime(value) {
+    if (!finite(value)) return "Not received";
+    const date = new Date(value * 1000);
+    return finite(date.getTime()) ? date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC") : "Unknown";
+  }
   function summary(name, device = {}, elapsed = 0) {
     const value = device.values || {}, cached = device.cached_state?.values || {}, observation = device.observations || {};
     if (name === "robot") {
@@ -41,7 +51,16 @@
     }
     if (name === "furnace") return [["Measured", number(value.pv_c, "°C")], ["Setpoint", number(value.sp_c, "°C")], ["Ramp", number(value.ramp_c_per_min, "°C/min")], ["Run state", text(value.run_state)], ["Sequence", text(value.sequence?.phase)], ["Gas controller", cached.flow?.connected === true ? "Connected" : cached.flow?.connected === false ? "Disconnected" : "Unknown"]];
     if (name === "thermal") return [["Mean", number(observation.stats?.mean_celsius, "°C")], ["Minimum", number(observation.stats?.min?.celsius, "°C")], ["Maximum", number(observation.stats?.max?.celsius, "°C")], ["Center", number(observation.stats?.center?.celsius, "°C")], ["Frame", text(observation.frame_sequence)], ["Statistics", observationQuality(observation, elapsed)]];
-    if (name === "microscope") return [["Objective", text(value.objective_id)], ["Focus", number(value.focus_position_pulses, "pulses")], ["Zero known", text(value.focus_zero_known)], ["Busy", text(value.busy)], ["Recording", text(value.recording?.status)], ["Frames", number(value.recording?.frame_count)]];
+    if (name === "microscope") {
+      const profile = value.turret_profile, visual = value.visual_focus, power = value.motor_power, focus = value.autofocus_run, settings = value.autofocus_settings;
+      const readiness = profile?.ready === true ? "Ready" : profile?.needs_height_calibration === true ? "Needs 5x initial reference" : profile?.ready === false ? "Not ready" : "Unknown";
+      return [["Objective", text(value.objective_id)], ["Turret profile", text(profile?.name || profile?.id || (profile?.id === null ? "Not selected" : null))], ["Profile status", readiness],
+        ["Visual phase", typeof visual?.phase === "string" ? visual.phase.replaceAll("_", " ") : "Unknown"], ["Last observed Y", number(visual?.y_px, "px")], ["Target Y", number(visual?.target_y_px, "px")], ["Last visual observation", observedTime(visual?.observed_at)],
+        ["Autofocus phase", typeof focus?.phase === "string" ? focus.phase.replaceAll("_", " ") : "Unknown"], ["Focus verified", text(focus?.verified)], ["Focus score", number(focus?.score)], ["Focus result", text(focus?.error)],
+        ["Active search half-range", number(focus?.search_half_range_pulses, "pulses")], ["Total movement budget", number(visual?.travel_limit_pulses, "pulses")], ["Movement used", number(visual?.travel_used_pulses, "pulses")],
+        ["5x search half-range", number(settings?.five_x_half_range_pulses, "pulses")], ["10x search half-range", number(settings?.ten_x_half_range_pulses, "pulses")], ["20x search half-range", number(settings?.twenty_x_half_range_pulses, "pulses")], ["50x search half-range", number(settings?.fifty_x_half_range_pulses, "pulses")],
+        ["Turret power", motorPower(power?.objective)], ["Focus power", motorPower(power?.focus)], ["Relative focus count", number(value.focus_position_pulses, "pulses")], ["Manual/coarse travel budget", number(value.focus_travel_limit_pulses, "pulses")], ["Busy", text(value.busy)], ["Recording", text(value.recording?.status)], ["Frames", number(value.recording?.frame_count)]];
+    }
     if (name === "vision") return [["Model loaded", text(value.model_loaded)], ["Camera", text(observation.camera ?? value.last_result?.camera)], ["Result", text(observation.status)], ["Observations", observationQuality(observation, elapsed)], ["Items", number(observation.count)], ["Coordinates", text(observation.coordinate_system)]];
     return [];
   }
@@ -88,6 +107,7 @@
     if (name === "stage") return stageDiagram(stageAxes(device, elapsed));
     result.append(metrics(summary(name, device, elapsed)));
     const observation = device?.observations, cached = device?.cached_state?.values || {};
+    if (name === "microscope") result.append(node("p", "Marker Y is the last visual observation, not continuous tracking. Image coordinates use the 3840 px reference width. Focus counts are relative to the current command; the travel budget is not a physical end stop.", "visual-note"));
     if (name === "furnace") {
       const channels = cached.flow?.gas_channels;
       for (const channel of Array.isArray(channels) ? channels.slice(0, 3) : []) {

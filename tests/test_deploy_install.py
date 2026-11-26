@@ -408,10 +408,10 @@ def test_cameras_install_go2rtc_and_render_three_loopback_streams(module, host, 
     ("devices", "argv", "message"),
     [
         (DEVICES, [], "Pass the go2rtc 1.9.14 binary"),
-        ([*DEVICES, *DEVICES[:2]], [], "must list 1 to 4 devices"),
+        ([*DEVICES, *DEVICES], [], "must list 1 to 5 devices"),
         ([*DEVICES[:2], "/dev/video0&exec=x"], [], "Invalid camera device path"),
     ],
-    ids=["no-binary", "five-cameras", "unsafe-path"],
+    ids=["no-binary", "six-cameras", "unsafe-path"],
 )
 def test_camera_errors_stop_before_any_change(host, capsys, devices, argv, message):
     host.settings.parent.mkdir(parents=True)
@@ -1665,7 +1665,7 @@ def test_nvenc_gives_a_large_camera_an_h265_preview_with_arrival_timestamps(modu
     assert "camera1_h265" not in without_nvenc and "  mjpeg: " not in without_nvenc
 
 
-@pytest.mark.parametrize("count", [1, 2, 3, 4])
+@pytest.mark.parametrize("count", [1, 2, 3, 4, 5])
 def test_camera_configuration_renders_exact_device_count(module, count):
     devices = [f"/dev/v4l/by-path/offline-{number}-video-index0" for number in range(count)]
     assert module.camera_devices(",".join(devices)) == devices
@@ -1796,6 +1796,8 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
         "/dev/video0",
         "/dev/serial/by-id/camera",
         "/dev/v4l/by-path/../video0",
+        "/dev/v4l/by-id/../video0",
+        "/dev/v4l/by-id/usb-camera/video-index0",
         f"{DEVICES[0]},{DEVICES[0]}",
         f"{DEVICES[0]},",
         f",{DEVICES[0]}",

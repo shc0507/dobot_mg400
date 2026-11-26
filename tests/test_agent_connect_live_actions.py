@@ -143,9 +143,38 @@ def test_live_catalog_uses_cached_contract_caps_without_device_reads(live):
     step = catalog["furnace.set_sequence"]["params"]["properties"]["steps"]["items"]
     assert step["properties"]["ramp_rate_c_per_min"]["maximum"] == 20
     assert catalog["furnace.start_sequence"]["defaults"] == {}
-    assert not catalog["camera.turret_frame"]["available"]
+    assert "camera.turret_frame" not in catalog
     assert not catalog["recipe.run"]["available"]
     assert not catalog["camera.set_region"]["available"]
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "turret.begin",
+        "turret.finish",
+        "turret.cancel",
+        "turret.record",
+        "turret.save",
+        "turret.load",
+        "turret.delete",
+        "turret.upload",
+        "turret.measure_response",
+        "turret.focus_move",
+        "turret.return_clearance",
+        "microscope.set_focus_zero",
+        "microscope.home_focus",
+        "microscope.focus_to_clearance",
+        "microscope.focus_to_saved_height",
+        "camera.turret_frame",
+    ],
+)
+def test_human_microscope_calibration_cannot_enter_agent_dispatch(live, action):
+    backend, console, _ = live
+    assert action not in {row["id"] for row in backend.catalog()}
+    with pytest.raises(ValueError):
+        backend.prepare(action, {}, {}, PAGE)
+    assert console.takes == 0 and not console.sent
 
 
 @pytest.mark.parametrize(
@@ -156,7 +185,16 @@ def test_live_catalog_uses_cached_contract_caps_without_device_reads(live):
         ("furnace.set_gas_valve", {"channel_index": 2, "open": False}),
         ("furnace.connect_flow", {}),
         ("furnace.start_sequence", {}),
-        ("microscope.home_focus", {}),
+        ("microscope.rough_focus_5x", {}),
+        *[("microscope.select_objective", {"id": lens}) for lens in range(4)],
+        *[("microscope.objective_nudge", {"steps": steps}) for steps in (-10, -1, 1, 10)],
+        *[("microscope.focus_move", {"steps": steps}) for steps in (-100, 100)],
+        ("microscope.autofocus", {"mode": "local"}),
+        ("microscope.autofocus_sequence", {}),
+        ("microscope.set_stabilization", {"enabled": True}),
+        ("microscope.snapshot", {}),
+        ("microscope.start_recording", {"recording_id": "a" * 32}),
+        ("microscope.stop_recording", {"recording_id": "a" * 32}),
         ("microscope.record_with_sequence", {"recording_id": "a" * 32, "enabled": True}),
         ("camera.thermal_shutter", {}),
         ("vision.read_labels", {"camera": 1, "region": [0, 0, 10, 10]}),
@@ -165,11 +203,120 @@ def test_live_catalog_uses_cached_contract_caps_without_device_reads(live):
 )
 def test_fixed_live_actions_use_console_command_and_confirm_native_completion(live, action, params):
     backend, console, _ = live
+    assert next(row for row in backend.catalog() if row["id"] == action)["available"]
     result = run(backend, action, params)
     assert console.sent == [(SPECS[action]["device"], SPECS[action]["command"], params)]
     assert console.takes == 1
     assert result["status"] == "succeeded" and result["result"]["simulated"] is False
     assert result["result"]["command"]["result"] == "ok"
+
+
+def test_live_autofocus_catalog_excludes_legacy_full_mode(live):
+    backend, console, _ = live
+    console.descriptions["microscope"]["commands"]["autofocus"]["params"]["properties"]["mode"][
+        "enum"
+    ] = ["local", "full"]
+    action = next(row for row in backend.catalog() if row["id"] == "microscope.autofocus")
+    assert action["params"]["properties"]["mode"]["enum"] == ["local"]
+    assert action["defaults"] == {"mode": "local"}
+    assert action["revision"] == 8
+    with pytest.raises(ValueError):
+        backend.prepare("microscope.autofocus", {"mode": "full"}, {}, PAGE)
+    assert console.takes == 0 and not console.sent
+    assert run(backend, "microscope.autofocus", action["defaults"])["status"] == "succeeded"
+    assert console.sent == [("microscope", "autofocus", {"mode": "local"})]
+
+
+@pytest.mark.parametrize(
+    "action,path,params",
+    [
+        ("turret.select", "api/turret-calibration/select", {"id": "saved-profile"}),
+        ("microscope.set_focus_travel_limit", "api/focus-travel-limit", {"pulses": 20000}),
+        *[
+            ("microscope.set_autofocus_settings", "api/autofocus-settings", {field: 4000})
+            for field in (
+                "five_x_half_range_pulses",
+                "ten_x_half_range_pulses",
+                "twenty_x_half_range_pulses",
+                "fifty_x_half_range_pulses",
+            )
+        ],
+    ],
+)
+def test_live_microscope_operator_routes_use_native_lease(live, monkeypatch, action, path, params):
+    backend, console, _ = live
+    selected = []
+
+    def operator(device, page, path, params):
+        assert console.holder == page == PAGE
+        selected.append((device, path, params))
+        return {"outcome": "accepted"}
+
+    monkeypatch.setattr(console, "operator", operator, raising=False)
+    assert next(row for row in backend.catalog() if row["id"] == action)["available"]
+    result = run(backend, action, params)
+    assert result["status"] == "succeeded"
+    assert selected == [("microscope", path, params)]
+    assert console.takes == 1 and not console.sent
+
+
+@pytest.mark.parametrize(
+    "action,params",
+    [
+        ("microscope.set_focus_travel_limit", {"pulses": value})
+        for value in (0, 2147483648, True, 1.5)
+    ]
+    + [
+        ("microscope.set_autofocus_settings", params)
+        for params in (
+            {},
+            {"five_x_half_range_pulses": 3},
+            {"ten_x_half_range_pulses": 1000001},
+            {"twenty_x_half_range_pulses": True},
+            {"fifty_x_half_range_pulses": 4.5},
+            {"five_x_half_range_pulses": 100, "path": "api/turret-calibration/delete"},
+        )
+    ],
+)
+def test_microscope_settings_validate_before_lease_and_again_at_execution(live, action, params):
+    backend, console, _ = live
+    with pytest.raises(ValueError):
+        backend.prepare(action, params, {}, PAGE)
+    valid = (
+        {"pulses": 100} if action.endswith("travel_limit") else {"five_x_half_range_pulses": 100}
+    )
+    plan = backend.prepare(action, valid, {}, PAGE)
+    plan["params"] = params
+    with pytest.raises(ValueError):
+        backend.execute(plan, Context())
+    assert console.takes == 0 and not console.sent
+
+
+def test_microscope_settings_preserve_native_busy_rejection(live, monkeypatch):
+    backend, console, _ = live
+    plan = backend.prepare("microscope.set_focus_travel_limit", {"pulses": 100}, {}, PAGE)
+
+    def operator(*args):
+        return {"outcome": "refused", "error": "Stop microscope work before changing settings"}
+
+    monkeypatch.setattr(console, "operator", operator, raising=False)
+    result = backend.execute(plan, Context())
+    assert result["status"] == "failed"
+    assert result["error"] == "Stop microscope work before changing settings"
+
+
+def test_live_microscope_stop_needs_no_lease_or_description(live, monkeypatch):
+    backend, console, _ = live
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Stop must not read discovery or acquire a lease.")
+
+    monkeypatch.setattr(console, "read", forbidden)
+    monkeypatch.setattr(console, "take", forbidden)
+    result = backend.stop("microscope")
+    assert result["outcome"] == "confirmed"
+    assert console.stopped == ["microscope"]
+    assert console.takes == 0 and not console.sent
 
 
 @pytest.mark.parametrize(
@@ -607,8 +754,27 @@ def test_xy_actions_preserve_native_command_rejection(xy_live, monkeypatch, erro
 
 def test_action_revisions_include_independent_xy_and_numeric_robot_jog():
     changed = {action for action, _ in XY_ACTIONS} | {"robot.jog"}
+    microscope = {
+        "turret.select",
+        "microscope.objective_nudge",
+        "microscope.focus_move",
+        "microscope.rough_focus_5x",
+    }
+    autofocus = {
+        "microscope.select_objective",
+        "microscope.autofocus_sequence",
+    }
     assert {action for action, spec in SPECS.items() if spec["revision"] == 4} == changed
-    assert all(spec["revision"] == 3 for action, spec in SPECS.items() if action not in changed)
+    assert {action for action, spec in SPECS.items() if spec["revision"] == 6} == microscope
+    assert {action for action, spec in SPECS.items() if spec["revision"] == 7} == autofocus
+    assert {action for action, spec in SPECS.items() if spec["revision"] == 8} == {
+        "microscope.autofocus"
+    }
+    assert all(
+        spec["revision"] == 3
+        for action, spec in SPECS.items()
+        if action not in changed | microscope | autofocus | {"microscope.autofocus"}
+    )
 
 
 @pytest.mark.parametrize(

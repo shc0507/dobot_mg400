@@ -57,12 +57,19 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve` |
 | `furnace acknowledge` | 确认高温炉报警 |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`、`objective_nudge`、`focus_move` |
-| `microscope autofocus full\|local`, `microscope zero`, `microscope home` | `autofocus`、`set_focus_zero`、`home_focus` |
+| `microscope autofocus full\|local` | `autofocus` |
+| `labctl microscope call rough_focus_5x` | 把已就位的 5x 物镜粗调到初始高度，不执行自动对焦 |
+| `labctl microscope call autofocus_sequence` | 从 5x 开始，依次对焦 5x、10x、20x、50x；失败时停止 |
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | 带新 `recording_id` 的 `start_recording` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
 
-只在操作员把 50x 物镜在避让位置对焦后，才运行 `microscope zero`。不要用它从失败的命令中恢复：在其他高度置零会移动对焦限位。
+显微镜运动前，人工操作员必须在控制台创建并选中完整配置。参见[显微镜校准](microscope.md#引导式转盘校准)。
+人工释放两个电机后，记录各物镜的 X 对齐位置，再单独记录 1 张已对焦的 5x 初始图像。只有 5x 的 Y 坐标用于粗调高度。
+人工操作员释放控制后，先用 `labctl microscope take` 取得控制，再从命令行移动。每次操作时，服务重新读取图像。
+可以按任意顺序选择任何物镜，无须先自动对焦或重新检查清晰度。命令在当前调焦高度对齐已存 X，不移动调焦轴，也不自动对焦。操作员负责检查机械避让空间并决定选择顺序。按需单独运行 `labctl microscope autofocus local` 或 `labctl microscope autofocus full`。
+人工在 Operate 分别设置各物镜的搜索半范围。5x、10x、20x 默认使用 5000 个四分之一步脉冲，50x 默认使用 3000。服务的两种自动对焦模式都使用所选物镜保存的范围。Console 和 Agent Connect 使用 local 模式。组合命令可选，从 5x 开始，每次自动对焦验证成功后才继续。
+命令行解析器仍保留旧的 `microscope zero` 和 `microscope home` 快捷命令，但当前基于配置的服务不支持它们。
 
 位移台坐标使用实测轴圈数。绝对 `goto` 要求完成标定、有效限位和未过期的编码器反馈。已存位置使用 Sample Transfer。旧位移台快捷命令 `home`、`zero`、`pose` 和按名称的 `goto` 均不支持。
 
@@ -76,7 +83,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `labctl chip locate SLOT` | 对 1 个槽位运行 `slot-state`。输出 `state`、`center_xy_mm` 和 `angle_deg` |
 
 - 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
-- 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能，显微镜保留对焦零点。运行期间，本会话不能向这些设备发命令。停止仍然有效。
+- 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能。显微镜在每次运动操作前重新读取相机参考，并在该操作后释放对焦轴。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
 - 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。

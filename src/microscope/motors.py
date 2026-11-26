@@ -31,6 +31,8 @@ class AxisStatus:
     speed: int
     remaining: int
     position: int
+    sleeping: bool | None = None
+    acceleration: int | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,11 @@ class MotorController:
         with self.response_condition:
             return self._reference_epoch
 
+    @property
+    def ramped_motion(self):
+        """Version 2 ramps pulses; frame position cannot use constant speed."""
+        return bool(self.firmware_version and self.firmware_version.startswith("2."))
+
     def connect(self, port=None, baudrate=BAUDRATE, *, reset_seconds=1.8):
         """Open a stable Linux device and probe VERSION. Tests inject the transport."""
         port = os.environ.get("MG400_MICROSCOPE_SERIAL", "") if port is None else str(port)
@@ -151,7 +158,7 @@ class MotorController:
                         raise
                     # Only the known legacy grammar permits a computed wait.
                 else:
-                    match = re.fullmatch(r"VERSION microscope-axes (1\.\d+\.\d+)", reply)
+                    match = re.fullmatch(r"VERSION microscope-axes ([12]\.\d+\.\d+)", reply)
                     if match is None:
                         raise RuntimeError("Unsupported microscope firmware version")
                     self.firmware_version = match[1]
@@ -519,6 +526,7 @@ class MotorController:
                 started = time.monotonic()
                 started_wall = time.time()
                 duration = abs(steps) / self._focus_speed
+                ramp_allowance = 2 * self._focus_speed / 2000 if self.ramped_motion else 0
                 ticket = FocusMove(
                     self.response_sequence,
                     self._generation_token("FOCUS MOVE"),
@@ -526,7 +534,7 @@ class MotorController:
                     started,
                     started_wall,
                     duration,
-                    started + max(5.0, duration + 3.0),
+                    started + max(5.0, duration + ramp_allowance + 3.0),
                 )
                 self._pending_focus = ticket
                 self._write(f"FOCUS MOVE {steps}")
@@ -666,21 +674,28 @@ class MotorController:
     @staticmethod
     def _parse_axis(line, name):
         match = re.fullmatch(
-            rf"{name}: enabled=([01]) moving=([01]) speed=(\d+) remaining=(\d+) pos=(-?\d+)",
+            rf"{name}: enabled=([01]) moving=([01]) speed=(\d+) remaining=(\d+) pos=(-?\d+)"
+            r"(?: sleeping=([01]) acceleration=(\d+))?",
             line,
         )
         if match is None:
             raise ValueError("Malformed microscope axis status")
-        enabled, moving, speed, remaining, position = map(int, match.groups())
+        enabled, moving, speed, remaining, position = map(int, match.groups()[:5])
+        sleeping = None if match[6] is None else bool(int(match[6]))
+        acceleration = None if match[7] is None else int(match[7])
         if (
             not 1 <= speed <= 10000
             or not 0 <= remaining <= 2**31
             or not -(2**31) <= position < 2**31
             or (moving and (not enabled or not remaining))
             or (not moving and remaining != 0)
+            or (sleeping and (enabled or moving))
+            or (acceleration is not None and acceleration != 2000)
         ):
             raise ValueError("Microscope axis status is outside its bounds")
-        return AxisStatus(bool(enabled), bool(moving), speed, remaining, position)
+        return AxisStatus(
+            bool(enabled), bool(moving), speed, remaining, position, sleeping, acceleration
+        )
 
     def _parse_status(self, lines, sequence):
         microstep = re.fullmatch(r"MICRO=(1|2|4|8|16)", lines[0])
@@ -693,6 +708,8 @@ class MotorController:
         zeroed, limited, minimum, maximum, homing = map(int, reference.groups())
         objective = self._parse_axis(lines[1], "OBJ")
         focus = self._parse_axis(lines[2], "FOCUS")
+        if self.ramped_motion and (objective.sleeping is None or focus.sleeping is None):
+            raise ValueError("Version 2 firmware must report motor power state")
         if (
             not -(2**31) <= minimum < 2**31
             or not -(2**31) <= maximum < 2**31

@@ -428,6 +428,32 @@ def test_profile_actions_reuse_shared_draft_and_store(rig):
     assert not console.moves
 
 
+def test_mock_microscope_settings_update_existing_preview_without_device_io(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("The simulator attempted a network connection.")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    backend = create_backend(mock=True)
+    try:
+        preview = backend.service.turret_preview
+        before = preview.autofocus_settings()
+        result = run(backend, "microscope.set_autofocus_settings", {"ten_x_half_range_pulses": 42})
+        assert result["status"] == "succeeded" and result["result"]["simulated"] is True
+        assert preview.autofocus_settings() == {**before, "ten_x_half_range_pulses": 42}
+        assert (
+            run(backend, "microscope.set_focus_travel_limit", {"pulses": 123})["status"]
+            == "succeeded"
+        )
+        assert preview.travel_limit() == {"focus_travel_limit_pulses": 123}
+        assert preview.store.list() == []
+        preview.session = {}
+        with pytest.raises(ServiceError):
+            run(backend, "microscope.set_focus_travel_limit", {"pulses": 456})
+        assert preview.travel_limit() == {"focus_travel_limit_pulses": 123}
+    finally:
+        backend.close()
+
+
 def test_mock_uses_real_stage_contract_and_turret_preview_without_sockets(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("The simulator attempted a network connection.")
@@ -437,7 +463,7 @@ def test_mock_uses_real_stage_contract_and_turret_preview_without_sockets(monkey
     try:
         catalog = {item["id"]: item for item in backend.catalog()}
         assert catalog["stage.calibrate"]["available"]
-        assert catalog["turret.begin"]["available"]
+        assert catalog["turret.select"]["available"]
         assert not catalog["robot.move"]["available"]
         with pytest.raises(ValueError, match="Calibrate"):
             backend.prepare("transfer.insert", {}, {}, PAGE)
@@ -445,21 +471,22 @@ def test_mock_uses_real_stage_contract_and_turret_preview_without_sockets(monkey
         assert result["status"] == "succeeded", result
         assert run(backend, "transfer.extract")["status"] == "succeeded"
         assert backend.observations()["stage"]["demo"] is True
-        assert (
-            run(backend, "turret.begin", {"new": True, "name": "Simulated turret"})["status"]
-            == "succeeded"
-        )
-        result = run(backend, "turret.record", {"objective_id": 0})
-        assert "0" in result["result"]["state"]["draft"]["captures"]
-        assert run(backend, "turret.finish")["status"] == "succeeded"
-        frame = run(backend, "camera.turret_frame")["result"]
-        assert frame["simulated"] and frame["image_base64"].startswith("/9j/")
+        for action in ("begin", "record", "finish", "cancel", "save", "load", "delete", "upload"):
+            assert "turret." + action not in catalog
+            with pytest.raises(ValueError):
+                backend.prepare("turret." + action, {}, {}, PAGE)
+        for action in (
+            "microscope.set_focus_zero",
+            "microscope.home_focus",
+            "camera.turret_frame",
+        ):
+            assert action not in catalog
+            with pytest.raises(ValueError):
+                backend.prepare(action, {}, {}, PAGE)
         assert backend.service.console._owned("stage", PAGE) is not None
-        assert run(backend, "turret.begin")["status"] == "succeeded"
-        assert backend.service.turret_preview.session["client"] == PAGE
+        assert backend.service.turret_preview.session is None
         assert backend.release_page("agent-another-session")["devices"] == {}
         assert backend.service.console._owned("stage", PAGE) is not None
-        assert backend.service.turret_preview.session["client"] == PAGE
         released = backend.release_page(PAGE)
         assert released["devices"] == {"stage": "released"}
         assert released["outcome"] == "released"

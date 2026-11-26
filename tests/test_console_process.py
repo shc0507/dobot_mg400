@@ -85,6 +85,22 @@ def rig(tmp_path):
         objective_offset_limit_steps=20,
         focus_position_pulses=1200,
         focus_zero_known=True,
+        turret_profile={"id": "profile", "ready": True},
+        visual_focus={"phase": "rough_positioning", "y_px": 1200, "target_y_px": 1100},
+        autofocus_settings={
+            "five_x_half_range_pulses": 5000,
+            "ten_x_half_range_pulses": 300,
+            "twenty_x_half_range_pulses": 300,
+            "fifty_x_half_range_pulses": 300,
+        },
+        autofocus_run={
+            "phase": "autofocus",
+            "objective_id": 1,
+            "completed": [0],
+            "verified": False,
+            "score": 42.5,
+        },
+        motor_power={"focus": {"enabled": False, "sleeping": True}},
     )
     yield value
     value.service.close()
@@ -105,6 +121,17 @@ def test_status_reports_page_fields_and_crucible(rig):
     assert body["microscope"]["focus_position_pulses"] == 1200
     assert body["microscope"]["objective_offset_steps"] == -3
     assert body["microscope"]["objective_offset_limit_steps"] == 20
+    assert body["microscope"]["turret_profile"] == {"id": "profile", "ready": True}
+    assert body["microscope"]["visual_focus"]["target_y_px"] == 1100
+    assert body["microscope"]["autofocus_settings"]["five_x_half_range_pulses"] == 5000
+    assert body["microscope"]["autofocus_run"] == {
+        "phase": "autofocus",
+        "objective_id": 1,
+        "completed": [0],
+        "verified": False,
+        "score": 42.5,
+    }
+    assert body["microscope"]["motor_power"]["focus"] == {"enabled": False, "sleeping": True}
     assert body["crucible"] == {
         key: ROI[key] for key in ("min_c", "mean_c", "max_c", "frame_age_s")
     }
@@ -227,17 +254,27 @@ def test_furnace_demo_sequence_round_trip(demos):
     assert sequence["steps"][0]["temperature_c"] == 80 and sequence["running"] is False
 
 
-def test_microscope_demo_relays_focus_zero(demos):
+def test_microscope_demo_exposes_rough_start_and_verified_sequence_without_manual_zero(demos):
     described = demos.client.get("/lab/api/console/describe/microscope", headers=headers())
     commands = described.get_json()["commands"]
     assert {"select_objective", "autofocus", "focus_move", "snapshot"} <= set(commands)
-    assert commands["set_focus_zero"]["params"]["properties"] == {}
+    assert "set_focus_zero" not in commands and "home_focus" not in commands
+    assert "focus_to_clearance" not in commands and "focus_to_saved_height" not in commands
+    for action in ("rough_focus_5x", "autofocus_sequence"):
+        assert commands[action]["params"]["properties"] == {}
+        assert (
+            post(demos, "command/microscope", {"action": action, "params": {}}).status_code == 409
+        )
     assert post(demos, "control/microscope/take").status_code == 200
-    zero = post(demos, "command/microscope", {"action": "set_focus_zero", "params": {}})
-    assert zero.status_code == 502 and zero.get_json()["outcome"] == "unknown"
-    move = post(demos, "command/microscope", {"action": "focus_move", "params": {"steps": 10}})
-    # The unstarted demo answers 503: the relay reports unknown and does not retry.
-    assert move.status_code == 502 and move.get_json()["outcome"] == "unknown"
+    legacy = post(demos, "command/microscope", {"action": "set_focus_zero", "params": {}})
+    assert legacy.status_code == 400
+    for action in ("rough_focus_5x", "autofocus_sequence"):
+        move = post(demos, "command/microscope", {"action": action, "params": {}})
+        # The unstarted demo answers 503; the relay must not report movement success.
+        assert move.status_code == 502 and move.get_json()["outcome"] == "unknown"
+    assert demos.microscope._job is None
     demos.service.devices.fresh("microscope")
     scope = status(demos)["microscope"]
-    assert scope["focus_zero_known"] is False and scope["focus_position_pulses"] is None
+    assert scope["turret_profile"]["ready"] is False
+    assert scope["turret_profile"]["needs_height_calibration"] is True
+    assert scope["focus_position_pulses"] is None

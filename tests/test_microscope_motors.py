@@ -112,7 +112,7 @@ def test_connect_negotiates_current_and_legacy_grammar(connect):
 
 
 @pytest.mark.parametrize(
-    "version", ["VERSION other 1.0.0", "VERSION microscope-axes 2.0.0", "ERR BAD"]
+    "version", ["VERSION other 1.0.0", "VERSION microscope-axes 3.0.0", "ERR BAD"]
 )
 def test_unknown_version_is_not_legacy(version):
     port = FakePort(version=version)
@@ -461,6 +461,57 @@ def test_full_status_is_fresh_complete_and_immutable(connect):
     assert second.focus.position == 4 and second.sequence > first.sequence
     assert second.observed_at >= first.observed_at
     assert controller.status() == "MICRO=4"
+
+
+def test_v2_power_status_and_wake_without_motion(connect):
+    port = FakePort(version="VERSION microscope-axes 2.0.0")
+    port.sim = MicroscopeSimulator(firmware_version=2)
+    controller, port = connect(port)
+    assert controller.ramped_motion
+    status = controller.read_status()
+    assert status.objective.sleeping and status.focus.sleeping
+    assert status.focus.acceleration == 2000
+    controller.focus_enable()
+    controller.focus_zero()
+    controller.focus_limits(-10, 10)
+    assert controller.read_status().zeroed
+    port.complete(30)
+    status = controller.read_status()
+    assert not status.focus.enabled and not status.zeroed
+    assert not status.focus.sleeping and status.focus.position == 0
+    port.complete(60)
+    port.complete(30)
+    assert controller.read_status().focus.sleeping
+    controller.focus_enable()
+    status = controller.read_status()
+    assert status.focus.enabled and not status.focus.sleeping
+    assert not status.zeroed and status.focus.position == 0
+
+
+def test_v2_focus_completion_deadline_includes_ramps(connect):
+    port = FakePort(version="VERSION microscope-axes 2.0.0")
+    port.sim = MicroscopeSimulator(firmware_version=2)
+    controller, port = connect(port)
+    controller.focus_enable()
+    controller.focus_speed(10000)
+    ticket = controller.focus_move_async(100000)
+    assert ticket.deadline - ticket.started == pytest.approx(23)
+    port.complete(21)
+    assert controller.wait_focus_done(ticket) == "DONE FOCUS POS 100000"
+
+
+def test_v2_status_requires_reported_power_state(connect):
+    controller, _ = connect(FakePort(version="VERSION microscope-axes 2.0.0"))
+    with pytest.raises(RuntimeError, match="must report motor power state"):
+        controller.read_status()
+
+
+@pytest.mark.parametrize("tail", ["sleeping=1 acceleration=2000", "sleeping=0 acceleration=0"])
+def test_v2_rejects_inconsistent_power_status(tail):
+    with pytest.raises(ValueError):
+        MotorController._parse_axis(
+            f"FOCUS: enabled=1 moving=0 speed=800 remaining=0 pos=0 {tail}", "FOCUS"
+        )
 
 
 def test_status_bypasses_long_move_wait_without_consuming_done(connect):

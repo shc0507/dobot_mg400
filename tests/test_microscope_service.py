@@ -249,12 +249,14 @@ def test_service_construction_is_inert(monkeypatch):
     assert service._motor is service._camera is service._side is None
 
 
-def test_discovery_advertises_focus_zero_for_the_lease_holder():
+def test_discovery_advertises_visual_height_without_public_zero():
     from microscope.service import MicroscopeService
 
     service = MicroscopeService(demo=True)
-    zero = service.describe()["commands"]["set_focus_zero"]
-    assert zero["params"]["properties"] == {} and zero["any_client"] is False
+    commands = service.describe()["commands"]
+    assert "set_focus_zero" not in commands and "home_focus" not in commands
+    assert commands["rough_focus_5x"]["any_client"] is False
+    assert commands["autofocus_sequence"]["any_client"] is False
     response = (
         create_app(service)
         .test_client()
@@ -262,16 +264,21 @@ def test_discovery_advertises_focus_zero_for_the_lease_holder():
             "/api/command", json={"action": "set_focus_zero"}, headers={"X-MG400-Client": "robot"}
         )
     )
-    assert response.status_code == 409
+    assert response.status_code == 400
     assert service._job is None
 
 
 @pytest.fixture
 def demo_rig(monkeypatch, tmp_path):
+    import io
+    import os
+
     from microscope.service import MicroscopeConfig, MicroscopeService
 
     monkeypatch.setattr("microscope.paths.RUNS_ROOT", tmp_path / "runs")
     monkeypatch.setattr("microscope.paths.CALIBRATION_ROOT", tmp_path / "calibration")
+    if os.name == "nt":
+        monkeypatch.setattr("microscope.aruco_switch.private_open", lambda *_a, **_k: io.StringIO())
     services = []
 
     def create(*, home_switch=False, **kwargs):
@@ -319,7 +326,7 @@ def test_service_instance_survives_motor_reconnect_but_changes_on_recreation(dem
     assert replacement.snapshot()["instance"] == replacement.events.instance
 
 
-def wait_command(rig, command_id, *, timeout=5):
+def wait_command(rig, command_id, *, timeout=8):
     import time
 
     deadline = time.monotonic() + timeout
@@ -335,12 +342,46 @@ def wait_command(rig, command_id, *, timeout=5):
     pytest.fail(f"Offline microscope command did not finish: {rig.service.snapshot()}")
 
 
+def install_visual_profile(rig):
+    """Install a complete image profile without motor commands for service tests."""
+    from microscope.turret_calibration import capture, new_focus_profile
+
+    profile = new_focus_profile("Service test heights", "demo")
+    original = (rig.port.sim.objective.position, rig.port.sim.focus.position, rig.port.focus_origin)
+    rig.service._side.open()
+    try:
+        for objective in range(4):
+            rig.port.sim.objective.position = objective * 740
+            rig.port.sim.focus.position = rig.port.focus_origin = 0
+            image = rig.service._side.get_frame_packet()[2]
+            record = capture(image, objective)
+            profile["captures"][str(objective)] = record
+            if objective == 0:
+                profile["initial_5x_capture"] = record
+    finally:
+        rig.service._side.close()
+        (rig.port.sim.objective.position, rig.port.sim.focus.position, rig.port.focus_origin) = (
+            original
+        )
+    rig.service._turret_store.save(profile)
+    rig.service._turret_store.select(profile["profile_id"])
+    return profile
+
+
 def establish_manual_reference(rig):
+    """Set internal state to exercise old lease/reference guards, not a public API."""
     assert service_post(rig, "heartbeat").status_code == 200
-    response = service_post(rig, "command", {"action": "set_focus_zero"})
-    assert response.status_code == 202, response.json
-    state = wait_command(rig, response.json["command_id"])
-    assert state["last_command"]["result"] == "ok", state
+    if not rig.service._turret_store.selected():
+        install_visual_profile(rig)
+    motor = rig.service._motor
+    motor.set_microstep(4)
+    motor.focus_enable()
+    motor.focus_zero()
+    motor.focus_limits(*rig.service.config.focus_limits)
+    status = motor.read_status()
+    rig.service._reference = (status.session, status.reference_epoch)
+    rig.service._status = status
+    state = rig.service.snapshot()
     assert state["focus_zero_known"]
     return state
 
@@ -353,6 +394,24 @@ def dispatch(rig, action, **args):
     response = service_post(rig, "command", {"action": action, **args})
     assert response.status_code == 202, response.json
     return wait_command(rig, response.json["command_id"])
+
+
+def prepare_focused_source(rig):
+    """Produce live autofocus evidence through the public operation, not a fake reference."""
+    response = service_post(
+        rig,
+        "autofocus-settings",
+        {
+            "five_x_half_range_pulses": 62,
+            "ten_x_half_range_pulses": 300,
+            "twenty_x_half_range_pulses": 300,
+            "fifty_x_half_range_pulses": 300,
+        },
+    )
+    assert response.status_code == 200, response.json
+    state = dispatch(rig, "autofocus", mode="local")
+    assert state["last_command"]["result"] == "ok", state
+    return state
 
 
 def test_demo_contract_conformance_and_unleased_expiry(demo_rig):
@@ -377,76 +436,88 @@ def test_demo_contract_conformance_and_unleased_expiry(demo_rig):
         ("objective_nudge", {"steps": 1}),
     ],
 )
-def test_motion_refuses_unknown_focus_zero(demo_rig, action, args):
+def test_motion_refuses_missing_visual_profile(demo_rig, action, args):
     rig = demo_rig()
     acquire_automation(rig)
     before = list(rig.port.commands)
     response = service_post(rig, "command", {"action": action, **args})
-    assert response.status_code == 409 and "focus position unknown" in response.json["error"]
+    assert response.status_code == 409 and "profile" in response.json["error"]
     assert rig.port.commands == before
     assert not rig.service.snapshot()["focus_zero_known"]
 
 
-def test_zero_sets_fixed_microstep_then_limits_for_any_lease_holder(demo_rig):
+def test_visual_recovery_uses_operation_relative_bounds_for_lease_holder(demo_rig):
     rig = demo_rig()
-    establish_manual_reference(rig)
-    commands = rig.port.commands
-    assert (
-        commands.index("MICRO 4")
-        < commands.index("FOCUS ZERO")
-        < commands.index("FOCUS LIMIT -200 200")
-    )
+    install_visual_profile(rig)
     acquire_automation(rig)
+    commands = rig.port.commands
     before = list(commands)
-    other = service_post(rig, "command", {"action": "set_focus_zero"}, actor="orchestrator-step")
+    other = service_post(rig, "command", {"action": "rough_focus_5x"}, actor="orchestrator-step")
     assert other.status_code == 409
     assert commands == before
     state = dispatch(rig, "focus_move", steps=60)
-    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 60
-    state = dispatch(rig, "set_focus_zero")
-    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 0
+    assert (
+        state["last_command"]["result"] == "ok"
+        and state["last_result"]["focus_position_pulses"] == 60
+    )
+    assert (
+        commands.index("MICRO 4")
+        < commands.index("FOCUS ZERO")
+        < commands.index("FOCUS LIMIT -20000 20000")
+        < commands.index("FOCUS MOVE 60")
+    )
+    assert state["focus_reference"] == "relative_command"
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
+    state = dispatch(rig, "rough_focus_5x")
+    assert state["last_command"]["result"] == "ok"
+    assert abs(state["visual_focus"]["error_px"]) <= 15
     state = dispatch(rig, "focus_move", steps=60)
-    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 60
+    assert (
+        state["last_command"]["result"] == "ok"
+        and state["last_result"]["focus_position_pulses"] == 60
+    )
 
 
-def test_real_autofocus_algorithm_runs_with_generated_camera_and_stays_in_limits(demo_rig):
+def test_real_autofocus_algorithm_runs_with_generated_camera_and_stays_in_budget(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 62}).status_code == 200
+    )
     state = dispatch(rig, "autofocus", mode="full")
     assert state["last_command"]["result"] == "ok", state
-    assert -200 <= state["focus_position_pulses"] <= 200
+    pulses = [int(text.split()[-1]) for text in rig.port.commands if text.startswith("FOCUS MOVE ")]
+    assert sum(abs(pulse) for pulse in pulses) <= state["visual_focus"]["travel_limit_pulses"]
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
     assert state["last_result"]["measurement"]["score"] > 0
     assert not rig.port.sim.objective.enabled
 
 
-def test_turret_turns_follow_clearance_moves_and_fresh_reference_checks(demo_rig):
+def test_turret_turn_uses_fresh_focused_source_without_destination_y_moves(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
     assert dispatch(rig, "focus_move", steps=60)["last_command"]["result"] == "ok"
-    state = dispatch(rig, "select_objective", id=2)
+    prepare_focused_source(rig)
+    start = len(rig.port.commands)
+    state = dispatch(rig, "select_objective", id=1)
     assert state["last_command"]["result"] == "ok", state
-    assert state["objective_id"] == 2 and len(state["last_result"]["switches"]) == 2
+    assert state["objective_id"] == 1 and len(state["last_result"]["switches"]) == 1
     finished = rig.service.events.since()["events"][-1]["fields"]
-    assert finished["params"] == {"id": 2} and finished["client"] == state["last_command"]["client"]
-    moves = [item for item in rig.port.commands if item.startswith(("FOCUS MOVE ", "OBJ MOVE "))]
-    assert moves == [
-        "FOCUS MOVE 60",
-        "FOCUS MOVE -60",
-        "OBJ MOVE 740",
-        "FOCUS MOVE 0",
-        "OBJ MOVE 740",
-    ]
-    assert state["focus_position_pulses"] == 0 and state["focus_zero_known"]
+    assert finished["params"] == {"id": 1} and finished["client"] == state["last_command"]["client"]
+    moves = [item for item in rig.port.commands[start:] if " MOVE " in item]
+    assert moves == ["OBJ MOVE 740"]
+    assert not state["focus_zero_known"]
 
 
 def test_turret_turns_never_cross_the_gap_between_the_last_and_first_objective(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
-    assert dispatch(rig, "select_objective", id=3)["objective_id"] == 3
-    assert dispatch(rig, "select_objective", id=0)["objective_id"] == 0
+    for target in (1, 2, 3, 2, 1, 0):
+        prepare_focused_source(rig)
+        assert dispatch(rig, "select_objective", id=target)["objective_id"] == target
     turns = [item for item in rig.port.commands if item.startswith("OBJ MOVE ")]
     assert turns == ["OBJ MOVE 740"] * 3 + ["OBJ MOVE -740"] * 3
 
@@ -455,7 +526,9 @@ def test_failed_turn_reports_the_objective_as_unknown(demo_rig, monkeypatch):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    prepare_focused_source(rig)
     assert dispatch(rig, "select_objective", id=1)["objective_id"] == 1
+    prepare_focused_source(rig)
     factory = rig.service._switcher_factory
 
     def failing_switcher(*args, **kwargs):
@@ -516,8 +589,10 @@ def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
     state = rig.service.snapshot()
     assert state["objective_offset_steps"] is None and state["objective_offset_limit_steps"] == 20
     assert "select another objective" in refused_nudge(rig, 1)
+    prepare_focused_source(rig)
     assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
-    assert dispatch(rig, "focus_move", steps=60)["focus_position_pulses"] == 60
+    assert dispatch(rig, "focus_move", steps=60)["last_result"]["focus_position_pulses"] == 60
+    working_height = rig.port.focus_origin + rig.port.sim.focus.position
     start = len(rig.port.commands)
     turret = rig.port.sim.objective.position
     for steps, offset in ((10, 10), (10, 20), (-1, 19), (-10, 9), (-10, -1), (-10, -11)):
@@ -527,7 +602,8 @@ def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
         assert state["last_result"] == {"objective_id": 1, "objective_offset_steps": offset}
     assert rig.port.sim.objective.position == turret - 44
     assert not rig.port.sim.objective.enabled
-    assert state["focus_position_pulses"] == 60 and state["focus_zero_known"]
+    assert rig.port.focus_origin + rig.port.sim.focus.position == working_height
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
     sent = rig.port.commands[start:]
     assert not [line for line in sent if line.startswith("FOCUS MOVE")]
     assert [line for line in sent if line.startswith("OBJ MOVE")] == [
@@ -538,15 +614,7 @@ def test_nudge_turns_full_steps_at_working_focus_inside_the_window(demo_rig):
         "OBJ MOVE -40",
         "OBJ MOVE -40",
     ]
-    assert sent[:7] == [
-        "STATUS",
-        "OBJ SPEED 40",
-        "OBJ ENABLE",
-        "STATUS",
-        "OBJ MOVE 40",
-        "STATUS",
-        "OBJ DISABLE",
-    ]
+    assert sent.index("OBJ SPEED 40") < sent.index("OBJ ENABLE") < sent.index("OBJ MOVE 40")
     assert "outside ±20 full steps" in refused_nudge(rig, -10)
     assert dispatch(rig, "objective_nudge", steps=-1)["objective_offset_steps"] == -12
     assert "-22, outside" in refused_nudge(rig, -10)
@@ -556,11 +624,13 @@ def test_select_objective_resets_the_offset_only_after_a_turn(demo_rig):
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    prepare_focused_source(rig)
     assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
     assert dispatch(rig, "objective_nudge", steps=10)["objective_offset_steps"] == 10
     # The objective is already in place: nothing turns, so the count stays.
     state = dispatch(rig, "select_objective", id=1)
     assert state["last_result"]["switches"] == [] and state["objective_offset_steps"] == 10
+    prepare_focused_source(rig)
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "ok", state
     assert state["objective_id"] == 2 and state["objective_offset_steps"] == 0
@@ -579,6 +649,7 @@ def test_failed_nudge_reports_the_turret_offset_as_unknown(demo_rig, monkeypatch
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    prepare_focused_source(rig)
     assert dispatch(rig, "select_objective", id=1)["objective_offset_steps"] == 0
     send_and_wait = rig.service._motor.send_and_wait
 
@@ -639,15 +710,14 @@ def test_snapshot_to_existing_path_fails_without_lock_or_motor_stop(demo_rig, mo
     assert dispatch(rig, "focus_move", steps=1)["last_command"]["result"] == "ok"
 
 
-def test_home_requires_configured_switch_and_never_substitutes_manual_zero(demo_rig):
-    missing = demo_rig()
-    acquire_automation(missing)
-    assert service_post(missing, "command", {"action": "home_focus"}).status_code == 409
-    rig = demo_rig(home_switch=True)
+@pytest.mark.parametrize("home_switch", [False, True])
+def test_public_home_and_zero_are_removed(demo_rig, home_switch):
+    rig = demo_rig(home_switch=home_switch)
     acquire_automation(rig)
-    state = dispatch(rig, "home_focus")
-    assert state["last_command"]["result"] == "ok" and state["focus_zero_known"], state
-    assert "FOCUS HOME" in rig.port.commands and "FOCUS ZERO" not in rig.port.commands
+    before = list(rig.port.commands)
+    for action in ("home_focus", "set_focus_zero"):
+        assert service_post(rig, "command", {"action": action}).status_code == 400
+    assert rig.port.commands == before
 
 
 @pytest.mark.parametrize("route", ["release"])
@@ -658,16 +728,17 @@ def test_active_release_cancels_old_job_before_same_client_can_reacquire(
 
     rig = demo_rig()
     entered, resume = threading.Event(), threading.Event()
-    original = rig.service._reference_focus
+    install_visual_profile(rig)
+    original = rig.service._prepare_visual
 
     def delayed(job):
         entered.set()
         assert resume.wait(2)
         return original(job)
 
-    monkeypatch.setattr(rig.service, "_reference_focus", delayed)
+    monkeypatch.setattr(rig.service, "_prepare_visual", delayed)
     assert service_post(rig, "heartbeat").status_code == 200
-    response = service_post(rig, "command", {"action": "set_focus_zero"})
+    response = service_post(rig, "command", {"action": "rough_focus_5x"})
     assert response.status_code == 202 and entered.wait(1)
     job = rig.service._job
     try:
@@ -704,7 +775,10 @@ def test_idle_manual_reference_handoff_to_different_automation_client(demo_rig):
     )
     assert response.status_code == 202
     state = wait_command(rig, response.json["command_id"])
-    assert state["last_command"]["result"] == "ok" and state["focus_position_pulses"] == 10
+    assert (
+        state["last_command"]["result"] == "ok"
+        and state["last_result"]["focus_position_pulses"] == 10
+    )
 
 
 @pytest.mark.parametrize("actor", ["operator", "orchestrator-step"])
@@ -722,7 +796,10 @@ def test_handoff_acquisition_cannot_revive_reference_at_expiry_without_poll(
     assert rig.service.expiry_count == 1
     assert not rig.service.snapshot()["focus_zero_known"] and not rig.port.sim.focus.enabled
     response = service_post(rig, "command", {"action": "focus_move", "steps": 1}, actor=actor)
-    assert response.status_code == 409
+    assert response.status_code == 202
+    state = wait_command(rig, response.json["command_id"])
+    assert state["last_command"]["result"] == "ok"
+    assert not state["focus_zero_known"]
 
 
 def test_idle_reference_expiry_and_any_client_stop_always_disable(demo_rig):
@@ -868,8 +945,9 @@ def test_demo_marker_correction_preserves_positive_pulse_leftward_feedback(demo_
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    prepare_focused_source(rig)
     with rig.port.lock:
-        rig.port.sim.objective.position = 80
+        rig.port.sim.objective.position = 8
     state = dispatch(rig, "select_objective", id=1)
     assert state["last_command"]["result"] == "ok", state
     assert state["objective_id"] == 1
@@ -906,16 +984,16 @@ def busy_reader():
         (
             "get_frame_packet",
             lambda **_: (1, 0.0, side_frame(480, 640)),
-            "side frame 640x480 does not match the 200x200 references",
+            "image_size_mismatch",
         ),
         (
             "get_frame_packet",
             lambda **_: (1, 0.0, side_frame(200, 200) * 0),
-            "Objective identification failed: black",
+            "black",
         ),
         ("get_frame_packet", lambda **_: None, "No fresh side-camera frame"),
         ("get_frame_packet", stopped_reader, "unavailable: Side-camera frame size differs"),
-        ("open", busy_reader, "unavailable: Previous side-camera reader is still stopping"),
+        ("open", busy_reader, "Previous side-camera reader is still stopping"),
     ],
     ids=["size-mismatch", "black-frame", "no-frame", "stopped-reader", "busy-reader"],
 )
@@ -927,15 +1005,25 @@ def test_unidentified_objective_refuses_before_motion_without_fault(
     acquire_automation(rig)
     before = len(rig.port.commands)
     with monkeypatch.context() as patch:
-        patch.setattr(rig.service._side, attribute, replacement)
-        state = dispatch(rig, "select_objective", id=2)
+        if attribute == "get_frame_packet" and message in {"image_size_mismatch", "black"}:
+            original = rig.service._side.get_frame_packet
+
+            def fresh_replacement(**kwargs):
+                packet = original(**kwargs)
+                return (*packet[:2], replacement()[2])
+
+            patch.setattr(rig.service._side, attribute, fresh_replacement)
+        else:
+            patch.setattr(rig.service._side, attribute, replacement)
+        state = dispatch(rig, "select_objective", id=1)
     assert state["last_command"]["result"] == "failed"
     assert message in state["last_command"]["message"]
-    assert not state["locked"] and state["fault"] is None and state["focus_zero_known"]
+    assert not state["locked"] and state["fault"] is None and not state["focus_zero_known"]
     assert not [line for line in rig.port.commands[before:] if " MOVE " in line]
     assert not rig.service._side.is_open
-    state = dispatch(rig, "select_objective", id=2)
-    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 2
+    prepare_focused_source(rig)
+    state = dispatch(rig, "select_objective", id=1)
+    assert state["last_command"]["result"] == "ok" and state["objective_id"] == 1
     assert not rig.service._side.is_open and not state["cameras"]["side"]
 
 
@@ -945,6 +1033,7 @@ def test_select_objective_uses_side_frames_scaled_from_the_reference_size(demo_r
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    prepare_focused_source(rig)
     read = rig.service._side.get_frame_packet
 
     def half_size(*args, **kwargs):
@@ -955,9 +1044,9 @@ def test_select_objective_uses_side_frames_scaled_from_the_reference_size(demo_r
         return frame_id, received_at, cv2.resize(frame, (100, 100), interpolation=cv2.INTER_AREA)
 
     monkeypatch.setattr(rig.service._side, "get_frame_packet", half_size)
-    state = dispatch(rig, "select_objective", id=2)
+    state = dispatch(rig, "select_objective", id=1)
     assert state["last_command"]["result"] == "ok", state
-    assert state["objective_id"] == 2
+    assert state["objective_id"] == 1
 
 
 def test_state_reports_the_side_reader_only_while_it_runs(demo_rig):
@@ -1034,21 +1123,75 @@ def test_acquire_crossing_handoff_deadline_cannot_preserve_reference(demo_rig, m
 
 
 @pytest.mark.parametrize("mode", ["full", "local"])
-def test_autofocus_from_clearance_at_limit_endpoint_uses_a_bounded_window(demo_rig, mode):
-    from dataclasses import replace
-
+def test_autofocus_uses_a_fixed_operation_window_and_counts_all_travel(demo_rig, mode):
     rig = demo_rig()
-    rig.service.config = replace(rig.service.config, focus_limits=(-120, 0)).validate()
-    establish_manual_reference(rig)
+    install_visual_profile(rig)
     acquire_automation(rig)
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 62}).status_code == 200
+    )
+    start = len(rig.port.commands)
     state = dispatch(rig, "autofocus", mode=mode)
     assert state["last_command"]["result"] == "ok", state
-    position = 0
-    for text in rig.port.commands:
+    budget = 20000 + 16 * 62
+    assert state["visual_focus"]["travel_limit_pulses"] == budget
+    position, travelled = 0, 0
+    for text in rig.port.commands[start:]:
         if text.startswith("FOCUS MOVE "):
-            position += int(text.split()[-1])
-            assert -120 <= position <= 0
-    assert position == state["focus_position_pulses"]
+            pulses = int(text.split()[-1])
+            position += pulses
+            travelled += abs(pulses)
+            assert -budget <= position <= budget
+    assert travelled <= budget
+    assert rig.port.commands[start:].count("FOCUS ZERO") == 1
+    assert [line for line in rig.port.commands[start:] if line.startswith("FOCUS LIMIT ")] == [
+        f"FOCUS LIMIT -{budget} {budget}"
+    ]
+    assert position == rig.port.focus_origin + rig.port.sim.focus.position
+    assert state["focus_position_pulses"] is None
+
+
+def test_relative_focus_budget_counts_reversals_before_native_dispatch(demo_rig):
+    class ReversingFocuser:
+        def __init__(self, camera, motor, **options):
+            self.motor = motor
+
+        def run_local(self, **options):
+            self.motor.focus_move(150)
+            self.motor.focus_move(-150)
+            pytest.fail("The second movement must exceed the cumulative 240-pulse budget")
+
+    rig = demo_rig(autofocus_factory=ReversingFocuser)
+    install_visual_profile(rig)
+    acquire_automation(rig)
+    response = service_post(rig, "focus-travel-limit", {"pulses": 80})
+    assert response.status_code == 200, response.json
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 10}).status_code == 200
+    )
+    start = len(rig.port.commands)
+    state = dispatch(rig, "autofocus", mode="local")
+    assert state["last_command"]["result"] == "failed"
+    assert "travel" in state["last_command"]["message"].lower()
+    commands = rig.port.commands[start:]
+    assert "FOCUS MOVE 150" in commands
+    assert "FOCUS MOVE -150" not in commands
+    assert commands.count("FOCUS ZERO") == 1
+    assert "FOCUS LIMIT -240 240" in commands
+    assert not rig.port.sim.focus.enabled
+
+
+def test_explicit_focus_move_cannot_exceed_the_selected_travel_budget(demo_rig):
+    rig = demo_rig()
+    install_visual_profile(rig)
+    acquire_automation(rig)
+    response = service_post(rig, "focus-travel-limit", {"pulses": 25})
+    assert response.status_code == 200, response.json
+    start = len(rig.port.commands)
+    state = dispatch(rig, "focus_move", steps=26)
+    assert state["last_command"]["result"] == "failed"
+    assert not any(line.startswith("FOCUS MOVE ") for line in rig.port.commands[start:])
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
 
 
 def test_heartbeat_renews_live_job_deadline_before_queued_enable(demo_rig, monkeypatch):
@@ -1057,6 +1200,9 @@ def test_heartbeat_renews_live_job_deadline_before_queued_enable(demo_rig, monke
     rig = demo_rig()
     establish_manual_reference(rig)
     acquire_automation(rig)
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 62}).status_code == 200
+    )
     entered, resume = threading.Event(), threading.Event()
     enable = rig.service._motor.focus_enable
 
@@ -1077,7 +1223,56 @@ def test_heartbeat_renews_live_job_deadline_before_queued_enable(demo_rig, monke
         resume.set()
         state = wait_command(rig, response.json["command_id"])
         assert state["last_command"]["result"] == "ok", state
-        assert state["focus_zero_known"]
+        assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
+    finally:
+        resume.set()
+        assert job.done.wait(2)
+
+
+@pytest.mark.parametrize("route", ["stop", "release"])
+def test_sequence_cancellation_after_autofocus_never_starts_the_next_turn(
+    demo_rig, monkeypatch, route
+):
+    import threading
+
+    rig = demo_rig()
+    install_visual_profile(rig)
+    acquire_automation(rig)
+    assert (
+        service_post(rig, "autofocus-settings", {"five_x_half_range_pulses": 62}).status_code == 200
+    )
+    entered, resume = threading.Event(), threading.Event()
+    verify = rig.service._verify_switch_focus
+
+    def delayed_verify(job):
+        entered.set()
+        assert resume.wait(5)
+        return verify(job)
+
+    monkeypatch.setattr(rig.service, "_verify_switch_focus", delayed_verify)
+    start = len(rig.port.commands)
+    response = service_post(rig, "command", {"action": "autofocus_sequence"})
+    assert response.status_code == 202, response.json
+    job = rig.service._job
+    try:
+        assert entered.wait(8), rig.service.snapshot()
+        assert rig.service.snapshot()["autofocus_run"]["completed"] == [0]
+        if route == "stop":
+            result = service_post(rig, route, {"wait_s": 1}, actor="other-operator")
+            assert result.status_code == 200 and result.json["stop"] == "confirmed"
+        else:
+            assert service_post(rig, route).status_code == 200
+            assert rig.service._stop_done.wait(1)
+        assert job.cancel.is_set()
+        after_stop = len(rig.port.commands)
+        resume.set()
+        state = wait_command(rig, response.json["command_id"])
+        assert state["last_command"]["result"] == "stopped", state
+        assert state["autofocus_run"]["completed"] == [0]
+        assert not state["autofocus_run"]["verified"]
+        assert not any(text.startswith("OBJ MOVE") for text in rig.port.commands[start:])
+        assert not any(text.endswith(" ENABLE") for text in rig.port.commands[after_stop:])
+        assert not rig.port.sim.focus.enabled and not rig.port.sim.objective.enabled
     finally:
         resume.set()
         assert job.done.wait(2)

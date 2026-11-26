@@ -42,6 +42,8 @@ def teach_all(rig):
             rig.port.sim.objective.position = ident * 740
         response = turret(rig, "record", {"objective_id": ident})
         assert response.status_code == 200, response.json
+        if ident == 0:
+            assert turret(rig, "record_initial").status_code == 200
     assert turret(rig, "finish").status_code == 200
     response = turret(rig, "save", {"name": "Saved turret"})
     assert response.status_code == 200, response.json
@@ -49,7 +51,7 @@ def teach_all(rig):
 
 
 @pytest.mark.parametrize("known", [False, True])
-def test_begin_only_disables_turret_and_keeps_focus_unchanged(demo_rig, known):
+def test_begin_releases_both_axes_without_moving_focus(demo_rig, known):
     rig = demo_rig()
     if known:
         establish_manual_reference(rig)
@@ -62,12 +64,15 @@ def test_begin_only_disables_turret_and_keeps_focus_unchanged(demo_rig, known):
     response = turret(rig, "begin", {"name": "Manual position"})
     assert response.status_code == 200, response.json
     commands = rig.port.commands[before:]
-    assert [command for command in commands if command != "STATUS"] == ["OBJ DISABLE"]
+    assert [command for command in commands if command != "STATUS"] == [
+        "OBJ DISABLE",
+        "FOCUS DISABLE",
+    ]
     assert rig.port.sim.focus.position == 30
-    assert response.json["draft"]["focus_position"] == (30 if known else None)
+    assert response.json["draft"]["focus_position"] is None
     assert response.json["session"]["focus_position"] == 30
-    assert response.json["session"]["focus_zeroed"] is known
-    assert response.json["alignment"] == "image_coordinates"
+    assert response.json["session"]["focus_zeroed"] is False
+    assert response.json["alignment"] == "image_x_and_rough_5x_start"
     assert response.json["dictionary"] == "DICT_4X4_50"
     assert "reference" not in response.json
     assert not response.json["compatible_for_switch"]
@@ -97,7 +102,7 @@ def test_session_blocks_jobs_and_other_clients(demo_rig):
     begin(rig)
     for action, args in (("focus_move", {"steps": 1}), ("select_objective", {"id": 1})):
         assert service_post(rig, "command", {"action": action, **args}).status_code == 409
-    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 409
+    assert service_post(rig, "command", {"action": "set_focus_zero"}).status_code == 400
     assert turret(rig, "record", {"objective_id": 0}, actor="other").status_code == 409
     assert turret(rig, "upload", {"profile": "{}"}).status_code == 409
 
@@ -115,7 +120,7 @@ def test_record_uses_only_lens_marker_and_preserves_capture_on_error(demo_rig):
     first = turret(rig, "record", {"objective_id": 0})
     assert first.status_code == 200, first.json
     capture = copy.deepcopy(first.json["draft"]["captures"]["0"])
-    assert first.json["draft"]["schema_version"] == 2
+    assert first.json["draft"]["schema_version"] == 5
     assert first.json["draft"]["dictionary"] == "DICT_4X4_50"
     assert set(capture) == {"shape", "objective_corners", "preview_jpeg"}
     for actual, expected in zip(capture["objective_corners"], corners[0].reshape(4, 2).tolist()):
@@ -128,13 +133,13 @@ def test_record_uses_only_lens_marker_and_preserves_capture_on_error(demo_rig):
     assert not rig.service._side.is_open
 
 
-def test_focus_change_and_stale_frames_preserve_draft(demo_rig, monkeypatch):
+def test_manual_height_change_is_allowed_but_stale_frames_preserve_draft(demo_rig, monkeypatch):
     rig = demo_rig()
     begin(rig)
     assert turret(rig, "record", {"objective_id": 0}).status_code == 200
+    rig.port.sim.focus.position = 20
+    assert turret(rig, "record", {"objective_id": 0}).status_code == 200
     before = copy.deepcopy(rig.service._turret_draft)
-    rig.port.sim.focus.position = 1
-    assert turret(rig, "record", {"objective_id": 0}).status_code == 409
     rig.port.sim.focus.position = 0
     rig.service._side.open()
     cached = rig.service._side.get_frame_packet()
@@ -211,7 +216,7 @@ def test_complete_profile_save_select_export_upload_and_delete(demo_rig):
     assert "Select a complete" in rejected.json["error"]
 
 
-def test_unknown_recorded_focus_can_select_but_live_focus_zero_is_required(demo_rig):
+def test_unknown_pulse_reference_recovers_from_complete_image_profile(demo_rig):
     rig = demo_rig()
     begin(rig, reference=False)
     profile = teach_all(rig)
@@ -221,10 +226,12 @@ def test_unknown_recorded_focus_can_select_but_live_focus_zero_is_required(demo_
     assert response.json["selected_profile"] == profile["profile_id"]
     assert response.json["compatible_for_switch"]
     assert response.json["draft"]["focus_position"] is None
-    before = list(rig.port.commands)
-    response = service_post(rig, "command", {"action": "select_objective", "id": 0})
-    assert response.status_code == 409 and "focus position unknown" in response.json["error"]
-    assert rig.port.commands == before
+    rig.port.sim.objective.position = 0
+    response = service_post(rig, "command", {"action": "rough_focus_5x"})
+    assert response.status_code == 202
+    state = wait_command(rig, response.json["command_id"])
+    assert state["last_command"]["result"] == "ok", state
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
 
 
 def test_selected_profile_from_another_camera_refuses_before_motion(demo_rig):
@@ -236,7 +243,7 @@ def test_selected_profile_from_another_camera_refuses_before_motion(demo_rig):
     assert not rig.service.turret_calibration_state()["compatible_for_switch"]
     before = list(rig.port.commands)
     response = service_post(rig, "command", {"action": "select_objective", "id": 0})
-    assert response.status_code == 409 and "side camera" in response.json["error"]
+    assert response.status_code == 409 and "profile" in response.json["error"]
     assert rig.port.commands == before
 
 
@@ -264,6 +271,7 @@ def test_resume_keeps_captures_but_new_profile_clears_them(demo_rig):
 def test_saved_draft_loads_without_changing_active_selection(demo_rig):
     rig = demo_rig()
     begin(rig)
+    active = rig.service.turret_calibration_state()["selected_profile"]
     assert turret(rig, "record", {"objective_id": 0}).status_code == 200
     assert turret(rig, "finish").status_code == 200
     saved = turret(rig, "save").json["draft"]
@@ -271,7 +279,7 @@ def test_saved_draft_loads_without_changing_active_selection(demo_rig):
     assert turret(rig, "finish").status_code == 200
     loaded = turret(rig, "load", {"id": saved["profile_id"]})
     assert loaded.status_code == 200 and loaded.json["draft"] == saved
-    assert loaded.json["selected_profile"] is None
+    assert loaded.json["selected_profile"] == active
     assert turret(rig, "begin").json["draft"] == saved
 
 
@@ -280,6 +288,7 @@ def test_switch_uses_selected_snapshot_and_never_legacy_locator(demo_rig, monkey
     begin(rig)
     profile = teach_all(rig)
     assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
+    rig.port.sim.objective.position = 0
     entered, release = threading.Event(), threading.Event()
     observed = []
 
@@ -317,7 +326,7 @@ def test_selected_profile_missing_objective_refuses_before_any_move(demo_rig, mo
     before = len(rig.port.commands)
     state = dispatch(rig, "select_objective", id=0)
     assert state["last_command"]["result"] == "failed"
-    assert not state["locked"] and state["focus_zero_known"]
+    assert not state["locked"] and not state["focus_zero_known"]
     assert not any("MOVE" in command for command in rig.port.commands[before:])
 
 
@@ -335,22 +344,24 @@ def test_selected_profile_switches_with_only_lens_markers(demo_rig, monkeypatch,
     else:
         begin(rig, reference=False)
     profile = teach_all(rig)
-    assert profile["focus_position"] == recorded_focus
+    assert profile["focus_position"] is None
     assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
     if recorded_focus is None:
         establish_manual_reference(rig)
     if recorded_focus != 30:
         assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
     monkeypatch.setattr(rig.service, "_locator", lambda: pytest.fail("Legacy locator was used"))
+    assert dispatch(rig, "autofocus", mode="local")["last_command"]["result"] == "ok"
     before = len(rig.port.commands)
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "ok", state
-    assert state["objective_id"] == 2 and state["focus_position_pulses"] == 0
-    assert state["focus_zero_known"]
-    assert rig.service._turret_store.selected()["focus_position"] == recorded_focus
+    assert state["objective_id"] == 2 and state["focus_position_pulses"] is None
+    assert not state["focus_zero_known"] and not rig.port.sim.focus.enabled
+    assert rig.service._turret_store.selected()["focus_position"] is None
     assert len(state["last_result"]["switches"]) == 1
     moves = [command for command in rig.port.commands[before:] if "MOVE" in command]
-    assert moves == ["FOCUS MOVE -30", "FOCUS MOVE 0", "OBJ MOVE -740"]
+    assert [move for move in moves if move.startswith("OBJ")] == ["OBJ MOVE -740"]
+    assert sum(abs(int(move.split()[-1])) for move in moves if move.startswith("FOCUS")) <= 1000
 
 
 def test_unknown_recorded_focus_still_requires_live_clearance_before_turret_movement(
@@ -374,17 +385,19 @@ def test_unknown_recorded_focus_still_requires_live_clearance_before_turret_move
     before = len(rig.port.commands)
     state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "failed"
-    assert "clearance" in state["last_command"]["message"]
+    assert "autofocus" in state["last_command"]["message"].lower()
     assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
 
 
-def test_profile_identification_occurs_only_at_configured_clearance(demo_rig, monkeypatch):
+def test_profile_switch_checks_fresh_x_at_verified_focus(demo_rig, monkeypatch):
     rig = demo_rig()
     begin(rig, reference=False)
     profile = teach_all(rig)
     assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
     establish_manual_reference(rig)
     assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
+    assert dispatch(rig, "autofocus", mode="local")["last_command"]["result"] == "ok"
+    expected = rig.port.focus_origin + rig.port.sim.focus.position
     factory = rig.service._profile_locator
     observed = []
     original = rig.service._side.get_frame_packet
@@ -397,16 +410,7 @@ def test_profile_identification_occurs_only_at_configured_clearance(demo_rig, mo
             stale_returned = True
             return stale_packet
         packet = original(**kwargs)
-        if rig.port.sim.focus.position == 30:
-            frame_id, captured_at, pixels = packet
-            pixels[60:140, 60:140] = cv2.cvtColor(
-                cv2.aruco.generateImageMarker(
-                    cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 80
-                ),
-                cv2.COLOR_GRAY2BGR,
-            )
-            stale_packet = (frame_id, captured_at, pixels)
-            return stale_packet
+        stale_packet = packet
         return packet
 
     def locator(saved):
@@ -414,8 +418,8 @@ def test_profile_identification_occurs_only_at_configured_clearance(demo_rig, mo
         locate = value.locate
 
         def at_clearance(*args, **kwargs):
-            observed.append(rig.port.sim.focus.position)
-            assert observed[-1] == 0
+            observed.append(rig.port.focus_origin + rig.port.sim.focus.position)
+            assert observed[-1] == expected
             return locate(*args, **kwargs)
 
         value.locate = at_clearance
@@ -424,12 +428,12 @@ def test_profile_identification_occurs_only_at_configured_clearance(demo_rig, mo
     monkeypatch.setattr(rig.service, "_profile_locator", locator)
     monkeypatch.setattr(rig.service._side, "get_frame_packet", frames)
     before = len(rig.port.commands)
-    state = dispatch(rig, "select_objective", id=3)
+    state = dispatch(rig, "select_objective", id=2)
     assert state["last_command"]["result"] == "ok", state
-    assert state["objective_id"] == 3 and observed == [0]
+    assert state["objective_id"] == 2 and observed
     assert stale_returned
-    assert "FOCUS MOVE -30" in rig.port.commands[before:]
-    assert not any(item.startswith("OBJ MOVE") for item in rig.port.commands[before:])
+    assert not any(item.startswith("FOCUS MOVE") for item in rig.port.commands[before:])
+    assert any(item.startswith("OBJ MOVE") for item in rig.port.commands[before:])
 
 
 def test_select_loads_saved_profile_and_delete_clears_matching_draft(demo_rig):

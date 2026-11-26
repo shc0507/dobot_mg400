@@ -227,6 +227,64 @@ Other device actions also use `{}`. Stop keeps its independent path. For compati
 The local model command path refuses protected stage actions without the captured context. Questions and other device actions do not require stage context. Read
 [prepare()](../../src/orchestrator/agent_connect/action_backend.py) before implementing reference comparisons.
 
+## Microscope calibration and autofocus
+
+Read `devices.microscope.values.turret_profile`, `visual_focus`, `autofocus_run`, `autofocus_settings`, and `motor_power` in the state frame.
+`turret_profile` reports the selected profile and whether its X alignment and initial 5x record are ready.
+`visual_focus` reports the last marker observation. Only the 5x initial Y reference controls coarse positioning.
+Camera coordinates use pixels normalized to a reference image width of `3840`. They are not physical distances.
+Check measurement age and operation status. An idle saved measurement is not continuous tracking.
+`motor_power` reports the objective and focus enable/sleep states when the firmware supplies them.
+Unknown power fields must remain unknown on older firmware or a disconnected controller.
+`focus_reference: "relative_command"` identifies a relative pulse coordinate for the current command.
+`focus_position_pulses` and `focus_limits_pulses` do not identify absolute physical positions or end stops.
+`focus_travel_limit_pulses` is the operator-set manual/coarse cumulative travel budget. Its default is `20000` quarter-step pulses.
+`autofocus_settings` publishes `five_x_half_range_pulses`, `ten_x_half_range_pulses`, `twenty_x_half_range_pulses`, and `fifty_x_half_range_pulses`.
+Their defaults are `5000`, `5000`, `5000`, and `3000`. Saved values override the defaults. Each operator-editable value is an integer from `4` to `1000000`.
+Older saved files containing only the 5x setting retain that value and use defaults for the other lenses. There is no shared `other_half_range_pulses` field.
+The half-range bounds each direction from the scan center. It is not the total pulse travel across scans and reversals.
+Autofocus uses a cumulative budget derived from the selected range. The combined sequence uses 1 budget for all lenses and coarse positioning.
+Travel in both directions counts toward the command budget. The service freezes settings when a command starts.
+`visual_focus.travel_used_pulses` and `visual_focus.travel_limit_pulses` report the current or last command's reserved pulse travel and frozen budget. Reservation occurs before each move; after Stop or a failed acknowledgement, it can exceed the pulses actually sent. It is not a measured physical distance.
+An agent with operator control can change these settings while the microscope is idle. Changes require the microscope lease and use the native settings endpoints. They do not start movement. Do not repeat or split movement commands to bypass an exhausted budget.
+
+`autofocus_run` contains `phase`, `objective_id`, `stage`, `score`, `position_pulses`, `search_half_range_pulses`, `verified`, `completed`, `error`, and `sequence`.
+`search_half_range_pulses` describes the active or last scan, using the settings frozen at dispatch. It is separate from accumulated movement and the cumulative budget.
+Scan scores describe image sharpness; they are not a percentage or a measured sample distance.
+Within the combined autofocus sequence, only a verified completion permits progression. A command acknowledgement, discovered peak, or idle motor does not establish successful focus.
+Use the terminal command result with these fields. A retained result describes its recorded observation, not continuous sample tracking.
+
+Use only these profile and focus actions from the current catalog:
+
+| Action | Parameters | Result |
+| --- | --- | --- |
+| `turret.select` | `{"id":"<saved profile ID>"}` | Select a human-created profile. No movement. |
+| `microscope.select_objective` | `{"id":1}` | Select any lens in any order. IDs are `0` = 5x, `1` = 10x, `2` = 20x, `3` = 50x. Align saved X at the current focus height. No focus movement or automatic autofocus. |
+| `microscope.rough_focus_5x` | `{}` | Position the seated 5x lens approximately using its initial marker Y. No autofocus. |
+| `microscope.focus_move` | `{"steps":10}` | Move by signed integer quarter-step pulses within the manual travel budget. Invalidate verified focus. |
+| `microscope.autofocus` | `{"mode":"local"}` | Run autofocus using the current lens's saved range, matching the single Console Autofocus button. Agent Connect accepts only `local`. The native service retains `full` for older clients. |
+| `microscope.autofocus_sequence` | `{}` | Require 5x initially. Perform coarse positioning, then autofocus 5x, 10x, 20x and 50x using each lens's saved range. Stop on failure. |
+| `microscope.set_autofocus_settings` | `{"fifty_x_half_range_pulses":3000}` | Save a nonempty subset of the 4 range fields. Each value is an integer from `4` to `1000000`. Omitted ranges remain unchanged. No movement. |
+| `microscope.set_focus_travel_limit` | `{"pulses":20000}` | Save the manual/rough cumulative travel limit. Accept an integer from `1` to `2147483647`. No movement. |
+
+`microscope.autofocus` uses revision `8`. `microscope.select_objective` and `microscope.autofocus_sequence` use revision `7`. The 2 settings actions use revision `3`. The other listed actions use revision `6`.
+Read `choices.actions["turret.select"].id` for saved IDs and labels.
+Use the normal command envelope, session, operator grant, and result polling.
+Profile selection and connection do not start motion. Objective selection does not start autofocus.
+The service verifies marker identity before motion and may reject an unreadable or inconsistent view.
+Separate lens selection requires neither prior autofocus nor a fresh sharpness check.
+It does not restore per-lens Y positions. The operator is responsible for physical clearance and selection order.
+The optional combined sequence requires 5x initially and advances only after verified autofocus.
+Profile, identity, busy-state, Stop, and lease checks remain active.
+After a sleep or release, do not assume that the previous pulse count still represents the mechanism's position.
+
+Turret calibration creation, recording, editing, upload, deletion, and draft loading are human operations.
+Their former Agent Connect actions are absent. A request for one is rejected before device control or dispatch.
+`microscope.set_focus_zero`, `microscope.home_focus`, `microscope.focus_to_clearance`, `microscope.focus_to_saved_height`, and simulated `camera.turret_frame` actions are absent.
+An agent must not use a raw Console route, device serial command, or another interface to bypass this boundary.
+Incomplete and older profiles require the new human-recorded 5x initial reference before operation. Saved files are not silently rewritten.
+Keep calibration instructions in the project knowledge supplied to the runtime model.
+
 ## Results, errors and cancellation
 
 Submission returns HTTP `202` and an operation record. It does not prove dispatch or completion. Validation can reject the operation after admission. Poll `GET
@@ -275,7 +333,7 @@ sequence, recovery and orphan behavior. Report disconnected gas controllers and 
 
 The Console constructor controls physical dispatch. Requests cannot enable it. The library defaults to disabled physical dispatch. The 8082 physical Console advertises enabled
 commands, physical commands, furnace control and Stop. The simulator advertises simulated commands and Stop, with physical commands and furnace control disabled. Check the current
-mode flags rather than assuming deployment from the URL. Reviewed actions preserve device leases and native speed, alarm, travel, focus, clearance, temperature and ramp limits.
+mode flags rather than assuming deployment from the URL. Reviewed actions preserve device leases, native speed and alarm checks, stage travel limits, microscope focus travel budgets and switching-height checks, and temperature and ramp limits.
 Further device-service process-ID integration and deployment remain deferred. Console boot identity, client identity and control epoch are active now. Do not invent missing service
 identities, source times, capture times or reference continuity.
 

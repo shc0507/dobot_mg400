@@ -23,6 +23,11 @@ class Motor:
     remaining: int = 0
     direction: int = 1
     last_step_us: int = 0
+    sleeping: bool = False
+    velocity: int = 0
+    phase: int = 0
+    last_activity_ms: int = 0
+    done_pending: bool = False
 
 
 class MicroscopeSimulator:
@@ -41,7 +46,11 @@ class MicroscopeSimulator:
         home_max_steps: int = 0,
         home_speed: int = 100,
         home_timeout_ms: int = 30000,
+        firmware_version: int = 1,
     ):
+        if type(firmware_version) is not int or firmware_version not in (1, 2):
+            raise ValueError("firmware_version must be 1 or 2")
+        self.firmware_version = firmware_version
         if type(home_switch) is not bool:
             raise ValueError("home_switch must be boolean")
         integers = (home_direction, home_max_steps, home_speed, home_timeout_ms)
@@ -65,6 +74,7 @@ class MicroscopeSimulator:
         """Model power-up: disable both motors and lose every focus reference."""
         self.objective = Motor("OBJ", 400)
         self.focus = Motor("FOCUS", 800)
+        self.objective.sleeping = self.focus.sleeping = self.firmware_version == 2
         self.microstep = 1
         self._clear_reference()
         self.homing = False
@@ -73,6 +83,8 @@ class MicroscopeSimulator:
         self._switch_since_us = None
         self._switch_active = False
         self._now_us = 0
+        self._next_timer_us = 50
+        self._acceleration_tick = 0
         self._line = bytearray()
         self._discard = False
         return ["DUAL_A4988_READY", *self.status()]
@@ -88,6 +100,8 @@ class MicroscopeSimulator:
                 f"{motor.name}: enabled={int(motor.enabled)} moving={int(motor.moving)} "
                 f"speed={motor.speed} remaining={motor.remaining} pos={motor.position}"
             )
+            if self.firmware_version == 2:
+                lines[-1] += f" sleeping={int(motor.sleeping)} acceleration=2000"
         lines.append(
             f"FOCUS_REF: zeroed={int(self.zeroed)} limited={int(self.limited)} "
             f"min={self.minimum} max={self.maximum} homing={int(self.homing)}"
@@ -102,6 +116,10 @@ class MicroscopeSimulator:
             self._switch_since_us = None
         motor.moving = False
         motor.remaining = 0
+        if self.firmware_version == 2:
+            motor.velocity = motor.phase = 0
+            motor.done_pending = False
+            motor.last_activity_ms = self._now_us // 1000
 
     @staticmethod
     def _integer(text):
@@ -124,6 +142,8 @@ class MicroscopeSimulator:
                 continue
             if byte == 10:
                 if not self._discard and self._line:
+                    if self.firmware_version == 2:
+                        replies.extend(self._v2_foreground())
                     replies.extend(self._process(self._line.decode("ascii")))
                 self._line.clear()
                 self._discard = False
@@ -152,7 +172,7 @@ class MicroscopeSimulator:
             if name == "STATUS":
                 return self.status()
             if name == "VERSION":
-                return ["VERSION microscope-axes 1.0.0"]
+                return [f"VERSION microscope-axes {self.firmware_version}.0.0"]
             return [
                 "Commands:",
                 "  OBJ ENABLE",
@@ -209,6 +229,11 @@ class MicroscopeSimulator:
         if action in ("ENABLE", "DISABLE"):
             if values:
                 return ["ERR EXTRA_ARGUMENTS"]
+            if self.firmware_version == 2 and action == "ENABLE":
+                if motor.sleeping:
+                    self._advance_v2(0.001, foreground=False)
+                motor.sleeping = False
+                motor.last_activity_ms = self._now_us // 1000
             motor.enabled = action == "ENABLE"
             if not motor.enabled:
                 self._stop(motor)
@@ -233,7 +258,7 @@ class MicroscopeSimulator:
                 return [error]
             if not motor.enabled:
                 return [f"ERR {name} DISABLED"]
-            if motor.moving:
+            if motor.moving or motor.done_pending:
                 return [f"ERR {name} BUSY"]
             target = motor.position + value
             if not MIN_POSITION <= target <= MAX_POSITION:
@@ -245,6 +270,10 @@ class MicroscopeSimulator:
                 motor.remaining = abs(value)
                 motor.last_step_us = self._now_us
                 motor.moving = True
+                if self.firmware_version == 2:
+                    motor.velocity = min(motor.speed, 100)
+                    motor.phase = 0
+                    motor.last_activity_ms = self._now_us // 1000
             return [f"OK {name} MOVE {value}"]
         if name == "FOCUS" and action in ("ZERO", "LIMIT", "HOME"):
             if action == "LIMIT":
@@ -293,6 +322,10 @@ class MicroscopeSimulator:
         self.focus.remaining = self.home_max_steps
         self.focus.last_step_us = self._now_us
         self.focus.moving = self.homing = True
+        if self.firmware_version == 2:
+            self.focus.velocity = min(self.focus.speed, 100)
+            self.focus.phase = 0
+            self.focus.last_activity_ms = self._now_us // 1000
         self._switch_since_us = None
         self._home_started_us = self._now_us
         return ["OK FOCUS HOME"]
@@ -307,6 +340,8 @@ class MicroscopeSimulator:
         """Advance at most 60 seconds of virtual time, without sleeping."""
         if isinstance(seconds, bool) or not math.isfinite(seconds) or not 0 <= seconds <= 60:
             raise ValueError("seconds must be finite and within 0..60")
+        if self.firmware_version == 2:
+            return self._advance_v2(seconds)
         replies = []
         stop = self._now_us + round(seconds * 1_000_000)
         while self._now_us < stop:
@@ -341,4 +376,79 @@ class MicroscopeSimulator:
                     else:
                         motor.moving = False
                         replies.append(f"DONE {motor.name} POS {motor.position}")
+        return replies
+
+    def _v2_foreground(self):
+        replies = []
+        if self.homing:
+            elapsed = self._now_us // 1000 - self._home_started_us // 1000
+            if elapsed >= self.home_timeout_ms:
+                self._stop(self.focus)
+                replies.append("ERR FOCUS HOME TIMEOUT")
+            elif self._switch_active:
+                if self._switch_since_us is None:
+                    self._switch_since_us = self._now_us
+                elif self._now_us // 1000 - self._switch_since_us // 1000 >= 20:
+                    self._stop(self.focus)
+                    self.focus.position = 0
+                    self.zeroed = True
+                    replies.append("DONE FOCUS HOME")
+            else:
+                self._switch_since_us = None
+        for motor in (self.objective, self.focus):
+            if motor.done_pending:
+                motor.done_pending = False
+                if motor is self.focus and self.homing:
+                    self._stop(motor)
+                    replies.append("ERR FOCUS HOME TRAVEL")
+                else:
+                    replies.append(f"DONE {motor.name} POS {motor.position}")
+            idle = (self._now_us // 1000 - motor.last_activity_ms) & 0xFFFFFFFF
+            if not motor.moving and not motor.sleeping:
+                disable = motor is self.focus and motor.enabled and idle >= 30000
+                sleep = idle >= 120000
+                if disable or sleep:
+                    motor.enabled = False
+                    if motor is self.focus:
+                        self._clear_reference()
+                if sleep:
+                    motor.sleeping = True
+        return replies
+
+    def _advance_v2(self, seconds, *, foreground=True):
+        replies = []
+        stop = self._now_us + round(seconds * 1_000_000)
+        if foreground:
+            replies.extend(self._v2_foreground())
+        while self._next_timer_us <= stop:
+            self._now_us = self._next_timer_us
+            self._next_timer_us += 50
+            self._acceleration_tick = (self._acceleration_tick + 1) % 20
+            for motor in (self.objective, self.focus):
+                paused = motor is self.focus and self.homing and self._switch_active
+                if not motor.enabled or motor.sleeping or not motor.moving or paused:
+                    continue
+                if self._acceleration_tick == 0:
+                    target = motor.speed
+                    floor_speed = min(target, 100)
+                    if (motor.remaining - 1) * 4000 < motor.velocity**2:
+                        target = floor_speed
+                    if motor.velocity < target:
+                        motor.velocity = min(target, motor.velocity + 2)
+                    elif motor.velocity > target:
+                        motor.velocity = max(target, motor.velocity - 2)
+                motor.phase += motor.velocity
+                if motor.phase >= 20000:
+                    motor.phase -= 20000
+                    motor.position += motor.direction
+                    motor.remaining -= 1
+                    if motor.remaining == 0:
+                        motor.moving = False
+                        motor.done_pending = True
+                        motor.last_activity_ms = self._now_us // 1000
+            if foreground:
+                replies.extend(self._v2_foreground())
+        self._now_us = stop
+        if foreground:
+            replies.extend(self._v2_foreground())
         return replies

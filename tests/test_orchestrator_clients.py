@@ -155,8 +155,17 @@ def test_adapter_construction_makes_no_tls_context(monkeypatch):
     ServiceAdapter("http://127.0.0.1:1", "orch-tls-stage")
 
 
-@pytest.mark.parametrize("action", ["begin", "record"])
-def test_turret_capture_timeout_does_not_change_lease_transport(monkeypatch, action):
+@pytest.mark.parametrize(
+    "action, timeout",
+    [
+        ("begin", 15),
+        ("record", 15),
+        ("focus_move", 15),
+        ("measure_response", 55),
+        ("return_clearance", 55),
+    ],
+)
+def test_turret_capture_timeout_does_not_change_lease_transport(monkeypatch, action, timeout):
     adapter = ServiceAdapter("http://127.0.0.1:1", "orch-turret")
     original_timeout = adapter._http.timeout
     calls = []
@@ -171,7 +180,7 @@ def test_turret_capture_timeout_does_not_change_lease_transport(monkeypatch, act
     assert len(calls) == 1
     capture, requested, data = calls[0]
     assert requested == path and data == {"objective_id": 0}
-    assert capture is not adapter._http and capture.timeout == 15
+    assert capture is not adapter._http and capture.timeout == timeout
     assert capture._opener is adapter._http._opener
     assert adapter._http.timeout == original_timeout
 

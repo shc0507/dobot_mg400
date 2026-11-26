@@ -57,12 +57,19 @@ Shortcuts:
 | `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`, `set_gas_valve` |
 | `furnace acknowledge` | Acknowledge the furnace alarm |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`, `objective_nudge`, `focus_move` |
-| `microscope autofocus full\|local`, `microscope zero`, `microscope home` | `autofocus`, `set_focus_zero`, `home_focus` |
+| `microscope autofocus full\|local` | `autofocus` |
+| `labctl microscope call rough_focus_5x` | Move the seated 5x lens approximately to its initial height, without autofocus |
+| `labctl microscope call autofocus_sequence` | Start at 5x; autofocus 5x, 10x, 20x and 50x in order; stop on failure |
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | `start_recording` with a new `recording_id` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
 
-Run `microscope zero` only after an operator puts the 50x objective in focus at the clearance position. Do not use it to recover from a failed command: zero at another height moves the focus limits.
+Before microscope motion, a human must create and select a complete profile in the Console. See [microscope calibration](microscope.en.md#guided-turret-calibration).
+With both motors released, the human records each lens's X alignment and 1 separate focused 5x initial image. Only 5x Y controls coarse positioning.
+After the human releases control, use `labctl microscope take` before CLI motion. The service reads fresh images for each operation.
+Objective selection permits any lens in any order, without prior autofocus or a fresh sharpness check. It aligns saved X at the current focus height, without focus movement or automatic autofocus. The operator is responsible for physical clearance and selection order. Run `labctl microscope autofocus local` or `labctl microscope autofocus full` separately when needed.
+The human sets each lens's search half-range in Operate. The defaults are 5000 quarter-step pulses for 5x, 10x and 20x, and 3000 for 50x. Both native autofocus modes use the selected lens's saved range. The Console and Agent Connect use local mode. The optional combined command starts with 5x and advances only after verified autofocus.
+The legacy `microscope zero` and `microscope home` shortcuts remain in the CLI parser, but the current profile-based service does not support them.
 
 Stage coordinates use measured shaft rotations. Absolute `goto` requires completed calibration, valid bounds and fresh encoder feedback. Use Sample Transfer for saved positions. The old stage `home`, `zero` and `pose` shortcuts, and named `goto`, are unsupported.
 
@@ -76,7 +83,7 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 | `labctl chip locate SLOT` | Run `slot-state` for 1 slot. Print `state`, `center_xy_mm` and `angle_deg` |
 
 - Take every device of the recipe first. Otherwise the call fails, and `hint` names the `take` commands.
-- The run borrows the session's devices. The console keeps the leases, so the arm stays enabled and the microscope keeps focus zero. During the run, the session cannot command these devices. Stops still work.
+- The run borrows the session's devices. The console keeps the leases, so the arm stays enabled. The microscope refreshes its camera reference for each motion operation and releases focus after that operation. During the run, the session cannot command these devices. Stops still work.
 - The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
 - Run 1 `do` at a time in a session. During a run, `do` and `chip locate` of the same session fail with `busy`. The run continues.
 - If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort the run on the Overview.

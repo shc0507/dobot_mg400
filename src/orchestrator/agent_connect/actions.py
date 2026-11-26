@@ -5,6 +5,7 @@ import math
 import re
 
 from furnace.config import MAX_RAMP, MAX_TEMP
+from microscope.focus_travel import AUTOFOCUS_RANGE_FIELDS, MAX_FOCUS_TRAVEL, MAX_HALF_RANGE
 from stage_controller.protocol import (
     MAX_ROTATIONS,
     MAX_SPEED,
@@ -93,12 +94,16 @@ def _action(
     reason="",
     description=None,
     revision=REVISION,
+    min_properties=None,
 ):
+    params = obj(properties, required)
+    if min_properties is not None:
+        params["minProperties"] = min_properties
     return {
         "id": identifier,
         "label": label,
         "description": description or label + ". Uses the reviewed Console handler.",
-        "params": obj(properties, required),
+        "params": params,
         "defaults": defaults or {},
         "device": device,
         "revision": revision,
@@ -346,6 +351,12 @@ ACTION_SPECS = [
         "microscope",
         {"id": {"type": "integer", "enum": [0, 1, 2, 3]}},
         {"id": 0},
+        revision=7,
+        description=(
+            "Select any objective at the current focus height and align its saved X position. "
+            "Prior autofocus and a fixed lens order are not required. "
+            "The operator must provide physical clearance. Run autofocus separately if needed."
+        ),
     ),
     _action(
         "microscope.objective_nudge",
@@ -353,6 +364,11 @@ ACTION_SPECS = [
         "microscope",
         {"steps": {"type": "integer", "enum": [-10, -1, 1, 10]}},
         {"steps": 1},
+        revision=6,
+        description=(
+            "Nudge within the native objective window using the selected X calibration. "
+            "This does not run autofocus."
+        ),
     ),
     _action(
         "microscope.focus_move",
@@ -360,16 +376,71 @@ ACTION_SPECS = [
         "microscope",
         {"steps": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647}},
         {"steps": 1},
+        revision=6,
+        description=(
+            "Move focus by signed quarter-step pulses. Positive pulses raise the objectives. "
+            "The saved manual travel budget applies. This invalidates verified focus."
+        ),
     ),
     _action(
         "microscope.autofocus",
         "Run autofocus",
         "microscope",
-        {"mode": string(enum=["local", "full"])},
+        {"mode": string(enum=["local"])},
         {"mode": "local"},
+        revision=8,
+        description=(
+            "Run bounded autofocus on the current lens and verify final sharpness. "
+            "Use the current search range for that lens. "
+            "5x first uses its rough starting reference. Lens selection does not run autofocus."
+        ),
     ),
-    _action("microscope.set_focus_zero", "Set the focus zero", "microscope"),
-    _action("microscope.home_focus", "Move focus to clearance", "microscope"),
+    _action(
+        "microscope.rough_focus_5x",
+        "Position 5x near its starting height",
+        "microscope",
+        revision=6,
+        description=(
+            "Use the saved 5x marker Y only for coarse positioning. Requires the 5x lens. "
+            "This does not verify focus or start autofocus."
+        ),
+    ),
+    _action(
+        "microscope.autofocus_sequence",
+        "Focus 5x through 50x",
+        "microscope",
+        revision=7,
+        description=(
+            "Start with the 5x lens. Position it approximately, then autofocus 5x, 10x, 20x "
+            "and 50x in order, using each lens's configured search range. "
+            "Advance only after verified focus. Stop on any failure."
+        ),
+    ),
+    _action(
+        "microscope.set_autofocus_settings",
+        "Set autofocus search ranges",
+        "microscope",
+        {
+            field: {"type": "integer", "minimum": 4, "maximum": MAX_HALF_RANGE}
+            for field in AUTOFOCUS_RANGE_FIELDS
+        },
+        route="operating-settings",
+        command="autofocus-settings",
+        required=[],
+        min_properties=1,
+        description="Update one or more lens search half-ranges while microscope work is stopped.",
+    ),
+    _action(
+        "microscope.set_focus_travel_limit",
+        "Set manual focus travel limit",
+        "microscope",
+        {"pulses": {"type": "integer", "minimum": 1, "maximum": MAX_FOCUS_TRAVEL}},
+        route="operating-settings",
+        command="focus-travel-limit",
+        description=(
+            "Set the manual and rough focus travel budget while microscope work is stopped."
+        ),
+    ),
     _action(
         "microscope.set_stabilization",
         "Set image stabilization",
@@ -404,39 +475,19 @@ ACTION_SPECS = [
         {**RECORDING, "enabled": {"type": "boolean"}},
         required=["recording_id", "enabled"],
     ),
-    *[
-        _action(
-            "turret." + action,
-            label,
-            "microscope",
-            fields,
-            route="turret",
-            command=action,
-            required=required,
-        )
-        for action, label, fields, required in (
-            ("begin", "Begin turret calibration", {"name": NAME, "new": {"type": "boolean"}}, []),
-            (
-                "record",
-                "Record an objective image",
-                {"objective_id": {"type": "integer", "enum": [0, 1, 2, 3]}},
-                None,
-            ),
-            ("finish", "Finish turret calibration", {}, None),
-            ("cancel", "Cancel turret calibration", {}, None),
-            ("save", "Save the turret profile", {"name": NAME}, []),
-            ("select", "Select a turret profile", {"id": IDENTIFIER}, None),
-            ("load", "Load a turret profile", {"id": IDENTIFIER}, None),
-            ("delete", "Delete a turret profile", {"id": IDENTIFIER}, None),
-            (
-                "upload",
-                "Import a turret profile",
-                {"profile": string(minLength=1, maxLength=2097152)},
-                None,
-            ),
-        )
-    ],
-    _action("camera.turret_frame", "Read the simulated turret image", "microscope", route="frame"),
+    _action(
+        "turret.select",
+        "Select a saved microscope profile",
+        "microscope",
+        {"id": IDENTIFIER},
+        route="turret",
+        command="select",
+        revision=6,
+        description=(
+            "Activate a human-created calibration profile without moving equipment. "
+            "Agents cannot create, record, edit, import or delete turret calibration profiles."
+        ),
+    ),
     _action("camera.thermal_connect", "Connect the thermal camera", "thermal", command="connect"),
     _action(
         "camera.thermal_shutter", "Calibrate the thermal shutter", "thermal", command="shutter"

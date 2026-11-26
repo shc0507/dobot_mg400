@@ -100,7 +100,39 @@ def test_actual_device_shapes_and_schema():
             "focus_position_pulses": None,
             "focus_zero_known": False,
             "focus_limits_pulses": [-200, 300],
+            "focus_travel_limit_pulses": 1000,
+            "focus_reference": "relative_command",
             "cameras": {"microscope": True, "side": False},
+            "turret_profile": {
+                "id": "height-profile",
+                "ready": True,
+                "needs_height_calibration": False,
+            },
+            "visual_focus": {
+                "phase": "idle_released",
+                "objective_id": 2,
+                "y_px": 410.0,
+                "observed_at": 1700000000,
+            },
+            "autofocus_run": {
+                "phase": "failed",
+                "objective_id": 2,
+                "verified": False,
+                "completed": [0, 1],
+                "error": "No focus peak",
+                "sequence": True,
+                "search_half_range_pulses": 1200,
+            },
+            "autofocus_settings": {
+                "five_x_half_range_pulses": 5000,
+                "ten_x_half_range_pulses": 800,
+                "twenty_x_half_range_pulses": 1200,
+                "fifty_x_half_range_pulses": 300,
+            },
+            "motor_power": {
+                "objective": {"enabled": False, "sleeping": True},
+                "focus": {"enabled": False, "sleeping": True},
+            },
             "recording": {
                 "id": "rec",
                 "status": "recording",
@@ -134,6 +166,16 @@ def test_actual_device_shapes_and_schema():
     assert devices["furnace"]["sampled_at"] == 1700000000
     assert "steps" not in devices["furnace"]["values"]["sequence"]
     assert devices["microscope"]["values"]["focus_zero_known"] is False
+    for field in (
+        "turret_profile",
+        "visual_focus",
+        "autofocus_run",
+        "autofocus_settings",
+        "motor_power",
+        "focus_travel_limit_pulses",
+        "focus_reference",
+    ):
+        assert devices["microscope"]["values"][field] == states["microscope"][field]
     assert devices["microscope"]["values"]["recording"]["frame_count"] == 5
     assert "segments" not in devices["microscope"]["values"]["recording"]
     assert devices["thermal"]["frame_age_s"] == 2.5

@@ -167,6 +167,23 @@ def test_cameras_are_configured_by_the_camera_devices(rig):
     assert sources.configured("camera2") is True and sources.configured("camera3") is False
 
 
+def test_fifth_shared_camera_by_id_preserves_the_four_console_views(rig):
+    devices = [f"/dev/v4l/by-path/port-{number}-video-index0" for number in range(1, 5)]
+    devices.append("/dev/v4l/by-id/usb-Wrist_Camera_1234-video-index0")
+    rig.service.settings = {
+        **rig.service.settings,
+        "MG400_CAMERA_DEVICES": ",".join(devices),
+        "MG400_CAMERA_MODES": ("3840x2160@30,1280x720@30,1280x720@30,1280x720@30,3840x2160@30"),
+        "MG400_MICROSCOPE_SIDE_STREAM": "camera3",
+    }
+    source = cameras_module.HttpSources(rig.service)
+    assert all(source.configured(f"camera{number}") for number in range(1, 5))
+    assert source.modes()["camera1"] == (3840, 2160, 30)
+    assert source.modes()["camera3"] == (1280, 720, 30)
+    assert source.modes()["camera4"] == (1280, 720, 30)
+    assert cameras_module.CAMERAS == ("camera1", "camera2", "camera3", "camera4")
+
+
 def test_thermal_frame_is_cached_trimmed_and_reports_its_age(rig):
     from datetime import datetime, timezone
 

@@ -135,7 +135,58 @@ test("missing readings remain unknown and normalized units remain explicit", () 
   const furnace = Object.fromEntries(summary("furnace", { values: { pv_c: 21.5, sp_c: null }, cached_state: { values: { flow: { connected: false } } } }));
   assert.equal(furnace.Measured, "21.5 °C"); assert.equal(furnace.Setpoint, "Unknown"); assert.equal(furnace["Gas controller"], "Disconnected");
   const microscope = Object.fromEntries(summary("microscope", { values: { focus_position_pulses: null, focus_zero_known: false } }));
-  assert.equal(microscope.Focus, "Unknown"); assert.equal(microscope["Zero known"], "No");
+  assert.equal(microscope["Relative focus count"], "Unknown"); assert.equal("Zero known" in microscope, false);
+  assert.equal(microscope["Turret profile"], "Unknown"); assert.equal(microscope["Profile status"], "Unknown");
+  assert.equal(microscope["Last visual observation"], "Not received");
+  assert.equal(microscope["Turret power"], "Unknown"); assert.equal(microscope["Focus power"], "Unknown");
+});
+
+test("microscope shows the selected turret profile and the last visual observation", () => {
+  const values = {
+    objective_id: 1, focus_position_pulses: null, focus_travel_limit_pulses: 1000, focus_reference: "relative_command", busy: false, recording: {status:"idle", frame_count:0},
+    turret_profile: {id:"profile-1",name:"Sample surface",ready:true,needs_height_calibration:false},
+    visual_focus: {phase:"idle_released",y_px:1120.125,target_y_px:1120,observed_at:1795608000},
+    autofocus_settings: {five_x_half_range_pulses:5000,ten_x_half_range_pulses:800,twenty_x_half_range_pulses:1200,fifty_x_half_range_pulses:300},
+    autofocus_run: {phase:"failed",verified:false,search_half_range_pulses:1200,score:42,error:"No focus peak"},
+    motor_power: {objective:{enabled:false,sleeping:true},focus:{enabled:false,sleeping:false}},
+  };
+  const received = structuredClone(values);
+  const metrics = Object.fromEntries(summary("microscope", {quality:"valid",age_s:0,values}));
+  assert.equal(metrics["Turret profile"], "Sample surface"); assert.equal(metrics["Profile status"], "Ready");
+  assert.equal(metrics["Visual phase"], "idle released"); assert.equal(metrics["Last observed Y"], "1120.125 px");
+  assert.equal(metrics["Target Y"], "1120 px"); assert.equal(metrics["Last visual observation"], "2026-11-25 12:00:00 UTC");
+  assert.equal(metrics["Turret power"], "Asleep"); assert.equal(metrics["Focus power"], "Released");
+  assert.equal(metrics["Relative focus count"], "Unknown");
+  assert.equal(metrics["Manual/coarse travel budget"], "1000 pulses");
+  assert.equal(metrics["5x search half-range"], "5000 pulses");
+  assert.equal(metrics["10x search half-range"], "800 pulses");
+  assert.equal(metrics["20x search half-range"], "1200 pulses");
+  assert.equal(metrics["50x search half-range"], "300 pulses");
+  assert.equal(metrics["Active search half-range"], "1200 pulses");
+  assert.equal(metrics["Autofocus phase"], "failed");
+  assert.equal(metrics["Focus verified"], "No");
+  assert.equal(metrics["Focus result"], "No focus peak");
+  assert.deepEqual(values, received);
+  const previous = globalThis.document;
+  const make = tag => ({tag,textContent:"",children:[],append(...items){this.children.push(...items);}});
+  globalThis.document = {createElement:make};
+  try {
+    assert.match(deviceVisual("microscope", {values}).children.at(-1).textContent, /last visual observation, not continuous tracking/);
+  } finally {globalThis.document=previous;}
+});
+
+test("microscope legacy sleep remains unknown and incomplete profiles remain not ready", () => {
+  for (const [enabled, expected] of [[false,"Released"],[true,"Enabled"]]) {
+    const metrics=Object.fromEntries(summary("microscope", {values:{
+      turret_profile:{id:"old",ready:false,needs_height_calibration:true},
+      motor_power:{objective:{enabled,sleeping:null},focus:{enabled,sleeping:false}},
+    }}));
+    assert.equal(metrics["Turret profile"], "old"); assert.equal(metrics["Profile status"], "Needs 5x initial reference");
+    assert.equal(metrics["Turret power"], expected + " · Sleep not reported"); assert.equal(metrics["Focus power"], expected);
+  }
+  const metrics=Object.fromEntries(summary("microscope", {values:{turret_profile:{id:null,ready:false},visual_focus:{observed_at:1e30}}}));
+  assert.equal(metrics["Turret profile"], "Not selected"); assert.equal(metrics["Profile status"], "Not ready");
+  assert.equal(metrics["Last visual observation"], "Unknown");
 });
 
 test("observation quality is independent of a current device cache", () => {

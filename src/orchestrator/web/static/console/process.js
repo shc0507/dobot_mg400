@@ -11,6 +11,13 @@
   const DESCRIBE_RETRY_MS = 10000;
   const HISTORY_S = 3600;
   const CHART = { width: 560, height: 160, left: 40, right: 550, top: 20, bottom: 120 };
+  const AF_LENSES = [
+    { field: "five_x_half_range_pulses", label: "5×" },
+    { field: "ten_x_half_range_pulses", label: "10×" },
+    { field: "twenty_x_half_range_pulses", label: "20×" },
+    { field: "fifty_x_half_range_pulses", label: "50×" },
+  ];
+  const AF_PRESETS = [100, 300, 500, 1500, 3000, 5000, 10000];
   const SVG_NS = "http://www.w3.org/2000/svg";
   const DEFAULT_STEP = { temperature_c: 100, ramp_rate_c_per_min: 5, hold_minutes: 10 };
   const ACTIVE_RECORDING = new Set(["starting", "recording"]);
@@ -50,12 +57,25 @@
       "obj.title": "Objective", "obj.name": "Objective {id}", "obj.named": "Objective {id}, {name}", "turret.title": "Turret",
       "obj.nudge": "Turn the turret {steps} full steps", "obj.offset": "Turret {offset} / ±{limit} full steps",
       "obj.offsetUnknown": "Turret offset unknown. Select another objective first.",
-      "focus.title": "Focus", "focus.position": "{pos} / {max} pulses", "focus.unknown": "Position unknown",
-      "focus.noLimits": "Limits not measured", "focus.min": "{min} · window side", "focus.max": "{max} · away",
-      "focus.bar": "Focus position", "focus.jog": "Jog pulses", "focus.down": "Jog focus −", "focus.up": "Jog focus +",
-      "focus.local": "Autofocus", "focus.full": "Full autofocus",
-      "zero.reminder": "The focus gears can slip. Re-zero at the 50x focus before each use.",
-      "zero.set": "Set focus zero",
+      "focus.title": "Focus", "focus.jog": "Jog pulses", "focus.down": "Jog focus −", "focus.up": "Jog focus +",
+      "focus.local": "Autofocus",
+      "scope.operate": "Operate", "scope.calibration": "Calibration", "scope.tabs": "Microscope sections",
+      "scope.profileRequired": "Select a turret profile with a 5× starting point to use lens switching and focus.",
+      "scope.profileLegacy": "Load this profile in Calibration, then record its 5× starting point.",
+      "scope.rough5x": "Rough position 5×", "scope.sequence": "Focus 5× → 50×", "scope.sequenceHint": "Select any lens directly. The optional autofocus sequence runs 5× → 10× → 20× → 50×.",
+      "focus.travel": "Manual / rough travel limit", "focus.travelUnit": "quarter-step pulses", "focus.travelPresets": "Preset", "focus.travelCustom": "Custom",
+      "focus.travelApply": "Apply", "focus.travelSaved": "Max focus travel saved.", "focus.travelInvalid": "Enter a whole number from 1 to 2147483647 pulses.",
+      "focus.travelHelp": "Total focus movement allowed for manual jogs and rough 5× positioning. Autofocus uses its own search budget. Neither setting is an absolute position limit.",
+      "focus.travelCurrent": "Saved limit: {pulses} pulses", "focus.travelUnknown": "Saved limit unavailable",
+      "scope.visual": "5× rough reference · last Y {current} px · target {target} px", "scope.phase": "{phase}",
+      "af.title": "Autofocus status", "af.idle": "Not started", "af.waiting": "Waiting", "af.running": "Running", "af.verified": "Verified", "af.failed": "Failed", "af.stopped": "Stopped",
+      "af.score": "Scan score {score}", "af.noScore": "No scan score", "af.phase": "{lens} · {phase}", "af.travel": "Total movement budget · {used} used / {limit} allowed pulses",
+      "af.range": "Search half-range", "af.rangeLens": "Lens", "af.rangeSaved": "{lens} search range saved.", "af.rangeInvalid": "Enter a whole number from 4 to 1000000 pulses.",
+      "af.rangeHelp": "{lens}: search ±{range} pulses around the starting point ({span} total span). Apply saves only this lens.",
+      "af.rangeCurrent": "Saved ranges · quarter-step pulses", "af.rangeUnknown": "Search range unavailable", "af.rangeDirty": "Unsaved value for {lens}",
+      "af.scanRange": "Scan half-range ±{range} pulses · {span} total span",
+      "power.objective": "Turret", "power.focus": "Focus", "power.sleeping": "Asleep", "power.enabled": "Enabled", "power.disabled": "Released", "power.unknown": "Unknown",
+      "focus.visualReady": "5× starting reference", "focus.visualIdle": "Camera Y is used only for rough 5× positioning.",
       "rec.title": "Recording", "rec.off": "off", "rec.snapshot": "Save snapshot", "rec.start": "Start recording", "rec.stop": "Stop recording",
       "rec.arm": "Record next furnace sequence", "rec.disarm": "Cancel sequence recording",
       "rec.stabOn": "Turn stabilization on", "rec.stabOff": "Turn stabilization off",
@@ -68,7 +88,7 @@
       "act.apply_setpoint": "Apply and run", "act.connect": "Connect furnace", "act.connect_flow": "Connect gas flow",
       "act.set_gas_flow": "Send flow", "act.set_sequence": "Save sequence", "act.start_sequence": "Start sequence",
       "act.autofocus": "Autofocus", "act.focus_move": "Focus jog", "act.objective_nudge": "Turret nudge",
-      "act.record_with_sequence": "Record next furnace sequence", "act.select_objective": "Objective", "act.set_focus_zero": "Focus zero",
+      "act.record_with_sequence": "Record next furnace sequence", "act.select_objective": "Objective", "act.rough_focus_5x": "Rough position 5×", "act.autofocus_sequence": "Focus 5× → 50×",
       "act.set_stabilization": "Stabilization", "act.snapshot": "Save snapshot", "act.start_recording": "Start recording",
       "act.stop_recording": "Stop recording", "refused": "Refused: {error}", "unknown": "The outcome is unknown. Check the device before you send it again.",
       "stop.result": "{device} stop: {outcome}",
@@ -116,12 +136,25 @@
       "obj.title": "物镜", "obj.name": "物镜 {id}", "obj.named": "物镜 {id}，{name}", "turret.title": "转盘",
       "obj.nudge": "转盘转动 {steps} 整步", "obj.offset": "转盘 {offset} / ±{limit} 整步",
       "obj.offsetUnknown": "转盘偏移未知。先选择其他物镜。",
-      "focus.title": "对焦", "focus.position": "{pos} / {max} 脉冲", "focus.unknown": "位置未知",
-      "focus.noLimits": "限位未测量", "focus.min": "{min} · 窗口侧", "focus.max": "{max} · 远离",
-      "focus.bar": "对焦位置", "focus.jog": "点动脉冲", "focus.down": "对焦点动 −", "focus.up": "对焦点动 +",
-      "focus.local": "自动对焦", "focus.full": "全程自动对焦",
-      "zero.reminder": "对焦齿轮可能打滑。每次使用前在 50x 焦点处重新设零。",
-      "zero.set": "设置对焦零点",
+      "focus.title": "对焦", "focus.jog": "点动脉冲", "focus.down": "对焦点动 −", "focus.up": "对焦点动 +",
+      "focus.local": "自动对焦",
+      "scope.operate": "操作", "scope.calibration": "校准", "scope.tabs": "显微镜分区",
+      "scope.profileRequired": "选择包含 5× 起点的转盘配置后，才能切换物镜和对焦。",
+      "scope.profileLegacy": "在校准页加载此配置，再记录 5× 起点。",
+      "scope.rough5x": "5× 粗定位", "scope.sequence": "对焦 5× → 50×", "scope.sequenceHint": "可以直接选择任意物镜。也可以按 5× → 10× → 20× → 50× 运行自动对焦序列。",
+      "focus.travel": "手动 / 粗定位行程上限", "focus.travelUnit": "四分之一步脉冲", "focus.travelPresets": "预设", "focus.travelCustom": "自定义",
+      "focus.travelApply": "应用", "focus.travelSaved": "已保存最大对焦行程。", "focus.travelInvalid": "请输入 1 到 2147483647 之间的整数脉冲。",
+      "focus.travelHelp": "手动点动和 5× 粗定位允许的对焦总移动量。自动对焦使用独立搜索预算。两种设置都不是绝对位置上限。",
+      "focus.travelCurrent": "已存上限：{pulses} 脉冲", "focus.travelUnknown": "已存上限不可用",
+      "scope.visual": "5× 粗定位参考 · 最后 Y {current} px · 目标 {target} px", "scope.phase": "{phase}",
+      "af.title": "自动对焦状态", "af.idle": "尚未开始", "af.waiting": "等待", "af.running": "运行中", "af.verified": "已验证", "af.failed": "失败", "af.stopped": "已停止",
+      "af.score": "扫描评分 {score}", "af.noScore": "暂无扫描评分", "af.phase": "{lens} · {phase}", "af.travel": "累计移动预算 · 已用 {used} / 允许 {limit} 脉冲",
+      "af.range": "搜索半范围", "af.rangeLens": "物镜", "af.rangeSaved": "已保存 {lens} 搜索范围。", "af.rangeInvalid": "请输入 4 到 1000000 之间的整数脉冲。",
+      "af.rangeHelp": "{lens}：在起点两侧搜索 ±{range} 脉冲（总跨度 {span}）。应用只保存当前物镜。",
+      "af.rangeCurrent": "已存范围 · 四分之一步脉冲", "af.rangeUnknown": "搜索范围不可用", "af.rangeDirty": "{lens} 有未保存的值",
+      "af.scanRange": "扫描半范围 ±{range} 脉冲 · 总跨度 {span}",
+      "power.objective": "转盘", "power.focus": "对焦", "power.sleeping": "休眠", "power.enabled": "已启用", "power.disabled": "已释放", "power.unknown": "未知",
+      "focus.visualReady": "5× 起点参考", "focus.visualIdle": "相机 Y 仅用于 5× 粗定位。",
       "rec.title": "录制", "rec.off": "关", "rec.snapshot": "保存快照", "rec.start": "开始录制", "rec.stop": "停止录制",
       "rec.arm": "录制下一次炉子程序", "rec.disarm": "取消程序录制",
       "rec.stabOn": "开启防抖", "rec.stabOff": "关闭防抖",
@@ -134,7 +167,7 @@
       "act.apply_setpoint": "应用并运行", "act.connect": "连接炉子", "act.connect_flow": "连接气体流量计",
       "act.set_gas_flow": "发送流量", "act.set_sequence": "保存程序", "act.start_sequence": "启动程序",
       "act.autofocus": "自动对焦", "act.focus_move": "对焦点动", "act.objective_nudge": "转盘微调",
-      "act.record_with_sequence": "录制下一次炉子程序", "act.select_objective": "物镜", "act.set_focus_zero": "对焦零点",
+      "act.record_with_sequence": "录制下一次炉子程序", "act.select_objective": "物镜", "act.rough_focus_5x": "5× 粗定位", "act.autofocus_sequence": "对焦 5× → 50×",
       "act.set_stabilization": "防抖", "act.snapshot": "保存快照", "act.start_recording": "开始录制",
       "act.stop_recording": "停止录制", "refused": "已拒绝：{error}", "unknown": "结果未知。再次发送前先检查设备。",
       "stop.result": "{device}停止：{outcome}",
@@ -215,15 +248,6 @@
       hold_minutes: String(step.hold_minutes ?? ""),
       gas: Object.fromEntries([0, 1, 2].map(channel => [String(channel), step.gas?.[channel] ?? step.gas?.[String(channel)] ?? ""]).map(([k, v]) => [k, String(v)])),
     }));
-  }
-
-  /** Position of the focus on the measured limits, as 0..1, or null. */
-  function focusFraction(position, limits) {
-    const pos = finite(position);
-    if (pos === null || !Array.isArray(limits) || limits.length !== 2) return null;
-    const [low, high] = limits.map(finite);
-    if (low === null || high === null || high <= low) return null;
-    return Math.min(1, Math.max(0, (pos - low) / (high - low)));
   }
 
   function modeKey(furnace) {
@@ -312,12 +336,15 @@
 
   const view = { api: null, root: null, global: null, timer: null, status: null, describe: {}, describeAt: {}, rows: null, dirty: false,
     endGas: { 0: "0", 1: "0", 2: "0" }, endUntil: "", target: "200", ramp: "10", jog: "100", flows: { 0: "0", 1: "0", 2: "0" },
-    confirm: null, busy: new Set(), tiles: {}, nodes: {}, open: {}, scopeView: "microscope", turretCalibration: null,
+    confirm: null, busy: new Set(), tiles: {}, nodes: {}, open: {}, scopeView: "microscope", scopeTab: "operate", turretCalibration: null,
+    focusTravel: "20000", focusTravelDirty: false, focusTravelSaved: null, focusTravelRead: false,
+    afLens: 0, afDrafts: {}, afDirty: new Set(), afSettings: null, afSettingsRead: false, afSettingsEpoch: 0, afSettingsPending: false, afPollSequence: 0, afAcceptedSequence: 0,
     snapPath: "", rec: { name: "", mode: "time_lapse", interval: "30", fps: "1" } };
 
   function show() {
     if (!view.api || view.timer) return;
     view.turretCalibration?.show();
+    view.turretCalibration?.setCalibrationVisible?.(view.scopeTab === "calibration");
     poll();
     view.timer = setInterval(poll, POLL_MS);
   }
@@ -329,8 +356,47 @@
   }
 
   async function poll() {
+    const afEpoch = view.afSettingsEpoch, afPollSequence = ++view.afPollSequence;
+    const currentSettingsRead = () => afEpoch === view.afSettingsEpoch && afPollSequence >= view.afAcceptedSequence;
+    const acceptSettings = settings => {
+      if (currentSettingsRead()) { view.afSettings = settings; view.afAcceptedSequence = afPollSequence; }
+    };
     try { view.status = await view.api.request("status"); }
     catch { view.status = null; }
+    const travel = view.status?.microscope?.focus_travel_limit_pulses;
+    if (Number.isSafeInteger(travel) && travel > 0) {
+      view.focusTravelSaved = travel;
+      if (!view.focusTravelDirty) view.focusTravel = String(travel);
+    } else if (!view.focusTravelRead) {
+      view.focusTravelRead = true;
+      try {
+        const result = await view.api.request("microscope/focus-travel-limit");
+        if (Number.isSafeInteger(result?.focus_travel_limit_pulses)) {
+          view.focusTravelSaved = result.focus_travel_limit_pulses;
+          if (!view.focusTravelDirty) view.focusTravel = String(view.focusTravelSaved);
+        }
+      } catch { view.focusTravelRead = false; }
+    }
+    if (currentSettingsRead()) {
+      const settings = view.status?.microscope?.autofocus_settings;
+      const matchesSaved = AF_LENSES.every(({ field }) => settings?.[field] === view.afSettings?.[field]);
+      if (view.afSettingsPending && !matchesSaved) {
+        // A Console cache can lag a successful save. Read the settings endpoint until it catches up.
+        try {
+          const fresh = await view.api.request("microscope/autofocus-settings");
+          acceptSettings(fresh);
+        } catch { /* Keep the last confirmed settings while the direct read is unavailable. */ }
+      } else if (Number.isSafeInteger(settings?.five_x_half_range_pulses)) {
+        acceptSettings(settings); view.afSettingsPending = false;
+      } else if (!view.afSettingsRead) {
+        view.afSettingsRead = true;
+        try {
+          const fresh = await view.api.request("microscope/autofocus-settings");
+          acceptSettings(fresh);
+        } catch { view.afSettingsRead = false; }
+      }
+    }
+    syncAutofocusDrafts();
     // Read each description once; retry a missing one at most every DESCRIBE_RETRY_MS.
     const at = Date.now();
     for (const device of ["furnace", "microscope"]) {
@@ -351,6 +417,13 @@
       buildSequence();
     }
     update();
+  }
+
+  function syncAutofocusDrafts() {
+    for (const { field } of AF_LENSES) {
+      const value = view.afSettings?.[field];
+      if (!view.afDirty.has(field) && Number.isSafeInteger(value)) view.afDrafts[field] = String(value);
+    }
   }
 
   function mount(node, api, global) {
@@ -430,6 +503,21 @@
   }
 
   /** Show 1 preview view. The hidden view stops its stream. */
+  function showScopeTab(tab) {
+    view.scopeTab = tab === "calibration" ? "calibration" : "operate";
+    const calibration = view.scopeTab === "calibration", n = view.nodes;
+    if (n.operatePanel) n.operatePanel.hidden = calibration;
+    if (n.calibrationPanel) n.calibrationPanel.hidden = !calibration;
+    n.tabButtons?.forEach((button, index) => {
+      const selected = (index === 1) === calibration;
+      button.setAttribute("aria-selected", String(selected));
+      button.setAttribute("tabindex", "0");
+    });
+    view.turretCalibration?.setCalibrationVisible?.(calibration);
+    if (calibration) Object.values(view.tiles).forEach(tile => tile?.labCameras?.stop?.());
+    else showView(view.scopeView);
+  }
+
   function showView(name) {
     view.scopeView = name === "camera3" ? "camera3" : "microscope";
     const n = view.nodes;
@@ -545,17 +633,34 @@
     });
     n.offset = el("span", { class: "pr-mono", "data-role": "nudge-offset" });
     n.nudgeRow = el("div", { class: "pr-row", "data-role": "nudge-row", hidden: true }, ...n.nudges, n.offset);
-    n.focusText = el("span", { class: "pr-mono pr-focus-pos" });
-    n.focusFill = el("span", { class: "pr-bar-fill" });
-    n.focusBar = el("div", { class: "pr-bar", role: "meter", "aria-label": t("focus.bar"), "aria-valuemin": "0", "aria-valuemax": "100" }, n.focusFill);
-    n.focusMin = el("span", {});
-    n.focusMax = el("span", {});
+    n.focusTravel = input({ type: "number", min: "1", max: "2147483647", step: "1", class: "pr-input pr-travel-input", "data-role": "focus-travel" }, view.focusTravel, value => { view.focusTravel = value; view.focusTravelDirty = true; update(); });
+    n.focusTravelPreset = el("select", { class: "pr-input", "aria-label": t("focus.travelPresets"), "data-role": "focus-travel-preset", onchange: event => {
+      if (!event.target.value) return;
+      view.focusTravel = event.target.value; view.focusTravelDirty = true; update();
+    } }, el("option", { value: "", text: t("focus.travelCustom") }), ...[200, 500, 1000, 2000, 20000].map(value => el("option", { value: String(value), text: String(value) })));
+    n.focusTravelApply = button(t("focus.travelApply"), applyFocusTravel, { "data-role": "focus-travel-apply" });
+    n.focusTravelCurrent = el("span", { class: "pr-profile-note", "data-role": "focus-travel-current" });
+    n.afLens = el("select", { class: "pr-input", "data-role": "af-range-lens", onchange: event => {
+      const index = Number(event.target.value);
+      if (Number.isInteger(index) && AF_LENSES[index]) { view.afLens = index; update(); }
+    } }, ...AF_LENSES.map((lens, index) => el("option", { value: String(index), text: lens.label })));
+    n.afRange = input({ type: "number", min: "4", max: "1000000", step: "1", class: "pr-input pr-travel-input", "data-role": "af-range" }, view.afDrafts[AF_LENSES[view.afLens].field] || "", value => {
+      const field = AF_LENSES[view.afLens].field; view.afDrafts[field] = value; view.afDirty.add(field); update();
+    });
+    n.afPreset = el("select", { class: "pr-input", "aria-label": t("focus.travelPresets"), "data-role": "af-range-preset", onchange: event => {
+      if (!event.target.value) return;
+      const field = AF_LENSES[view.afLens].field; view.afDrafts[field] = event.target.value; view.afDirty.add(field); update();
+    } }, el("option", { value: "", text: t("focus.travelCustom") }), ...AF_PRESETS.map(value => el("option", { value: String(value), text: "±" + value })));
+    n.afApply = button(t("focus.travelApply"), applyAutofocusRange, { "data-role": "af-range-apply" });
+    n.afRangeCurrent = el("span", { class: "pr-profile-note", "data-role": "af-range-current" });
+    n.afRangeHelp = el("p", { class: "pr-profile-note", "data-role": "af-range-help" });
+    n.afSavedRanges = el("div", { class: "pr-af-saved", "data-role": "af-saved-ranges" });
+    n.afDraftNote = el("span", { class: "pr-profile-note", "data-role": "af-draft-note" });
     const jog = input({ type: "number", min: "1", step: "1", class: "pr-step-input", "data-role": "jog", "aria-label": t("focus.jog") }, view.jog, value => { view.jog = value; });
     n.motion = [
       button("−", () => jogFocus(-1), { class: "pr-step-button", "data-role": "jog-down", "aria-label": t("focus.down") }),
       button("+", () => jogFocus(1), { class: "pr-step-button", "data-role": "jog-up", "aria-label": t("focus.up") }),
       button(t("focus.local"), () => send("microscope", "autofocus", { mode: "local" }), { "data-role": "af-local" }),
-      button(t("focus.full"), () => send("microscope", "autofocus", { mode: "full" }), { "data-role": "af-full" }),
     ];
     n.snapshot = button(t("rec.snapshot"), saveSnapshot, { "data-role": "snapshot" });
     n.snapPath = input({ type: "text", maxlength: "4096", class: "pr-input pr-wide", autocomplete: "off", "data-role": "snapshot-path" }, view.snapPath, value => { view.snapPath = value; });
@@ -582,14 +687,34 @@
     const preview = el("div", { class: "pr-preview" }, ...n.viewPanes,
       el("div", { class: "pr-seg", role: "group", "aria-label": t("view.switch") }, ...n.viewButtons));
 
-    n.zero = button(t("zero.set"), () => send("microscope", "set_focus_zero", {}), { class: "lc-danger pr-danger", "data-role": "zero", title: t("zero.reminder") });
+    n.profileNote = el("p", { class: "pr-profile-note", "data-role": "profile-note", role: "status" });
+    n.power = el("div", { class: "pr-power", "data-role": "motor-power" });
+    n.visual = el("p", { class: "pr-visual", "data-role": "visual-focus", role: "status" });
+    n.rough5x = button(t("scope.rough5x"), () => send("microscope", "rough_focus_5x", {}), { "data-role": "rough-focus-5x" });
+    n.afSequence = button(t("scope.sequence"), () => send("microscope", "autofocus_sequence", {}), { "data-role": "autofocus-sequence" });
+    n.afPhase = el("strong", { "data-role": "af-phase" });
+    n.afScore = el("span", { class: "pr-mono", "data-role": "af-score" });
+    n.afTravel = el("span", { class: "pr-profile-note", "data-role": "af-travel" });
+    n.afScanRange = el("p", { class: "pr-profile-note", "data-role": "af-scan-range" });
+    n.afSteps = el("ol", { class: "pr-af-steps", "data-role": "af-steps" });
+    n.afError = el("p", { class: "pr-warn", "data-role": "af-error", hidden: true });
+    const afStatus = el("section", { class: "pr-af-status", "data-role": "af-status", "aria-label": t("af.title") },
+      el("div", { class: "pr-row" }, el("span", { class: "pr-band-label", text: t("af.title") }), n.afPhase), n.afSteps,
+      el("div", { class: "pr-row" }, n.afScore), n.afScanRange,
+      el("div", { class: "pr-row" }, n.afTravel), n.afError);
+    n.tabButtons = ["operate", "calibration"].map(tab => button(t("scope." + tab), () => showScopeTab(tab), {
+      class: "pr-tab", role: "tab", id: "pr-tab-" + tab, "aria-controls": "pr-panel-" + tab,
+      "aria-selected": String(view.scopeTab === tab), "data-role": "scope-tab-" + tab,
+    }));
     const scope = el("section", { class: "lc-card pr-card pr-scope", "aria-labelledby": "pr-scope-title" },
       el("div", { class: "lc-card-head" },
         el("div", { class: "pr-head" }, el("h2", { id: "pr-scope-title", text: t("scope.title") }), n.scopeSub),
         el("div", { class: "pr-row" }, ...controlButtons("microscope"),
           el("button", { type: "button", class: "lc-danger pr-danger", "data-role": "stop-microscope", text: t("scope.stop"), onclick: stopMicroscope }))),
-      n.scopeNote,
-      preview,
+      n.scopeNote, n.power,
+      el("div", { class: "pr-tabs", role: "tablist", "aria-label": t("scope.tabs") }, ...n.tabButtons),
+      n.operatePanel = el("div", { class: "pr-operate", id: "pr-panel-operate", role: "tabpanel", "aria-labelledby": "pr-tab-operate", "data-role": "scope-operate" },
+      preview, n.profileNote, n.visual, afStatus,
       el("div", { class: "pr-band" },
         el("span", { class: "pr-band-label", id: "pr-obj-title", text: t("obj.title") }),
         el("div", { class: "tr-objective-controls" },
@@ -597,11 +722,23 @@
           view.turretCalibration?.profileSelector),
         el("span", { class: "pr-band-label", text: t("focus.title") }),
         el("div", { class: "pr-focus" },
-          el("div", { class: "pr-focus-bar" }, n.focusBar, el("div", { class: "pr-bar-labels" }, n.focusMin, n.focusText, n.focusMax)),
           el("div", { class: "pr-row" },
             el("div", { class: "pr-stepper" }, n.motion[0], jog, n.motion[1]),
-            n.motion[2], n.motion[3],
-            el("span", { class: "pr-push" }), n.zero))),
+            n.motion[2],
+            el("span", { class: "pr-push" })),
+          el("div", { class: "pr-row pr-focus-actions" }, n.rough5x, n.afSequence),
+          el("p", { class: "pr-profile-note pr-af-hint", text: t("scope.sequenceHint") }),
+          el("div", { class: "pr-focus-budget" },
+            el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("af.rangeLens"), n.afLens),
+              el("label", { class: "pr-field" }, t("af.range"), n.afRange),
+              el("label", { class: "pr-field" }, t("focus.travelPresets"), n.afPreset), n.afApply,
+              el("span", { class: "pr-profile-note", text: t("focus.travelUnit") })), n.afRangeHelp, n.afDraftNote,
+            n.afRangeCurrent, n.afSavedRanges),
+          el("div", { class: "pr-focus-budget" },
+            el("div", { class: "pr-row pr-end" }, el("label", { class: "pr-field" }, t("focus.travel"), n.focusTravel),
+              el("label", { class: "pr-field" }, t("focus.travelPresets"), n.focusTravelPreset), n.focusTravelApply,
+              el("span", { class: "pr-profile-note", text: t("focus.travelUnit") })),
+            n.focusTravelCurrent, el("p", { class: "pr-profile-note", text: t("focus.travelHelp") })))),
       el("div", { class: "pr-more" },
         n.turret = disclosure("turret", t("turret.title"), null, n.nudgeRow),
         disclosure("recording", t("rec.title"), n.recSummary,
@@ -612,11 +749,12 @@
             el("label", { class: "pr-field" }, t("rec.interval"), n.recInterval),
             el("label", { class: "pr-field" }, t("rec.fps"), n.recFps)),
           el("div", { class: "pr-row" }, n.record, n.arm, n.stab),
-          n.recState, n.recError)));
+          n.recState, n.recError))),
+      n.calibrationPanel = el("div", { id: "pr-panel-calibration", role: "tabpanel", "aria-labelledby": "pr-tab-calibration", "data-role": "scope-calibration" }, view.turretCalibration?.element));
 
     view.root.replaceChildren(el("div", { class: "pr-workspace" }, n.stale = el("p", { class: "pr-warn", hidden: true }),
-      el("div", { class: "pr-layout" }, scope, furnace), view.turretCalibration?.element));
-    showView(view.scopeView);
+      el("div", { class: "pr-layout" }, scope, furnace)));
+    showScopeTab(view.scopeTab);
     buildSequence();
     update();
   }
@@ -756,7 +894,7 @@
     // Microscope.
     const mHolder = holder(view.api, "microscope");
     const mMine = mHolder === "mine";
-    // The Focus row shows the zero state; the buttons show this page's control.
+    // A profile supplies turret X and the rough 5x starting point; autofocus verifies focus.
     setText(n.scopeSub, mHolder === "other" ? t("control.other") : "");
     const scopeFault = scope?.locked ? scope?.fault?.message || "locked" : null;
     const failed = !scopeFault && scope?.last_command?.result === "failed" ? scope.last_command : null;
@@ -766,8 +904,45 @@
     setDisabled("take-microscope", mMine || mHolder === "other" || busy("take-microscope"));
     setDisabled("release-microscope", !mMine || busy("release-microscope"));
     const idle = mMine && scope?.connected === true && !scope?.busy && !scope?.locked;
-    view.turretCalibration?.setMicroscopeBusy(scope?.busy || ["select_objective", "nudge", "focus_move", "autofocus", "set_focus_zero"].some(key => view.busy.has(key)));
-    const canMove = idle && scope?.focus_zero_known === true;
+    view.turretCalibration?.setMicroscopeBusy(scope?.busy || ["select_objective", "nudge", "focus_move", "autofocus", "rough_focus_5x", "autofocus_sequence"].some(key => view.busy.has(key)));
+    const profileReady = scope?.turret_profile?.ready === true;
+    const canMove = idle && profileReady;
+    n.profileNote.hidden = profileReady;
+    setText(n.profileNote, t(scope?.turret_profile?.needs_height_calibration ? "scope.profileLegacy" : "scope.profileRequired"));
+    const power = scope?.motor_power || {};
+    n.power.replaceChildren(...["objective", "focus"].map(axis => {
+      const value = power[axis];
+      const status = value?.sleeping === true ? "sleeping" : value?.enabled === true ? "enabled" : value?.enabled === false ? "disabled" : "unknown";
+      return view.api.el("span", { class: "pr-power-chip pr-power-" + status, text: t("power." + axis) + " · " + t("power." + status) });
+    }));
+    const visual = scope?.visual_focus;
+    const details = visual?.objective_id === 0 && finite(visual.y_px) !== null
+      ? t("scope.visual", { current: fmt(visual.y_px, 1), target: fmt(visual.target_y_px, 1) }) : t("focus.visualIdle");
+    const focusPhase = typeof visual?.phase === "string" ? visual.phase.replaceAll("_", " ") : "";
+    setText(n.visual, profileReady ? [focusPhase, details].filter(Boolean).join(" · ") : "");
+    n.visual.hidden = !profileReady;
+    // Manual calibration can change the seated lens without updating cached objective_id.
+    // The service identifies 5x from a fresh image before these commands move.
+    n.rough5x.disabled = n.afSequence.disabled = !canMove;
+    const af = scope?.autofocus_run || {};
+    const afLens = Number.isInteger(af.objective_id) ? ["5×", "10×", "20×", "50×"][af.objective_id] : "—";
+    const afPhase = typeof af.phase === "string" ? af.phase.replaceAll("_", " ") : t("af.idle");
+    setText(n.afPhase, af.phase ? t("af.phase", { lens: afLens, phase: [afPhase, af.stage].filter(Boolean).join(" · ") }) : t("af.idle"));
+    setText(n.afScore, finite(af.score) === null ? t("af.noScore") : t("af.score", { score: fmt(af.score, 2) }));
+    const completed = new Set((Array.isArray(af.completed) ? af.completed : []).map(item => Number.isInteger(item) ? item : item?.objective_id));
+    n.afSteps.replaceChildren(...["5×", "10×", "20×", "50×"].map((lens, id) => {
+      const current = af.objective_id === id, failed = current && (Boolean(af.error) || af.phase === "failed"), stopped = current && ["stopped", "cancelled"].includes(af.phase);
+      const status = failed ? "failed" : stopped ? "stopped" : completed.has(id) || current && af.verified === true ? "verified" : current && af.phase && !["idle", "complete", "completed"].includes(af.phase) ? "running" : "waiting";
+      return view.api.el("li", { class: "pr-af-step pr-af-" + status, "data-role": "af-step-" + id }, view.api.el("strong", { text: lens }), view.api.el("span", { text: t("af." + status) }));
+    }));
+    n.afError.hidden = !af.error;
+    setText(n.afError, af.error || "");
+    const travelUsed = finite(visual?.travel_used_pulses), travelLimit = finite(visual?.travel_limit_pulses);
+    n.afTravel.hidden = travelUsed === null || travelLimit === null;
+    setText(n.afTravel, t("af.travel", { used: travelUsed ?? "—", limit: travelLimit ?? "—" }));
+    const scanRange = Number.isSafeInteger(af.search_half_range_pulses) ? af.search_half_range_pulses : null;
+    n.afScanRange.hidden = scanRange === null;
+    setText(n.afScanRange, t("af.scanRange", { range: scanRange ?? "—", span: scanRange === null ? "—" : scanRange * 2 }));
     for (const node of n.objectives) {
       const selected = scope?.objective_id === Number(node.dataset.id);
       node.setAttribute("aria-checked", selected ? "true" : "false");
@@ -783,16 +958,24 @@
     for (const node of n.nudges) node.disabled = !canMove || !counted || Math.abs(offset + Number(node.dataset.steps)) > limit || busy("nudge");
     setText(n.offset, counted ? t("obj.offset", { offset: signed(offset), limit: String(limit) }) : t("obj.offsetUnknown"));
     for (const node of n.motion) node.disabled = !canMove;
-    const limits = Array.isArray(scope?.focus_limits_pulses) ? scope.focus_limits_pulses : [];
-    const fraction = focusFraction(scope?.focus_position_pulses, limits);
-    n.focusFill.setAttribute("style", `width: ${fraction === null ? 0 : (fraction * 100).toFixed(1)}%`);
-    if (fraction === null) n.focusBar.removeAttribute("aria-valuenow");
-    else n.focusBar.setAttribute("aria-valuenow", (fraction * 100).toFixed(0));
-    const pos = finite(scope?.focus_position_pulses);
-    setText(n.focusText, pos === null ? t("focus.unknown") : limits.length === 2 ? t("focus.position", { pos: String(pos), max: String(limits[1]) }) : String(pos));
-    setText(n.focusMin, limits.length === 2 ? t("focus.min", { min: String(limits[0]) }) : t("focus.noLimits"));
-    setText(n.focusMax, limits.length === 2 ? t("focus.max", { max: String(limits[1]) }) : "");
-    n.zero.disabled = !idle || busy("set_focus_zero");
+    n.focusTravel.value = view.focusTravel;
+    n.focusTravelPreset.value = ["200", "500", "1000", "2000", "20000"].includes(view.focusTravel) ? view.focusTravel : "";
+    n.focusTravel.disabled = n.focusTravelPreset.disabled = n.focusTravelApply.disabled = (!mMine && !view.turretCalibration?.isDemo?.()) || Boolean(scope?.busy) || busy("focus-travel") || view.turretCalibration?.isCalibrating?.() === true;
+    setText(n.focusTravelCurrent, view.focusTravelSaved === null ? t("focus.travelUnknown") : t("focus.travelCurrent", { pulses: view.focusTravelSaved }));
+    const editedLens = AF_LENSES[view.afLens], draftRange = view.afDrafts[editedLens.field] || "";
+    const proposedRange = draftRange.trim() && Number.isSafeInteger(Number(draftRange)) && Number(draftRange) >= 4 && Number(draftRange) <= 1000000 ? Number(draftRange) : null;
+    n.afLens.value = String(view.afLens);
+    n.afRange.value = draftRange;
+    n.afPreset.value = AF_PRESETS.map(String).includes(draftRange) ? draftRange : "";
+    n.afLens.disabled = n.afRange.disabled = n.afPreset.disabled = n.afApply.disabled = n.focusTravel.disabled;
+    setText(n.afRangeCurrent, t("af.rangeCurrent"));
+    setText(n.afRangeHelp, proposedRange === null ? t("af.rangeInvalid") : t("af.rangeHelp", { lens: editedLens.label, range: proposedRange, span: proposedRange * 2 }));
+    n.afDraftNote.hidden = !view.afDirty.has(editedLens.field);
+    setText(n.afDraftNote, t("af.rangeDirty", { lens: editedLens.label }));
+    n.afSavedRanges.replaceChildren(...AF_LENSES.map(lens => {
+      const saved = view.afSettings?.[lens.field];
+      return view.api.el("span", { class: "pr-af-saved-lens", text: lens.label + " · " + (Number.isSafeInteger(saved) ? "±" + saved : "—") });
+    }));
     const recording = scope?.recording || {};
     const armed = scope?.recording_sequence?.armed === true;
     const active = ACTIVE_RECORDING.has(recording.status);
@@ -882,6 +1065,39 @@
     return send("microscope", "focus_move", { steps: direction * steps }, "jog");
   }
 
+  function applyFocusTravel() {
+    const pulses = Number(view.focusTravel);
+    if (!view.focusTravel.trim() || !Number.isSafeInteger(pulses) || pulses < 1 || pulses > 2147483647) {
+      view.api.notify(view.api.t("focus.travelInvalid"), "error");
+      return undefined;
+    }
+    return act("focus-travel", async () => {
+      const result = await view.api.request("microscope/focus-travel-limit", { pulses });
+      if (result?.focus_travel_limit_pulses !== pulses) throw new Error(result?.error || view.api.t("unknown"));
+      view.focusTravelSaved = pulses; view.focusTravelDirty = false;
+      if (view.status?.microscope) view.status.microscope.focus_travel_limit_pulses = pulses;
+      view.api.notify(view.api.t("focus.travelSaved"), "info");
+      return result;
+    });
+  }
+
+  function applyAutofocusRange() {
+    const lens = AF_LENSES[view.afLens], draft = view.afDrafts[lens.field] || "", pulses = Number(draft);
+    if (!draft.trim() || !Number.isSafeInteger(pulses) || pulses < 4 || pulses > 1000000) {
+      view.api.notify(view.api.t("af.rangeInvalid"), "error");
+      return undefined;
+    }
+    return act("focus-travel", async () => {
+      const result = await view.api.request("microscope/autofocus-settings", { [lens.field]: pulses });
+      if (result?.[lens.field] !== pulses) throw new Error(result?.error || view.api.t("unknown"));
+      view.afSettingsEpoch++; view.afSettingsPending = true;
+      view.afSettings = result; view.afDirty.delete(lens.field); syncAutofocusDrafts();
+      if (view.status?.microscope) view.status.microscope.autofocus_settings = result;
+      view.api.notify(view.api.t("af.rangeSaved", { lens: lens.label }), "info");
+      return result;
+    });
+  }
+
   function saveSnapshot() {
     const params = snapshotParams(view.snapPath);
     if (!params) { view.api.notify(view.api.t("rec.pathInvalid"), "error"); return undefined; }
@@ -939,7 +1155,7 @@
 
   return {
     install, i18n, view,
-    logic: { chartModel, sequenceParams, editorRows, focusFraction, modeKey, recordingId, objectiveIds, objectiveName, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
+    logic: { chartModel, sequenceParams, editorRows, modeKey, recordingId, objectiveIds, objectiveName, nudgeSteps, signed, caps, fmt, snapshotParams, recordingParams, valveState },
     _internal: { mount, build, update, poll, show, hide, findRole },
   };
 });

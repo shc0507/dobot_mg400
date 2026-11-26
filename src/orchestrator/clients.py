@@ -74,10 +74,19 @@ class ServiceAdapter:
 
     def request(self, path, data=None):
         """Send one request with this identity (a read without data). Never retried."""
-        if path in {"api/turret-calibration/begin", "api/turret-calibration/record"}:
-            # Fresh-frame capture can outlast a normal state read. Keep its
-            # timeout separate so the lease heartbeat retains its own deadline.
-            capture = self._client_type(self._http.base_url, self.identity, timeout=15)
+        calibration_timeouts = {
+            "api/turret-calibration/begin": 15,
+            "api/turret-calibration/record": 15,
+            "api/turret-calibration/focus_move": 15,
+            "api/turret-calibration/measure_response": 55,
+            "api/turret-calibration/return_clearance": 55,
+        }
+        if path in calibration_timeouts:
+            # Camera feedback can outlast a normal state read. Give this request
+            # its own transport so Stop and lease renewal keep their deadlines.
+            capture = self._client_type(
+                self._http.base_url, self.identity, timeout=calibration_timeouts[path]
+            )
             capture._opener = self._http._opener
             capture._version_checked = self._http._version_checked
             return capture._call(path, data)

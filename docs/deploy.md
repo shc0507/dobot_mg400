@@ -248,51 +248,52 @@ systemctl restart mg400-twin-test.service
 
 ### 显微镜测试后端
 
-测试转盘校准后端时，复用 `mg400-microscope.service`，保持 1 个设备所有者。
-原控制台和测试控制台共用端口 `8770` 的显微镜 API。
+使用 `mg400-microscope.service`，保持 1 个显微镜设备所有者。
+端口 `8080` 的主控制台和端口 `8082` 的测试控制台共用其端口 `8770` 的 API。
+图像高度后端请使用 `8082` 的显微镜界面。旧版 `8080` 显微镜控件不提供此校准流程。
+
+共享服务从 `/opt/mg400-microscope-v2-20261125` 加载代码，使用 `/opt/mg400/.venv/bin/python -m microscope`。
+先复制当前运行源码作为候选目录，再应用经过检查的显微镜修改。保留运行基线中其他开发者的修改。
+配置仍位于 `/etc/mg400/mg400.env`。运动限位来自候选目录的 `src/microscope/calibrate.py`。
+配置文件仍保存在 `/var/lib/mg400/calibration/microscope/turret_profiles`。重启清除调焦参考和未保存草稿，但保留已保存配置。
+此流程不向其他设备服务部署暂缓的进程 ID 修改。
+
 仅在显微镜空闲、无有效控制租约且未录像时重启。
-重启保留 `/var/lib/mg400/calibration/microscope`，但清除对焦参考和未保存草稿。
-
-测试后端从环境变量读取显微镜运动参数。
-主机环境文件未提供这些参数时，在覆盖文件中保留下面这些现有后端的固定值。
-
-先部署测试代码。
-由 root 安装覆盖文件 `/etc/systemd/system/mg400-microscope.service.d/twin-turret.conf`：
+手动上传固件前，停止 `mg400-microscope.service`，释放串口。
+启动服务前，连接使用兼容固件的控制板，并完成接线。
+准备候选目录后，由 root 安装 `/etc/systemd/system/mg400-microscope.service.d/mark-motion-v2.conf`：
 
 ```ini
 [Service]
-WorkingDirectory=/opt/mg400-twin-test
-Environment=MG400_MICROSCOPE_FOCUS_LIMITS=0,10000
-Environment=MG400_MICROSCOPE_SWITCH_FOCUS=0
-Environment=MG400_MICROSCOPE_HOME_SWITCH=0
-Environment=MG400_MICROSCOPE_NUDGE_STEPS=20
-ExecStart=
-ExecStart=/opt/mg400-twin-test/.venv/bin/python -m microscope
+WorkingDirectory=/opt/mg400-microscope-v2-20261125
+Environment=PYTHONPATH=/opt/mg400-microscope-v2-20261125/src
 ```
 
-安装后，重新加载 systemd 并重启服务：
+保持基础单元的 `ExecStart` 不变。按上述空闲条件，重新加载 systemd 并重启：
 
 ```sh
 systemctl daemon-reload
 systemctl restart mg400-microscope.service
 ```
 
-轮询 `http://127.0.0.1:8770/` 的 `GET /api/state` 和 `GET /api/turret-calibration`，直到两者返回成功。
+启动后，检查 `http://127.0.0.1:8770/` 的 `GET /api/state` 和 `GET /api/turret-calibration`。
 确认状态中的 `connected` 为 `true`，且 `fault` 为 `null`。
+启动失败时，先检查服务日志和控制板连接，再重新启动。
 
-当前 `deploy/twin.py` 不管理显微镜服务及此覆盖文件。
-使用此覆盖时，后续更新测试实例后端或依赖前，先运行 `systemctl stop mg400-microscope.service`。
-更新结束或脚本回滚后，运行 `systemctl start mg400-microscope.service`。
-再次检查上述 API。
+`deploy/twin.py` 更新测试控制台，不更新此显微镜候选目录，也不管理其覆盖文件。
+更新候选代码或共享依赖前，先按上述空闲条件停止显微镜。
+更新后启动服务，重复 API 检查。控制台回滚不会回滚此共享后端。
 
-恢复原后端时，仅删除此覆盖文件。
-按上述空闲条件重启服务：
+恢复基础服务代码时，仅删除此覆盖文件。保留其他覆盖文件和已保存配置数据。
+按上述空闲条件重启：
 
 ```sh
-rm /etc/systemd/system/mg400-microscope.service.d/twin-turret.conf
+rm /etc/systemd/system/mg400-microscope.service.d/mark-motion-v2.conf
 systemctl daemon-reload
 systemctl restart mg400-microscope.service
 ```
+
+移动前，检查恢复后的 API 和配置兼容性。旧后端可能要求旧版配置格式。
 
 ## Toupcam 库
 
@@ -469,7 +470,7 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `MG400_PROXY_PORT` | `8080` | 代理端口，范围为 `1024` 到 `65535` |
 | `MG400_OPTIONAL_SERVICES` | 空 | 服务清单中的可选服务名称，用逗号分隔 |
 | `MG400_ROBOT_HOST` | `config/robot.toml` 中的地址 | 机械臂地址 |
-| `MG400_CAMERA_DEVICES` | 空 | 1 到 4 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
+| `MG400_CAMERA_DEVICES` | 空 | 1 到 5 个不同的摄像头设备，用逗号分隔。为空时关闭摄像头 |
 | `MG400_CAMERA_MODES` | 空 | 每台设备对应 1 个允许的 `WIDTHxHEIGHT@FPS` 模式，顺序与设备相同 |
 | `MG400_STAGE_SERIAL` | 空 | Arduino 的串口路径，见 [位移台配置项](stage-panel.md#配置项) |
 | `MG400_VISION_WEIGHTS` | `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt` | 已校验的本地模型权重 |
@@ -480,8 +481,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 按[炉控配置](furnace.md#配置)配置炉温上限和气体映射。
 按[显微镜指南](microscope.md#契约服务)配置设备选择、调焦限位和相机视频流。
 
-摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。
-摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera4`。
+摄像头使用 `/dev/v4l/by-path/` 或 `/dev/v4l/by-id/` 下不同的稳定路径。接口路径按 USB 接口区分同型号摄像头。
+已配置视频流按设备顺序命名为 `camera1` 到 `camera5`。此控制台显示前 4 个 USB 摄像头视图；它接受第 5 个共享设备，但不添加腕部摄像头控制。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项。它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。

@@ -29,6 +29,18 @@ body:has(#ws-process:not([hidden])) { background: var(--lc-ground); }
 #ws-process .pr-card > * { margin-left: 4px; margin-right: 4px; }
 #ws-process .pr-card > .pr-preview { margin: 0; }
 #ws-process .pr-scope { flex: 711 1 640px; }
+#ws-process .pr-tabs { display: flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--lc-fill); align-self: flex-start; }
+#ws-process .pr-tab { border: 0; border-radius: 9px; background: transparent; color: var(--lc-text-2); min-height: 38px; padding: 8px 18px; font: inherit; font-size: 14px; cursor: pointer; }
+#ws-process .pr-tab[aria-selected="true"] { background: var(--lc-action); color: var(--lc-on-action); }
+#ws-process .pr-operate { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+#ws-process .pr-power { display: flex; flex-wrap: wrap; gap: 6px; }
+#ws-process .pr-power-chip { background: var(--lc-fill); color: var(--lc-text-2); border-radius: 20px; padding: 5px 10px; font-size: 12px; }
+#ws-process .pr-power-enabled { background: var(--lc-action-soft); color: var(--lc-action); }
+#ws-process .pr-power-sleeping { opacity: .75; }
+#ws-process .pr-profile-note { padding: 10px 12px; border-radius: 10px; background: var(--lc-warn-soft); color: var(--lc-warn); font-size: 13px; line-height: 1.5; margin: 0; }
+#ws-process .pr-visual { color: var(--lc-text-2); font-size: 13px; font-variant-numeric: tabular-nums; margin: 0; }
+#ws-process .pr-focus-actions { padding-top: 8px; }
+#ws-process .pr-scope [hidden] { display: none !important; }
 #ws-process .pr-furnace { flex: 649 1 420px; }
 #ws-process .lc-card-head { min-height: 44px; gap: 8px 12px; }
 #ws-process .pr-head { display: flex; flex-direction: column; gap: 2px; }
@@ -106,11 +118,19 @@ body:has(#ws-process:not([hidden])) { background: var(--lc-ground); }
 /* The current objective stays readable while you cannot change it, without the blue. */
 #ws-process .pr-objective.pr-selected:disabled { opacity: 1; background: var(--pr-card); color: var(--pr-text); box-shadow: inset 0 0 0 1px var(--pr-edge); }
 #ws-process .pr-focus { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-#ws-process .pr-focus-bar { display: flex; flex-direction: column; gap: 4px; padding-top: 14px; }
-#ws-process .pr-bar { position: relative; height: 8px; border-radius: 999px; background: var(--pr-fill); overflow: hidden; }
-#ws-process .pr-bar-fill { display: block; height: 100%; border-radius: 999px; background: var(--pr-text-2); }
-#ws-process .pr-bar-labels { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--pr-text-2); font-variant-numeric: tabular-nums; }
-#ws-process .pr-focus-pos { color: var(--pr-text); font-size: 13px; font-weight: 600; }
+#ws-process .pr-focus-budget { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--pr-line); }
+#ws-process .pr-travel-input { width: 150px; max-width: 100%; }
+#ws-process .pr-focus-budget p { margin: 0; }
+#ws-process .pr-focus-budget .pr-profile-note { padding: 0; background: transparent; color: var(--pr-text-2); }
+#ws-process .pr-af-status { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid var(--pr-line); border-radius: 14px; }
+#ws-process .pr-af-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; list-style: none; margin: 0; padding: 0; }
+#ws-process .pr-af-step { display: flex; flex-direction: column; gap: 4px; padding: 10px 8px; border-radius: 10px; background: var(--pr-fill); font-size: 12px; }
+#ws-process .pr-af-running { background: var(--pr-action-soft); color: var(--pr-action); }
+#ws-process .pr-af-verified { color: var(--pr-ok); }
+#ws-process .pr-af-failed, #ws-process .pr-af-stopped { color: var(--pr-stop); }
+#ws-process .pr-af-status .pr-profile-note, #ws-process .pr-af-hint { padding: 0; background: transparent; color: var(--pr-text-2); }
+#ws-process .pr-af-saved { display: flex; flex-wrap: wrap; gap: 8px; }
+#ws-process .pr-af-saved-lens { padding: 6px 10px; border-radius: 8px; background: var(--pr-fill); font-size: 12px; font-variant-numeric: tabular-nums; }
 #ws-process .pr-stepper { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border-radius: 12px; background: var(--pr-fill); }
 #ws-process .pr-step-button { min-height: 36px; width: 44px; border-radius: 8px; background: transparent; color: var(--pr-text); font-size: 18px; }
 #ws-process .pr-step-button:hover:not(:disabled) { background: var(--pr-card); }

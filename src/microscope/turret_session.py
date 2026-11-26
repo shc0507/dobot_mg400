@@ -13,10 +13,11 @@ from .side_capture import SideCaptureCancelled
 from .turret_calibration import (
     ProfileLocator,
     TurretProfileStore,
-    is_complete,
-    new_profile,
+    new_focus_profile,
     stable_capture,
+    upgrade_focus_profile,
     validate_profile,
+    visual_ready,
 )
 
 
@@ -44,6 +45,15 @@ class TurretCalibrationMixin:
         self._turret_session = None
         self._turret_draft = None
         self._turret_draft_context = None
+        self._visual_focus = {
+            "phase": "unverified",
+            "objective_id": None,
+            "y_px": None,
+            "target_y_px": None,
+            "error_px": None,
+            "profile_id": None,
+        }
+        self._visual_origin, self._visual_limits = 0, None
 
     def _cancel_turret_session_locked(self):
         session = self._turret_session
@@ -53,9 +63,7 @@ class TurretCalibrationMixin:
             self._objective_id = self._objective_offset = None
 
     def _turret_compatible(self, profile):
-        return bool(
-            profile and is_complete(profile) and profile["camera"] == self.config.side_stream
-        )
+        return bool(visual_ready(profile) and profile["camera"] == self.config.side_stream)
 
     def turret_calibration_state(self):
         self.lease.poll()
@@ -85,7 +93,7 @@ class TurretCalibrationMixin:
                 "selected_profile": selection["profile_id"],
                 "selection_error": selection_error,
                 "camera": {"stream": self.config.side_stream, "dimensions": dimensions},
-                "alignment": "image_coordinates",
+                "alignment": "image_x_and_rough_5x_start",
                 "dictionary": "DICT_4X4_50",
                 "switch_focus": self.config.switch_focus,
                 "compatible_for_switch": self._turret_compatible(draft),
@@ -103,6 +111,7 @@ class TurretCalibrationMixin:
         allowed = {
             "begin": {"name", "new"},
             "record": {"objective_id"},
+            "record_initial": set(),
             "finish": set(),
             "cancel": set(),
             "save": {"name"},
@@ -146,9 +155,10 @@ class TurretCalibrationMixin:
                     raise ServiceError(409, "Another client owns turret calibration")
                 if self._job is not None or self._stopping or self._recording is not None:
                     raise ServiceError(409, "Microscope is busy")
-                if action in {"record", "finish", "cancel"} and session is None:
+                session_actions = {"record", "record_initial", "finish", "cancel"}
+                if action in session_actions and session is None:
                     raise ServiceError(409, "Begin turret calibration first")
-                if session and action not in {"record", "finish", "cancel"}:
+                if session and action not in session_actions:
                     raise ServiceError(409, "Finish turret calibration first")
                 token = session.cancel if session else _AuthorityCancel(self._clock, deadline)
                 operation = _Operation("turret_" + action, client, token)
@@ -173,6 +183,8 @@ class TurretCalibrationMixin:
                 self._begin_turret(operation, args)
             elif action == "record":
                 self._record_turret(operation, args["objective_id"])
+            elif action == "record_initial":
+                self._record_turret(operation, 0, initial=True)
             else:
                 with self._lease.control(client):
                     with self._lock:
@@ -188,8 +200,12 @@ class TurretCalibrationMixin:
                         elif action == "select":
                             self._turret_draft = self._turret_store.select(args["id"])
                             self._turret_draft_context = None
+                            self._visual_nudge_reference = None
+                            self._focus_verified = None
                         elif action == "load":
-                            self._turret_draft = self._turret_store.load(args["id"])
+                            self._turret_draft = upgrade_focus_profile(
+                                self._turret_store.load(args["id"])
+                            )
                             self._turret_draft_context = None
                         elif action == "delete":
                             self._turret_store.delete(args["id"])
@@ -236,40 +252,41 @@ class TurretCalibrationMixin:
         if status.objective.moving or status.focus.moving or status.homing:
             raise ServiceError(409, "Stop both axes before turret calibration")
         with self._lock:
-            focus = self._turret_focus(status)
             context = (status.session, status.reference_epoch, status.focus.position)
             resume = self._turret_draft is not None and not args.get("new") and "name" not in args
             if resume:
                 draft = copy.deepcopy(self._turret_draft)
-                if draft["camera"] != self.config.side_stream or draft["focus_position"] != focus:
-                    raise ServiceError(
-                        409, "Draft camera or focus position changed; create a new profile"
-                    )
-                if focus is None and draft["captures"] and self._turret_draft_context != context:
-                    raise ServiceError(
-                        409, "Draft focus reference is unknown; create a new profile"
-                    )
+                if draft["camera"] != self.config.side_stream:
+                    raise ServiceError(409, "Draft camera changed; create a new profile")
+                draft = upgrade_focus_profile(draft)
             else:
-                draft = new_profile(
-                    args.get("name", "Turret calibration"), self.config.side_stream, focus
+                draft = new_focus_profile(
+                    args.get("name", "Turret and focus calibration"), self.config.side_stream
                 )
             self._objective_id = self._objective_offset = None
-        self._motor.objective_disable(cancel_event=operation.cancel)
+        errors = []
+        for disable in (self._motor.objective_disable, self._motor.focus_disable):
+            try:
+                disable(cancel_event=operation.cancel)
+            except Exception as error:
+                errors.append(error)
+        self._reference = None
+        self._visual_response_cache = self._visual_nudge_reference = None
+        self._focus_verified = None
         self._check_job(operation)
         status = self._fresh_status(operation)
         if (
             status.objective.enabled
+            or status.focus.enabled
             or status.objective.moving
             or status.focus.moving
             or status.homing
         ):
             raise ServiceError(409, "The turret must be disabled and both axes stationary")
-        if self._turret_focus(status) != focus or context != (
-            status.session,
-            status.reference_epoch,
-            status.focus.position,
-        ):
-            raise ServiceError(409, "Focus reference changed during turret calibration setup")
+        if errors:
+            raise ServiceError(
+                503, "Motor release acknowledgement failed; start calibration again"
+            ) from errors[0]
         with self._lease.control(operation.client):
             with self._lock:
                 self._check_job_locked(operation)
@@ -278,7 +295,7 @@ class TurretCalibrationMixin:
                     operation.cancel,
                     status.focus.position,
                     (status.session, status.reference_epoch),
-                    focus is not None,
+                    False,
                 )
                 self._turret_draft = draft
                 self._turret_draft_context = context
@@ -292,18 +309,14 @@ class TurretCalibrationMixin:
                 raise SideCaptureCancelled("Turret calibration was stopped")
             if (
                 status.objective.enabled
+                or status.focus.enabled
                 or status.objective.moving
                 or status.focus.moving
                 or status.homing
-                or status.focus.position != session.focus_position
-                or (status.session, status.reference_epoch) != session.reference
-                or (self._turret_focus(status) is not None) != session.focus_zeroed
             ):
-                raise ServiceError(
-                    409, "Keep focus fixed and the turret disabled throughout calibration"
-                )
+                raise ServiceError(409, "Keep both motors released and stationary while recording")
 
-    def _record_turret(self, operation, objective_id):
+    def _capture_turret(self, operation, objective_id):
         self._check_turret_focus(operation)
         try:
             self._side.open()
@@ -340,11 +353,19 @@ class TurretCalibrationMixin:
         finally:
             self._side.close()
         self._check_turret_focus(operation)
+        return captured
+
+    def _record_turret(self, operation, objective_id, *, initial=False):
+        with self._lock:
+            draft = copy.deepcopy(self._turret_draft)
+        captured = self._capture_turret(operation, objective_id)
         with self._lease.control(operation.client):
             with self._lock:
                 self._check_job_locked(operation)
-                draft = copy.deepcopy(self._turret_draft)
-                draft["captures"][str(objective_id)] = captured
+                if initial:
+                    draft["initial_5x_capture"] = captured
+                else:
+                    draft["captures"][str(objective_id)] = captured
                 self._turret_draft = validate_profile(draft)
 
     def _turret_profile_for_switch(self):
@@ -361,6 +382,5 @@ class TurretCalibrationMixin:
         except ValueError as error:
             raise ServiceError(409, str(error)) from error
 
-    @staticmethod
-    def _profile_locator(profile):
-        return ProfileLocator(profile)
+    def _profile_locator(self, profile):
+        return ProfileLocator(profile, height="focus")

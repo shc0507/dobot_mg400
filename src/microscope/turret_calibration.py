@@ -1,7 +1,8 @@
 """Turret profiles that store each seated objective's marker coordinates.
 
 Capture and use must share the camera position and camera settings.
-Recorded focus position is metadata. The service checks live focus clearance before movement.
+Version 3 adds camera-height references and a measured focus response.
+Version 4 stores one manually taught focused/switch-safe capture per lens.
 Offsets use pixels at an image width of 3840, independent of capture resolution.
 """
 
@@ -9,6 +10,7 @@ import base64
 import binascii
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -23,6 +25,8 @@ import numpy as np
 
 from .aruco_locator import COLORS, detect_objectives, marker_center
 from .paths import calibration_path
+
+_LOG = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_PREVIEW_BYTES = 256 * 1024
@@ -40,6 +44,7 @@ _PROFILE_KEYS = {
     "captures",
 }
 _CAPTURE_KEYS = {"shape", "objective_corners", "preview_jpeg"}
+_VISUAL_KEYS = {"clearance_captures", "safe_objective_id", "focus_response"}
 
 
 def _fields(value, expected, label):
@@ -149,9 +154,13 @@ def validate_profile(profile):
     if not isinstance(profile, dict):
         raise ValueError("Invalid profile fields")
     version = profile.get("schema_version")
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3, 4, 5):
         raise ValueError("Unsupported turret profile version")
     keys = _PROFILE_KEYS - {"dictionary"} | {"reference"} if version == 1 else _PROFILE_KEYS
+    if version == 3:
+        keys = keys | _VISUAL_KEYS
+    if version == 5:
+        keys = keys | {"initial_5x_capture"}
     _fields(profile, keys, "profile")
     _profile_id(profile["profile_id"])
     _text(profile["name"], "Profile name")
@@ -169,8 +178,28 @@ def validate_profile(profile):
     captures = profile["captures"]
     if not isinstance(captures, dict) or not set(captures) <= {str(i) for i in COLORS}:
         raise ValueError("Capture IDs must be 0, 1, 2, or 3")
+    records = list(captures.values())
+    if version == 5 and profile["initial_5x_capture"] is not None:
+        records.append(profile["initial_5x_capture"])
+    if version == 3:
+        if type(profile["safe_objective_id"]) is not int or profile["safe_objective_id"] != 0:
+            raise ValueError("The safe switching height must use objective 0 (5x)")
+        clearance = profile["clearance_captures"]
+        if not isinstance(clearance, dict) or not set(clearance) <= {str(i) for i in COLORS}:
+            raise ValueError("Clearance capture IDs must be 0, 1, 2, or 3")
+        records += list(clearance.values())
+        response = profile["focus_response"]
+        if response is not None:
+            _fields(response, {"pixels_per_pulse", "probe_pulses"}, "focus response")
+            gain = _number(response["pixels_per_pulse"], "Focus response")
+            if not 0.05 <= abs(gain) <= 20:
+                raise ValueError("Focus response magnitude must be 0.05..20 pixels per pulse")
+            if type(response["probe_pulses"]) is not int or response["probe_pulses"] != 200:
+                raise ValueError("Focus response probe must use 200 pulses")
+            if "0" not in clearance:
+                raise ValueError("Record the 5x switching height before the focus response")
     first_shape = None
-    for record in captures.values():
+    for record in records:
         keys = _CAPTURE_KEYS | {"reference_corners"} if version == 1 else _CAPTURE_KEYS
         _fields(record, keys, "capture")
         shape = _shape(record["shape"])
@@ -181,6 +210,9 @@ def validate_profile(profile):
             _corners(record["reference_corners"], shape)
         _corners(record["objective_corners"], shape)
         _preview(record["preview_jpeg"])
+    if version == 3 and "0" in captures and "0" in clearance:
+        if max(abs(capture_center(captures["0"]) - capture_center(clearance["0"]))) > 3:
+            raise ValueError("The focused 5x image must match its safe switching height")
     normalized = copy.deepcopy(profile)
     if version == 1:
         normalized["schema_version"] = 2
@@ -205,8 +237,57 @@ def new_profile(name, camera, focus_position=None):
     )
 
 
+def new_visual_profile(name, camera):
+    profile = new_profile(name, camera)
+    profile.update(
+        schema_version=3, clearance_captures={}, safe_objective_id=0, focus_response=None
+    )
+    return validate_profile(profile)
+
+
+def new_single_capture_profile(name, camera):
+    profile = new_profile(name, camera)
+    profile["schema_version"] = 4
+    return validate_profile(profile)
+
+
+def new_focus_profile(name, camera):
+    profile = new_profile(name, camera)
+    profile.update(schema_version=5, initial_5x_capture=None)
+    return validate_profile(profile)
+
+
+def upgrade_focus_profile(profile):
+    """Copy legacy X captures into a new draft without changing the saved profile."""
+    original = validate_profile(profile)
+    if original["schema_version"] == 5:
+        return original
+    draft = new_focus_profile(original["name"], original["camera"])
+    draft["captures"] = copy.deepcopy(original["captures"])
+    return validate_profile(draft)
+
+
 def is_complete(profile):
-    return set(profile["captures"]) == {str(i) for i in COLORS}
+    complete = set(profile["captures"]) == {str(i) for i in COLORS}
+    if profile["schema_version"] == 3:
+        complete = complete and set(profile["clearance_captures"]) == {str(i) for i in COLORS}
+        complete = complete and profile["focus_response"] is not None
+    if profile["schema_version"] == 5:
+        complete = complete and profile["initial_5x_capture"] is not None
+    return complete
+
+
+def visual_ready(profile):
+    return bool(profile and profile.get("schema_version") == 5 and is_complete(profile))
+
+
+def single_capture_ready(profile):
+    return bool(profile and profile.get("schema_version") == 4 and is_complete(profile))
+
+
+def capture_center(record):
+    """Return a marker center in the profile's normalized pixel units."""
+    return _image_center(record["objective_corners"], record["shape"][1])
 
 
 def _image(image):
@@ -264,11 +345,16 @@ def stable_capture(images, objective_id):
 
 
 class ProfileLocator:
-    def __init__(self, profile, near_px=50.0):
+    def __init__(self, profile, near_px=50.0, *, height="clearance", allow_partial=False):
         self.profile = validate_profile(profile)
-        if not is_complete(self.profile):
+        if not allow_partial and not is_complete(self.profile):
             raise ValueError("Turret profile is incomplete")
         self.near_px = _number(near_px, "Near threshold")
+        self.records = (
+            self.profile["clearance_captures"]
+            if self.profile["schema_version"] == 3 and height == "clearance"
+            else self.profile["captures"]
+        )
         self.references = {
             int(ident): {
                 "id": int(ident),
@@ -276,7 +362,7 @@ class ProfileLocator:
                 "corners": record["objective_corners"],
                 "center": marker_center(record["objective_corners"]).tolist(),
             }
-            for ident, record in self.profile["captures"].items()
+            for ident, record in self.records.items()
         }
 
     def locate(self, image, target_id=None, *, only_target=True):
@@ -291,9 +377,11 @@ class ProfileLocator:
         if detection["status"] != "ok":
             return result
         for marker in detection["markers"]:
+            if str(marker["id"]) not in self.records:
+                continue
             if target_id is not None and only_target and marker["id"] != target_id:
                 continue
-            record = self.profile["captures"][str(marker["id"])]
+            record = self.records[str(marker["id"])]
             height, width = detection["shape"]
             ref_height, ref_width = record["shape"]
             if height * ref_width != width * ref_height:
@@ -390,7 +478,11 @@ class TurretProfileStore:
             for path in sorted(self.root.glob("*.json")):
                 if re.fullmatch(r"[0-9a-f]{32}", path.stem) is None:
                     continue
-                profile = self.load(path.stem)
+                try:
+                    profile = self.load(path.stem)
+                except (OSError, ValueError) as error:
+                    _LOG.warning("Skipping turret profile %s: %s", path.name, error)
+                    continue
                 summaries.append(
                     {
                         "profile_id": profile["profile_id"],
@@ -398,6 +490,10 @@ class TurretProfileStore:
                         "camera": profile["camera"],
                         "focus_position": profile["focus_position"],
                         "complete": is_complete(profile),
+                        "schema_version": profile["schema_version"],
+                        "ready": visual_ready(profile),
+                        "needs_height_calibration": not visual_ready(profile),
+                        "needs_initial_focus": not visual_ready(profile),
                         "objective_ids": sorted(int(key) for key in profile["captures"]),
                         "updated_at": datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(),
                     }

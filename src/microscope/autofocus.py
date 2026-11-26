@@ -26,6 +26,10 @@ class AutofocusCancelled(RuntimeError):
     """Raised when the operator stops an autofocus run."""
 
 
+class NoFocusPeak(RuntimeError):
+    """Raised when a completed scan shows no focus peak."""
+
+
 @dataclass(frozen=True)
 class FocusMeasurement:
     """One focus score at a commanded position relative to the start."""
@@ -271,6 +275,15 @@ class AutoFocuser:
         results.append(self._measure(stage))
         return results
 
+    def _coarse_scan(self, half_range: int, coarse_step: int, stage: str):
+        """Use measured stationary positions when firmware ramps its pulse rate."""
+        if getattr(self.motor, "ramped_motion", False) is True:
+            # Elapsed time is not a position measurement during acceleration.
+            # Keep at least 17 samples across an ordinary full scan window.
+            spacing = max(1, min(coarse_step, (2 * half_range + 15) // 16))
+            return self._scan(-half_range, half_range, spacing, stage)
+        return self._continuous_scan(-half_range, half_range, stage)
+
     @staticmethod
     def _coarse_candidate(samples: list[FocusMeasurement]) -> FocusMeasurement:
         """Choose a supported coarse peak rather than one isolated high frame."""
@@ -298,13 +311,15 @@ class AutoFocuser:
         lower_limit: int,
         stage: str | None = None,
         stage_prefix: str = "",
+        coarse_score: float | None = None,
     ) -> list[FocusMeasurement]:
         """Scan from right to left once, reducing step size near the peak.
 
         The scan shrinks its step without reversing direction. Three settled
         samples must fall below the peak by more than measured frame noise
         before it ends early. A rising peak at the window edge can extend the
-        scan within the caller's original travel limits.
+        scan within the caller's original travel limits. With ``coarse_score``,
+        a plateau stops the scan only near that score, not on a flat baseline.
         """
         results = []
         target = int(start)
@@ -344,7 +359,12 @@ class AutoFocuser:
             # Broad, statistically flat peaks need no long minimum-step sweep.
             # Once the dense zone has been crossed, five agreeing samples near
             # the best measured score are sufficient to stop on a plateau.
-            if step == min_step and len(results) >= 5 and target <= predicted_peak - max_step:
+            if (
+                step == min_step
+                and len(results) >= 5
+                and target <= predicted_peak - max_step
+                and (coarse_score is None or best.score >= 0.5 * coarse_score)
+            ):
                 tail = results[-5:]
                 tolerance = max(
                     abs(best.score) * 0.015,
@@ -418,21 +438,61 @@ class AutoFocuser:
         min_step: int,
         stage_prefix: str = "",
     ) -> FocusMeasurement:
-        """Return to the measured maximum; final score is diagnostic only.
+        """Verify landing and allow 1 bounded refinement if sharpness drops."""
+        self._return_to_best(best.position, upper_limit)
+        final = self._measure(stage_prefix + "final", precision=True)
 
-        Keep the existing private-call signature for callers. A changed final
-        score does not trigger a correction scan or a score-matching error.
-        Camera acquisition and motion failures still propagate normally.
-        """
-        self._return_to_best(best.position, lower_limit)
-        return self._measure(stage_prefix + "final", precision=True)
+        def reproduced(reference, actual):
+            tolerance = max(
+                abs(reference.score) * 0.10,
+                3.0 * max(reference.score_noise, actual.score_noise),
+                1e-9,
+            )
+            return actual.score >= reference.score - tolerance
 
-    def _return_to_best(self, target: int, lower_limit: int) -> None:
-        """Approach the final position in the positive direction when possible."""
-        approach = max(lower_limit, target - self.backlash_steps)
-        if approach < target and self.position > approach:
+        if reproduced(best, final):
+            return final
+        low = max(lower_limit, best.position - correction_radius)
+        high = min(upper_limit, best.position + correction_radius)
+        refined = self._adaptive_fine_scan(
+            start=high,
+            stop=low,
+            predicted_peak=best.position,
+            max_step=max(min_step, correction_radius // 2),
+            min_step=min_step,
+            lower_limit=low,
+            stage=stage_prefix + "landing_refine",
+        )
+        best = self._fine_candidate(refined)
+        self._return_to_best(best.position, upper_limit)
+        final = self._measure(stage_prefix + "verified_final", precision=True)
+        if not reproduced(best, final):
+            raise NoFocusPeak(
+                "Autofocus could not reproduce the measured sharpness after 1 refinement. "
+                "Check focus backlash, vibration and the sample image."
+            )
+        return final
+
+    def _return_to_best(self, target: int, upper_limit: int) -> None:
+        """Use the fine scan's negative approach direction within travel limits."""
+        approach = min(upper_limit, target + self.backlash_steps)
+        if approach > target and self.position < approach:
             self._move_to(approach, precision=True)
         self._move_to(target, precision=True)
+
+    @staticmethod
+    def _require_peak(samples: list[FocusMeasurement], best: FocusMeasurement) -> None:
+        """Refuse a scan whose scores do not change by more than frame noise."""
+        scores = [item.score for item in samples]
+        tolerance = max(
+            abs(best.score) * 0.015,
+            3.0 * max(item.score_noise for item in samples),
+            1e-9,
+        )
+        if max(scores) - min(scores) <= tolerance:
+            raise NoFocusPeak(
+                "Focus scores are flat across the scan; check the light and the sample"
+            )
 
     def _disable_objective_for_focus(self) -> None:
         """Release the objective turret before collecting focus scores."""
@@ -453,7 +513,7 @@ class AutoFocuser:
         ultrafine_step: int = 10,
         lock_exposure: bool = True,
     ) -> FocusMeasurement:
-        """Run one continuous coarse pass and one adaptive fine pass."""
+        """Run one firmware-compatible coarse pass and one adaptive fine pass."""
         if fine_step >= coarse_step:
             raise ValueError("fine_step must be smaller than the fine search radius")
         if ultrafine_step >= fine_step:
@@ -497,13 +557,16 @@ class AutoFocuser:
         self._stationary_since = time.time()
         self.measurements.clear()
         stabilization_before = self.camera.stabilization_enabled
+        # Scores use raw frames. A stabilization reset would re-anchor a recording.
+        toggle_stabilization = not getattr(self.camera, "is_recording", False)
         auto_exposure_before = None
 
         try:
-            self.camera.set_stabilization(False)
+            if toggle_stabilization:
+                self.camera.set_stabilization(False)
             if lock_exposure:
                 # Let automatic exposure settle before freezing it for the scan.
-                time.sleep(0.7)
+                self._wait(0.7)
                 try:
                     auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
                 except Exception:
@@ -519,7 +582,7 @@ class AutoFocuser:
             self.motor.focus_speed(self.speed)
             self.motor.focus_enable()
 
-            coarse = self._continuous_scan(-half_range, half_range, stage_prefix + "coarse")
+            coarse = self._coarse_scan(half_range, coarse_step, stage_prefix + "coarse")
             coarse_best = self._coarse_candidate(coarse)
 
             fine_start = max(-half_range, coarse_best.position - coarse_step)
@@ -534,8 +597,10 @@ class AutoFocuser:
                 min_step=ultrafine_step,
                 lower_limit=-half_range,
                 stage_prefix=stage_prefix,
+                coarse_score=coarse_best.score,
             )
             best = self._fine_candidate(fine)
+            self._require_peak(coarse + fine, best)
             return self._land_and_verify(
                 best,
                 lower_limit=-half_range,
@@ -548,7 +613,8 @@ class AutoFocuser:
             self.motor.focus_stop()
             raise
         finally:
-            self.camera.set_stabilization(stabilization_before)
+            if toggle_stabilization:
+                self.camera.set_stabilization(stabilization_before)
             if lock_exposure and auto_exposure_before is not None:
                 self.camera.set_auto_exposure(auto_exposure_before)
 
@@ -565,7 +631,7 @@ class AutoFocuser:
 
         ``step`` is the maximum settled fine stride, not a fixed stop interval
         across the whole range. By default refine +/-2*step around the supported
-        continuous-scan peak and reduce to min(10, step) near that peak.
+        coarse-scan peak and reduce to min(10, step) near that peak.
         Existing callers, including Light calibration, use this shared path.
         """
         if half_range <= 0:

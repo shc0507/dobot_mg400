@@ -264,8 +264,8 @@ Templates do not select device paths in service settings. Keep those paths consi
 
 ## Cameras
 
-Configure 1 to 4 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct USB port paths.
-Stream names follow device order, from `camera1` through `camera4`. Empty settings disable cameras.
+Configure 1 to 5 USB cameras in `MG400_CAMERA_DEVICES`. Use distinct stable paths under `/dev/v4l/by-path/` or `/dev/v4l/by-id/`.
+Stream names follow device order, from `camera1` through `camera5`. Empty settings disable cameras. This Console displays the first 4 USB camera views and accepts a fifth shared device in the configuration.
 Set `MG400_CAMERA_MODES` to one comma-separated MJPEG mode per device.
 The software accepts only the following mode list, based on the AC410 cameras (`camera2` to `camera4`). The selected camera must also advertise the mode:
 

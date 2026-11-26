@@ -2,6 +2,9 @@
 
 Positive moves follow red -> yellow -> green -> blue in the supplied
 scan. Independent ArUco measurements close the loop around each reference.
+After a turn the motor holds the turret during the first measurement and
+correction, because an enable kicks the turret and shakes the camera view.
+Each measurement waits for a steady image.
 No hardware runs at import time.
 """
 
@@ -29,11 +32,13 @@ def full_steps_to_pulses(full_steps):
 @dataclass(frozen=True)
 class SwitchSettings:
     speed: int = 200
+    correction_speed: int = 50
     switch_steps: int = 185
     enable_settle_seconds: float = 0.2
     release_settle_seconds: float = 0.4
     verify_frames: int = 3
-    frame_retries: int = 3
+    steady_px: float = 1.0
+    steady_timeout_seconds: float = 3.0
     tolerance_px: float = 5.0
     move_settle_seconds: float = 0.25
     max_correction_moves: int = 24
@@ -49,9 +54,9 @@ class SwitchSettings:
                 raise ValueError(f"{field.name} must be finite")
         for name in (
             "speed",
+            "correction_speed",
             "switch_steps",
             "verify_frames",
-            "frame_retries",
             "max_correction_moves",
             "max_release_attempts",
             "stagnant_move_limit",
@@ -60,7 +65,7 @@ class SwitchSettings:
             value = getattr(self, name)
             if isinstance(value, bool) or int(value) != value or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.speed * MOTION_MICROSTEP > 10000:
+        if max(self.speed, self.correction_speed) * MOTION_MICROSTEP > 10000:
             raise ValueError(
                 "Objective base speed must be at most 2500 full steps/s (10000 pulses/s at MICRO 4)"
             )
@@ -77,6 +82,8 @@ class SwitchSettings:
             raise ValueError(
                 "Tolerance, initial correction travel and progress threshold must be positive"
             )
+        if min(self.steady_px, self.steady_timeout_seconds) <= 0:
+            raise ValueError("Steady-image threshold and timeout must be positive")
         if self.stagnant_move_limit < 4:
             raise ValueError("Allow at least four correction commands before declaring no progress")
 
@@ -173,6 +180,13 @@ class CrossingProgress:
         return width
 
 
+class SwitchVisionError(RuntimeError):
+    """The side camera gave no steady view of the objective marker.
+
+    The switch stops and disables the turret. Focus did not move.
+    """
+
+
 @dataclass(frozen=True)
 class SwitchProgress:
     stage: str
@@ -195,6 +209,7 @@ class SwitchResult:
     max_abs_dx_px: float
     tolerance_px: float
     calibration_only: bool = False
+    commanded_full_steps: float = 0.0
 
 
 def within_tolerance(measurements, tolerance_px):
@@ -321,7 +336,13 @@ class ArucoObjectiveSwitcher:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             self._check()
-            packet = self.camera.get_frame_packet(after_id=self.frame_id, timeout=0.2, copy=True)
+            try:
+                packet = self.camera.get_frame_packet(
+                    after_id=self.frame_id, timeout=0.2, copy=True
+                )
+            except RuntimeError as error:
+                cause = error.__cause__ or error
+                raise SwitchVisionError(f"Side camera is unavailable: {cause}") from error
             if packet is None:
                 continue
             self.frame_id, received_at, image = packet
@@ -350,29 +371,50 @@ class ArucoObjectiveSwitcher:
                         )
                     )
             if result["status"] == "image_size_mismatch":
-                raise RuntimeError("Side-camera aspect ratio differs from the reference images")
+                raise SwitchVisionError(
+                    "Side-camera aspect ratio differs from the reference images"
+                )
             return result
-        raise RuntimeError("No fresh side-camera frame arrived")
+        raise SwitchVisionError("No fresh side-camera frame arrived")
 
     def _visible_objective(self, stage, expected_id=None):
+        """Return the marker once 2 consecutive frames agree on its position.
+
+        A turret move or a motor enable shakes the camera view. A blurred frame
+        hides the marker, and a shaken frame shifts it.
+        """
+        s = self.settings
         last_status = "not_detected"
-        for _ in range(self.settings.frame_retries):
+        previous = None
+        deadline = time.monotonic() + s.steady_timeout_seconds
+        while True:
             result = self._measure(stage, expected_id)
             last_status = result["status"]
+            marker = None
             if result["status"] == "ok" and result["markers"]:
                 try:
                     marker = select_objective(result["markers"], expected_id)
                 except LookupError as error:
                     last_status = str(error)
-                else:
+            if marker is not None:
+                if (
+                    previous is not None
+                    and previous["id"] == marker["id"]
+                    and abs(marker["dx_px"] - previous["dx_px"]) <= s.steady_px
+                    and abs(marker["dy_px"] - previous["dy_px"]) <= s.steady_px
+                ):
                     self._report(
                         stage,
                         f"{COLORS[marker['id']]} ID {marker['id']}; dx={marker['dx_px']:+.3f}px",
                         marker,
                     )
                     return marker
-            self._report(stage, f"{last_status}; retrying a fresh image without moving")
-        raise RuntimeError(f"Objective identity could not be confirmed: {last_status}")
+                last_status = "the image is not steady"
+            previous = marker
+            if time.monotonic() >= deadline:
+                break
+            self._report(stage, f"{last_status}; waiting for a steady image without moving")
+        raise SwitchVisionError(f"Objective identity could not be confirmed: {last_status}")
 
     def _correct(self, pulses, *, advancing=False):
         s = self.settings
@@ -398,10 +440,11 @@ class ArucoObjectiveSwitcher:
         self.correction_moves += 1
         self.correction_travel += distance
         self.commanded_steps += pulses / MOTION_MICROSTEP
+        self._command(f"OBJ SPEED {s.correction_speed * MOTION_MICROSTEP}", "OK OBJ SPEED")
         self._command(
             f"OBJ MOVE {pulses}",
             "DONE OBJ POS ",
-            timeout=max(5.0, abs(pulses) / (s.speed * MOTION_MICROSTEP) + 3.0),
+            timeout=max(5.0, abs(pulses) / (s.correction_speed * MOTION_MICROSTEP) + 3.0),
         )
         self._settle(s.move_settle_seconds)
 
@@ -422,32 +465,44 @@ class ArucoObjectiveSwitcher:
         )
         return measurements
 
-    def _calibrate(self, released):
+    def _calibrate(self, released=None):
+        """Correct with the motor enabled, then release the turret and verify.
+
+        `released` holds the disabled measurements. It is None when the motor
+        still holds the turret after the turn: the first pass then needs no enable.
+        """
         s = self.settings
         release_limit = s.max_release_attempts
         attempts = 0
-        release_trend = CalibrationTrend(max(abs(m["dx_px"]) for m in released), s.progress_min_px)
+        release_trend = None
+        if released is not None:
+            release_trend = CalibrationTrend(
+                max(abs(m["dx_px"]) for m in released), s.progress_min_px
+            )
         while True:
-            if within_tolerance(released, s.tolerance_px):
-                return released
-            if attempts >= release_limit:
-                if not release_trend.advancing:
-                    message = (
-                        "Release-check budget exhausted without recent improvement: "
-                        f"checks={attempts}, best disabled |dx|="
-                        f"{release_trend.best_error:.3f}px"
+            if released is not None:
+                if within_tolerance(released, s.tolerance_px):
+                    return released
+                if attempts >= release_limit:
+                    if not release_trend.advancing:
+                        message = (
+                            "Release-check budget exhausted without recent improvement: "
+                            f"checks={attempts}, best disabled |dx|="
+                            f"{release_trend.best_error:.3f}px"
+                        )
+                        self._report("budget_stop", message, released[-1])
+                        raise RuntimeError(message)
+                    old_limit = release_limit
+                    release_limit += s.max_release_attempts
+                    self._report(
+                        "budget_extend",
+                        "Disabled error is decreasing; "
+                        f"release checks {old_limit} -> {release_limit}",
+                        released[-1],
                     )
-                    self._report("budget_stop", message, released[-1])
-                    raise RuntimeError(message)
-                old_limit = release_limit
-                release_limit += s.max_release_attempts
-                self._report(
-                    "budget_extend",
-                    f"Disabled error is decreasing; release checks {old_limit} -> {release_limit}",
-                    released[-1],
-                )
-            self._command("OBJ ENABLE", "OK OBJ ENABLED")
-            self._settle(s.enable_settle_seconds)
+                self._command("OBJ ENABLE", "OK OBJ ENABLED")
+                self._settle(s.enable_settle_seconds)
+            release_advancing = release_trend is not None and release_trend.advancing
             marker = self._visible_objective("enabled_position", self.target_id)
             gain = 4.0  # Initial estimate only; never a pixel position source.
             pulse_cap = full_steps_to_pulses(4)
@@ -456,10 +511,10 @@ class ArucoObjectiveSwitcher:
             # If enabling alone brings the image to zero but release does not,
             # nudge toward the measured disabled error instead of repeating an
             # unchanged enable/disable cycle. The next photo checks the result.
-            if abs(marker["dx_px"]) <= s.tolerance_px:
+            if released is not None and abs(marker["dx_px"]) <= s.tolerance_px:
                 error = max(released, key=lambda m: abs(m["dx_px"]))["dx_px"]
                 self._correct(
-                    full_steps_to_pulses(1 if error > 0 else -1), advancing=release_trend.advancing
+                    full_steps_to_pulses(1 if error > 0 else -1), advancing=release_advancing
                 )
                 marker = self._visible_objective("corrected_position", self.target_id)
                 trend.observe(marker["dx_px"])
@@ -484,7 +539,7 @@ class ArucoObjectiveSwitcher:
                 advancing = (
                     trend.advancing
                     or crossings.advancing
-                    or (len(trend.history) < 2 and release_trend.advancing)
+                    or (len(trend.history) < 2 and release_advancing)
                 )
                 self._correct(direction * pulses, advancing=advancing)
                 marker = self._visible_objective("corrected_position", self.target_id)
@@ -522,7 +577,10 @@ class ArucoObjectiveSwitcher:
             released = self._disabled_measurements()
             attempts += 1
             release_error = max(abs(m["dx_px"]) for m in released)
-            release_trend.observe(release_error)
+            if release_trend is None:
+                release_trend = CalibrationTrend(release_error, s.progress_min_px)
+            else:
+                release_trend.observe(release_error)
             self._report(
                 "release_progress",
                 f"Release check {attempts}/{release_limit}: "
@@ -547,14 +605,11 @@ class ArucoObjectiveSwitcher:
             raise ValueError("Switch direction must be -1 or +1")
         return self._execute(direction, log_path, source_id=source_id)
 
-    def calibrate_current(self, log_path, *, marker_id=None):
-        """Recognize and recover the current objective; no +/-185-step move."""
-        return self._execute(0, log_path, source_id=marker_id)
-
     def _execute(self, direction, log_path, *, source_id=None):
         if source_id is not None and source_id not in OBJECTIVE_ORDER:
             raise ValueError(f"Unknown source objective ID {source_id}")
         path = run_path(log_path)
+        primary = None
         try:
             with private_open(path, "x", newline="", encoding="utf-8", buffering=1) as output:
                 self.writer = csv.writer(output)
@@ -576,6 +631,9 @@ class ArucoObjectiveSwitcher:
                     )
                 )
                 result = self._run(direction, path, source_id=source_id)
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             self.writer = None
             # Cancellation cannot suppress STOP/DISABLE. Attempt both even if
@@ -590,7 +648,14 @@ class ArucoObjectiveSwitcher:
                 except Exception as error:
                     errors.append(str(error))
             if errors:
-                raise RuntimeError("Could not confirm objective disabled: " + "; ".join(errors))
+                message = "Could not confirm objective disabled: " + "; ".join(errors)
+                if primary is None:
+                    raise RuntimeError(message)
+                if isinstance(primary, SwitchVisionError):
+                    # The turret state is unknown: this is no longer a camera-only failure.
+                    raise RuntimeError(f"{primary}; {message}") from primary
+                # Keep the cause of the failed switch. The caller stops and disables.
+                primary.add_note(message)
         return result
 
     def _run(self, direction, path, *, source_id=None):
@@ -642,11 +707,15 @@ class ArucoObjectiveSwitcher:
                 "DONE OBJ POS ",
                 timeout=max(5.0, abs(pulses) / pulse_speed + 3.0),
             )
-        self._command("OBJ DISABLE", "OK OBJ DISABLED")
-        self._settle(s.release_settle_seconds)
-        # Correct only after the destination ID is confirmed. Missing markers
-        # stop movement; no motor-count address substitutes for a visual pose.
-        verified = self._calibrate(self._disabled_measurements())
+            self._settle(s.move_settle_seconds)
+            # Correct only after the destination ID is confirmed. Missing markers
+            # stop movement; no motor-count address substitutes for a visual pose.
+            # The motor stays enabled: a disable and enable here kicks the turret.
+            verified = self._calibrate()
+        else:
+            self._command("OBJ DISABLE", "OK OBJ DISABLED")
+            self._settle(s.release_settle_seconds)
+            verified = self._calibrate(self._disabled_measurements())
         final = verified[-1]
         return SwitchResult(
             self.source_id,
@@ -658,4 +727,5 @@ class ArucoObjectiveSwitcher:
             max(abs(m["dx_px"]) for m in verified),
             s.tolerance_px,
             calibration_only=direction == 0,
+            commanded_full_steps=self.commanded_steps,
         )

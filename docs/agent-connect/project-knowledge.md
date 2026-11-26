@@ -79,6 +79,56 @@ Position Finder (legacy) uses separate image calibration and sends no motion com
 Its measurements do not drive Motion or Sample Transfer.
 The 3D Twin shows device state without commands. Its stage geometry has no calibrated mapping from encoder rotations.
 
+## Microscope objectives and focus
+
+A human creates the microscope calibration in the Console's **Calibration** subsection.
+The profile stores each lens's marker X alignment and 1 separate initial 5x image.
+The human manually focuses 5x on the sample before recording this initial image. Both motors stay released during calibration.
+Only the initial 5x marker Y guides coarse height positioning. Other lenses have no saved Y target.
+If 5x is already near its recorded height, the service skips coarse movement and starts the requested autofocus scan.
+Autofocus uses microscope-image sharpness, not marker Y movement.
+Keep the camera mount, view, and marker mounting consistent with the profile.
+The human must establish that the chosen switches at the current focus height clear the furnace. Image sharpness does not measure physical clearance.
+
+Agents can select a saved profile with `turret.select`.
+Selection causes no movement. Agents cannot create, capture, edit, upload, or delete turret profiles.
+An old profile requires the new 5x initial record before this workflow. Existing profile files are preserved.
+Do not send `microscope.set_focus_zero` or `microscope.home_focus`; these are not Agent Connect actions.
+
+Use `microscope.select_objective` to select any lens in any order, without prior autofocus or a fresh sharpness check.
+Selection aligns saved X at the current focus height. It commands no focus movement or automatic autofocus.
+The operator is responsible for physical clearance and selection order. Run `microscope.autofocus` separately when needed.
+For a new sample, the optional `microscope.autofocus_sequence` starts with 5x and runs 5x, 10x, 20x, then 50x.
+It advances only after verified autofocus. Failure, cancellation, or lost control prevents further steps.
+The sequence requires 5x at the start. If another lens is seated, follow the available separate controls or request human setup.
+The service verifies final sharpness and permits at most 1 bounded refinement per autofocus scan.
+A verified sharpness peak does not identify which sample surface or feature produced that peak.
+
+`microscope.rough_focus_5x` moves only the seated 5x lens near its initial image height. It does not establish verified focus.
+The former `microscope.focus_to_saved_height` and `microscope.focus_to_clearance` actions are unavailable.
+`microscope.focus_move` accepts signed quarter-step pulse counts. These are not stage rotations or millimetres.
+The existing objective nudge, camera, recording, and Stop actions remain available through the reviewed catalog.
+
+A human or an authorized agent sets the manual/coarse travel budget and separate autofocus half-ranges for 5x, 10x, 20x and 50x in Operate.
+Defaults are 20000 quarter-step pulses for manual/coarse travel, a 5000-pulse half-range for 5x, 10x and 20x, and a 3000-pulse half-range for 50x. Saved settings override these defaults.
+A 5000-pulse half-range searches up to 5000 pulses in each direction from the scan center.
+Each lens uses its own saved range in both separate autofocus and the combined sequence. Use `microscope.autofocus` with `{"mode":"local"}` to match the single Console Autofocus button. The native service retains full mode for older clients; Agent Connect does not expose it.
+Autofocus has a separate cumulative travel budget derived from its search range. A combined sequence shares 1 budget across all its steps.
+The status panel separates Search range from Total movement budget. Unused movement allowance does not mean the scan missed part of its search range.
+These limits count commanded pulses. They are not physical distances or mechanical end stops.
+Agents can read `focus_travel_limit_pulses` and `autofocus_settings`. Use `microscope.set_focus_travel_limit` or `microscope.set_autofocus_settings` to change these operating settings while the microscope is idle. These actions save settings without moving equipment. Calibration editing remains human-only.
+If a command exhausts its budget, report the result. Do not repeat commands to bypass the limit.
+
+Focus releases after an operation. Firmware v2 also disables idle focus after 30 seconds and sleeps each idle driver after 120 seconds.
+Read requests do not prevent sleep. The controller wakes the required motor automatically.
+After release, sleep, or reset, pulse counts do not establish current physical height.
+The next operation uses fresh images and its own relative pulse reference. Objective selection does not require a previous autofocus result.
+Read `autofocus_run` for the current lens, scan phase, score, verified result, completed lenses, and failure reason.
+Its `search_half_range_pulses` is the frozen range for the active or last scan. Saved settings apply to the next command.
+An accepted command or a stationary motor does not establish successful focus.
+Missing markers, a changed camera view, or incomplete calibration can block movement.
+Ask the human to correct these conditions. Do not bypass the profile or manufacture a zero reference.
+
 ## Capabilities and control
 
 Read the current command catalog before selecting actions.
@@ -94,7 +144,7 @@ This authority does not lock 8080 or direct device interfaces.
 Mark coordinates access so nobody operates equipment through those interfaces during agent control.
 Device leases permit only 1 controller per device.
 
-Preserve robot speed and alarm checks, configured stage limits, microscope focus limits, and turret clearance requirements.
+Preserve robot speed and alarm checks, configured stage limits, microscope focus travel budgets, and turret clearance requirements.
 The 8082 Console enables furnace commands within native temperature and ramp caps and fixed gas channels.
 Command completion does not imply thermal sequence completion.
 Stop and STOP ALL remain available without an operator grant or device control.

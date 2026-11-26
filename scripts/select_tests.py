@@ -124,6 +124,7 @@ AREAS = [
     ("deploy/labctl", ORCHESTRATOR),
     ("src/microscope/*", MICROSCOPE),
     ("firmware/microscope-axes/*", MICROSCOPE),
+    ("firmware/microscope-motion-v2/*", MICROSCOPE),
     ("src/toupcam_camera/*", ["test_toupcam_camera.py", *MICROSCOPE]),
     (
         "src/cameras/*",

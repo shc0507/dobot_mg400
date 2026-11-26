@@ -154,11 +154,11 @@ def test_turret_profile_workflow_uses_synthetic_frames_and_persists(client, tmp_
     assert state["alignment"] == "image_coordinates"
     assert state["dictionary"] == "DICT_4X4_50"
     assert "reference" not in state
-    assert state["draft"]["schema_version"] == 2
+    assert state["draft"]["schema_version"] == 5
     frame = client.get(state["camera"]["frame_url"])
     assert frame.status_code == 200 and frame.mimetype == "image/jpeg"
     detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50))
-    for objective in range(4):
+    for objective in [2, 0, 3, 1]:
         state = action("record", {"objective_id": objective})
         capture = state["draft"]["captures"][str(objective)]
         assert capture["preview_jpeg"]
@@ -167,10 +167,14 @@ def test_turret_profile_workflow_uses_synthetic_frames_and_persists(client, tmp_
         image = cv2.imdecode(np.frombuffer(frame.data, dtype=np.uint8), cv2.IMREAD_COLOR)
         _, ids, _ = detector.detectMarkers(image)
         assert ids.flatten().tolist() == [objective]
+    assert state["draft"]["initial_5x_capture"] is None
+    state = action("record_initial")
+    assert state["draft"]["initial_5x_capture"]["preview_jpeg"]
     assert action("finish")["session"] is None
     state = action("save", {"name": "All lenses"})
     identifier = state["draft"]["profile_id"]
     assert state["profiles"][0]["complete"]
+    assert state["profiles"][0]["ready"]
     assert action("select", {"id": identifier})["selected_profile"] == identifier
     restarted = preview.create_app(tmp_path).test_client()
     assert restarted.get(TURRET, headers=HEADERS).get_json()["selected_profile"] == identifier
@@ -194,6 +198,7 @@ def test_four_lens_coordinates_can_be_used_without_saved_focus_zero(client):
     action("begin", {"name": "Lens references", "new": True})
     for objective in range(4):
         state = action("record", {"objective_id": objective})
+    state = action("record_initial")
     profile = state["draft"]
     action("finish")
     profile["focus_position"] = None
@@ -227,6 +232,92 @@ def test_turret_draft_resume_and_session_owner(client):
     assert resumed["draft"]["profile_id"] == identifier
     assert list(resumed["draft"]["captures"]) == ["0"]
     assert action("cancel").status_code == 200
+
+
+def test_focus_travel_preview_persists_and_does_not_change_during_calibration(client, tmp_path):
+    path = TURRET.rsplit("/turret", 1)[0] + "/microscope/focus-travel-limit"
+    assert client.get(path, headers=HEADERS).json == {"focus_travel_limit_pulses": 20000}
+    result = client.post(path, json={"pulses": 735}, headers=HEADERS)
+    assert result.status_code == 200
+    assert result.json == {"focus_travel_limit_pulses": 735}
+    restarted = preview.create_app(tmp_path).test_client()
+    assert restarted.get(path, headers=HEADERS).json == result.json
+    client.post(TURRET + "/begin", json={"new": True}, headers=HEADERS)
+    assert client.post(path, json={"pulses": 500}, headers=HEADERS).status_code == 409
+    assert client.get(path, headers=HEADERS).json == {"focus_travel_limit_pulses": 735}
+    for action in ["focus_move", "measure_response", "return_clearance"]:
+        assert client.post(TURRET + "/" + action, json={}, headers=HEADERS).status_code == 404
+
+
+def test_autofocus_search_preview_persists_independently_of_manual_travel(client, tmp_path):
+    path = TURRET.rsplit("/turret", 1)[0] + "/microscope/autofocus-settings"
+    assert client.get(path, headers=HEADERS).json["five_x_half_range_pulses"] == 5000
+    result = client.post(path, json={"five_x_half_range_pulses": 1500}, headers=HEADERS)
+    assert result.status_code == 200
+    assert result.json["ten_x_half_range_pulses"] == 5000
+    assert result.json["twenty_x_half_range_pulses"] == 5000
+    assert result.json["fifty_x_half_range_pulses"] == 3000
+    patch = {
+        "ten_x_half_range_pulses": 600,
+        "twenty_x_half_range_pulses": 900,
+        "fifty_x_half_range_pulses": 1200,
+    }
+    result = client.post(path, json=patch, headers=HEADERS)
+    assert result.status_code == 200
+    assert result.json["five_x_half_range_pulses"] == 1500
+    assert all(result.json[key] == value for key, value in patch.items())
+    restarted = preview.create_app(tmp_path).test_client()
+    assert restarted.get(path, headers=HEADERS).json == result.json
+    travel = TURRET.rsplit("/turret", 1)[0] + "/microscope/focus-travel-limit"
+    assert client.get(travel, headers=HEADERS).json["focus_travel_limit_pulses"] == 20000
+    client.post(TURRET + "/begin", json={"new": True}, headers=HEADERS)
+    assert (
+        client.post(path, json={"five_x_half_range_pulses": 500}, headers=HEADERS).status_code
+        == 409
+    )
+    assert client.get(path, headers=HEADERS).json == result.json
+
+
+def test_autofocus_preview_rejects_entire_invalid_patch_and_preserves_old_five_x_file(
+    client, tmp_path
+):
+    path = TURRET.rsplit("/turret", 1)[0] + "/microscope/autofocus-settings"
+    client.post(path, json={"five_x_half_range_pulses": 1700}, headers=HEADERS)
+    files = list(tmp_path.rglob("autofocus-settings.json"))
+    assert len(files) == 1
+    files[0].write_text(json.dumps({"five_x_half_range_pulses": 1700}), encoding="utf-8")
+    original = files[0].read_bytes()
+    restored = preview.create_app(tmp_path).test_client()
+    before = restored.get(path, headers=HEADERS).json
+    assert before["five_x_half_range_pulses"] == 1700
+    assert before["fifty_x_half_range_pulses"] == 3000
+    rejected = restored.post(
+        path,
+        json={"five_x_half_range_pulses": 500, "fifty_x_half_range_pulses": False},
+        headers=HEADERS,
+    )
+    assert rejected.status_code == 400
+    assert restored.get(path, headers=HEADERS).json == before
+    assert files[0].read_bytes() == original
+
+
+def test_loading_old_turret_profile_copies_x_to_new_draft_without_changing_saved_bytes(client):
+    from microscope.turret_calibration import new_single_capture_profile
+
+    client.post(TURRET + "/begin", json={"new": True}, headers=HEADERS)
+    recorded = client.post(TURRET + "/record", json={"objective_id": 0}, headers=HEADERS).json
+    client.post(TURRET + "/finish", json={}, headers=HEADERS)
+    old = new_single_capture_profile("Older manual profile", "camera3")
+    old["captures"] = recorded["draft"]["captures"]
+    uploaded = client.post(TURRET + "/upload", json={"profile": json.dumps(old)}, headers=HEADERS)
+    assert uploaded.status_code == 200
+    identifier = uploaded.json["draft"]["profile_id"]
+    before = client.get(TURRET + "/profile/" + identifier, headers=HEADERS).data
+    loaded = client.post(TURRET + "/load", json={"id": identifier}, headers=HEADERS).json["draft"]
+    assert loaded["schema_version"] == 5 and loaded["profile_id"] != identifier
+    assert loaded["captures"] == old["captures"]
+    assert loaded["initial_5x_capture"] is None
+    assert client.get(TURRET + "/profile/" + identifier, headers=HEADERS).data == before
 
 
 def transfer_action(client, action, data=None):
@@ -485,7 +576,7 @@ def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path
     assert all(value == pytest.approx(0.5, abs=0.002) for value in capture.values())
     saved = transfer_action(client, "profile/save", {"name": "Encoder positions"})
     transfer_action(client, "profile/select", {"id": saved["draft"]["id"]})
-    # Change all axes, then require Extract -> Bottom -> Top -> Insert.
+    # Change all axes, then require Bottom -> Top -> Insert without automatic extraction.
     transfer_action(client, "move", {"target": "fully_out"})
     assert transfer_idle(client)["operation"]["status"] == "completed"
     for motor in ("bottom", "top", "insert"):
@@ -506,7 +597,7 @@ def test_simulated_calibration_saved_target_and_sequential_move(client, tmp_path
         client.post("/lab/api/console/heartbeat", json={}, headers=HEADERS)
         time.sleep(0.03)
     assert state["operation"]["status"] == "completed", state["operation"]
-    assert seen == ["insert", "bottom", "top", "insert"]
+    assert seen == ["bottom", "top", "insert"]
     assert state["position"] == pytest.approx(capture, abs=0.002)
     # Transfer uses the live Insert bounds before any XY stage target is recorded.
     reference = state["transfer_reference"]["targets_rotations"]

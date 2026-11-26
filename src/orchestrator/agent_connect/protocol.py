@@ -238,15 +238,27 @@ def bundle():
         "objective_id",
         "objective_offset_steps",
         "focus_position_pulses",
+        "focus_travel_limit_pulses",
         "frames",
         "fps",
     ):
         properties[name] = scalar
-    for name in ("run_state", "control_mode", "state"):
+    for name in ("run_state", "control_mode", "state", "focus_reference"):
         properties[name] = nullable_text
     for name in ("flow_pct", "focus_limits_pulses"):
         properties[name] = {"type": "array", "items": scalar}
-    for name in ("vacuum", "sequence", "recording", "last_result", "cameras"):
+    for name in (
+        "vacuum",
+        "sequence",
+        "recording",
+        "last_result",
+        "cameras",
+        "turret_profile",
+        "visual_focus",
+        "autofocus_run",
+        "autofocus_settings",
+        "motor_power",
+    ):
         properties[name] = {"type": ["object", "null"]}
     properties["calibrated_cameras"] = {"type": "array", "items": {"type": "string"}}
     return {

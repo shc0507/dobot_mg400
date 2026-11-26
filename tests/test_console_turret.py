@@ -97,6 +97,90 @@ def test_record_uses_operator_lease_once_and_returns_unwrapped_state(rig):
     ]
 
 
+def test_initial_5x_capture_relays_without_a_motor_command(rig):
+    response = rig.client.post(ROOT + "/record_initial", json={}, headers=HEADERS)
+    assert response.status_code == 200
+    assert rig.calls == [
+        ("operator", "microscope", "page-one", "api/turret-calibration/record_initial", {})
+    ]
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"five_x_half_range_pulses": 1500},
+        {"ten_x_half_range_pulses": 600},
+        {"twenty_x_half_range_pulses": 800},
+        {"fifty_x_half_range_pulses": 1000},
+        {"five_x_half_range_pulses": 1500, "ten_x_half_range_pulses": 600},
+    ],
+)
+def test_autofocus_search_setting_uses_existing_lease_and_exact_payload(rig, patch):
+    path = ROOT.rsplit("/turret", 1)[0] + "/microscope/autofocus-settings"
+    assert rig.client.get(path, headers=HEADERS).status_code == 200
+    rig.outcome["result"] = {
+        "five_x_half_range_pulses": 5000,
+        "ten_x_half_range_pulses": 300,
+        "twenty_x_half_range_pulses": 300,
+        "fifty_x_half_range_pulses": 300,
+    } | patch
+    result = rig.client.post(path, json=patch, headers=HEADERS)
+    assert result.status_code == 200
+    assert result.json == rig.outcome["result"]
+    assert rig.calls == [
+        ("read", "microscope", "api/autofocus-settings"),
+        (
+            "operator",
+            "microscope",
+            "page-one",
+            "api/autofocus-settings",
+            patch,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"five_x_half_range_pulses": value} for value in [True, 3, -1, 1.5, "500", 1000001, None]]
+    + [
+        {"five_x_half_range_pulses": 500, "other_half_range_pulses": 500},
+        {"five_x_half_range_pulses": 500, "ten_x_half_range_pulses": 3},
+        {},
+    ],
+)
+def test_autofocus_setting_rejects_invalid_or_additional_fields(rig, payload):
+    path = ROOT.rsplit("/turret", 1)[0] + "/microscope/autofocus-settings"
+    assert rig.client.post(path, json=payload, headers=HEADERS).status_code == 400
+    assert rig.calls == []
+
+
+@pytest.mark.parametrize("action", ["measure_response", "focus_move", "return_clearance"])
+def test_manual_calibration_does_not_offer_motor_actions(rig, action):
+    response = rig.client.post(ROOT + "/" + action, json={}, headers=HEADERS)
+    assert response.status_code == 404
+    assert rig.calls == []
+
+
+def test_focus_travel_setting_reads_and_writes_through_existing_operator_lease(rig):
+    path = ROOT.rsplit("/turret", 1)[0] + "/microscope/focus-travel-limit"
+    assert rig.client.get(path, headers=HEADERS).status_code == 200
+    rig.outcome["result"] = {"focus_travel_limit_pulses": 735}
+    result = rig.client.post(path, json={"pulses": 735}, headers=HEADERS)
+    assert result.status_code == 200
+    assert result.json == {"focus_travel_limit_pulses": 735}
+    assert rig.calls == [
+        ("read", "microscope", "api/focus-travel-limit"),
+        ("operator", "microscope", "page-one", "api/focus-travel-limit", {"pulses": 735}),
+    ]
+
+
+@pytest.mark.parametrize("pulses", [True, 0, -1, 1.5, "500", 2147483648, None])
+def test_focus_travel_rejects_invalid_input_without_service_write(rig, pulses):
+    path = ROOT.rsplit("/turret", 1)[0] + "/microscope/focus-travel-limit"
+    assert rig.client.post(path, json={"pulses": pulses}, headers=HEADERS).status_code == 400
+    assert rig.calls == []
+
+
 @pytest.mark.parametrize("outcome,code", [("refused", 409), ("unknown", 502)])
 def test_failed_operator_request_is_not_retried_or_reported_successful(rig, outcome, code):
     rig.outcome.clear()
@@ -109,7 +193,12 @@ def test_failed_operator_request_is_not_retried_or_reported_successful(rig, outc
 
 @pytest.mark.parametrize(
     "action,payload,code",
-    [("unknown", {}, 404), ("begin", {"move_focus": True}, 400), ("upload", {"profile": {}}, 400)],
+    [
+        ("unknown", {}, 404),
+        ("begin", {"move_focus": True}, 400),
+        ("record", {"objective_id": 0, "kind": "clearance"}, 400),
+        ("upload", {"profile": {}}, 400),
+    ],
 )
 def test_invalid_actions_do_not_reach_the_microscope(rig, action, payload, code):
     response = rig.client.post(ROOT + "/" + action, json=payload, headers=HEADERS)

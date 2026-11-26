@@ -39,20 +39,27 @@ from labkit.events import EventLog
 from labkit.lease import Lease
 
 from . import calibrate
-from .aruco_locator import Locator, detect_objectives
+from .aruco_locator import Locator
 from .aruco_switch import (
     OBJECTIVE_ORDER,
     ArucoObjectiveSwitcher,
     SwitchSettings,
+    SwitchVisionError,
     full_steps_to_pulses,
     select_objective,
 )
-from .autofocus import AutofocusCancelled, AutoFocuser
+from .autofocus import AutofocusCancelled, AutoFocuser, NoFocusPeak
+from .focus_travel import (
+    DEFAULT_AUTOFOCUS_RANGES,
+    DEFAULT_FOCUS_TRAVEL,
+    FocusTravelMixin,
+)
 from .motors import CommandRejected, MotorController
 from .paths import private_open, run_path
 from .side_capture import SideCaptureCancelled
 from .sim import MicroscopeSimulator
 from .turret_session import TurretCalibrationMixin
+from .visual_focus import VISUAL_ACTIONS, VisualFocusMixin
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,9 +69,14 @@ NUDGE_STEPS = (-10, -1, 1, 10)
 # The objective on each turret position, by side-camera marker ID (ISO 8578 colour ring).
 OBJECTIVE_NAMES = {0: "5x", 1: "10x", 2: "20x", 3: "50x"}
 NUDGE_SPEED = 40
+# A learned turn between 2 objectives stays within this many full steps of the default.
+PAIR_STEPS_RANGE = 25
 # The MJPEG preview of the 2592x1944 Toupcam frame is 1296x968. go2rtc encodes it to H.264.
 # Single frames, recordings and the device jobs keep the full frame.
 PREVIEW_SIZE = (1296, 972)
+# A crash before VideoWriter.release() loses the open segment: keep segments short.
+RECORDING_SEGMENT_MINUTES = 10
+MAX_RECORDING_SEGMENTS = 1024
 # Camera-only commands. Motor faults and motor stops do not cancel them.
 RECORDING_ACTIONS = (
     "start_recording",
@@ -211,6 +223,7 @@ class FurnaceReadings:
         self._sample = None
         self._received = None
         self._error = "Furnace readings have not arrived"
+        self._missed = False
 
     @staticmethod
     def _number(value):
@@ -291,6 +304,7 @@ class FurnaceReadings:
 
     def poll_once(self):
         """One fake-testable request. Never called by the acquisition thread."""
+        detail = {}
         try:
             value = self._validate(self.client.state())
             error = (
@@ -298,15 +312,30 @@ class FurnaceReadings:
                 if value["sequence"]["healthy"]
                 else "Furnace readings are faulted; recording metadata is blank"
             )
-        except Exception:
+        except Exception as failure:
             value, error = None, "Furnace readings unavailable; recording metadata is blank"
+            detail = {"error": str(failure) or type(failure).__name__}
         with self._lock:
             if self._closed:
                 return
+            # Keep a fresh healthy sample through one failed read. The snapshot
+            # age limit still blanks it when the next read also fails.
+            if (
+                value is None
+                and not self._missed
+                and self._error is None
+                and self._sample is not None
+                and 0 <= self.clock() - self._received <= 2.5
+            ):
+                self._missed = True
+                return
+            self._missed = False
             changed = error != self._error
             self._sample, self._received, self._error = value, self.clock(), error
         if changed:
-            self.events.add("warning" if error else "info", error or "Furnace readings available")
+            self.events.add(
+                "warning" if error else "info", error or "Furnace readings available", **detail
+            )
 
     def start(self):
         with self._lock:
@@ -448,7 +477,11 @@ class _AuthorityCancel:
 
 
 class _Unidentified(RuntimeError):
-    """The side camera did not identify an objective before a turret turn."""
+    """The side camera did not identify an objective.
+
+    Before a turn, nothing moved. During a turn, the turret is stopped and disabled.
+    Focus keeps its reference in both cases.
+    """
 
 
 @dataclass
@@ -497,6 +530,7 @@ class _DemoSerial:
         self.lock = threading.RLock()
         self.replies = queue.Queue()
         self.commands = []
+        self.focus_origin = 0
 
     def emit(self, lines):
         for line in lines:
@@ -506,6 +540,8 @@ class _DemoSerial:
         with self.lock:
             text = payload.decode("ascii").strip()
             self.commands.append(text)
+            if text == "FOCUS ZERO":
+                self.focus_origin += self.sim.focus.position
             self.emit(self.sim.command(text))
         return len(payload)
 
@@ -558,8 +594,11 @@ class _DemoCamera:
             raise RuntimeError("Demo camera is closed")
         with self.port.lock:
             position = (
-                self.port.sim.objective.position if self.side else self.port.sim.focus.position
+                self.port.sim.objective.position
+                if self.side
+                else self.port.focus_origin + self.port.sim.focus.position
             )
+            focus_position = self.port.focus_origin + self.port.sim.focus.position
         if self.side:
             ident = round(position / 740) % 4
             offset = round((position - round(position / 740) * 740) / 8)
@@ -568,7 +607,8 @@ class _DemoCamera:
                 cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), ident, 80
             )
             x = max(1, min(119, 60 - offset))
-            frame[60:140, x : x + 80] = marker
+            y = max(1, min(119, 60 + round(focus_position / 10)))
+            frame[y : y + 80, x : x + 80] = marker
             captured_at = time.monotonic()
         else:
             sigma = min(8.0, abs(position - 12) / 12)
@@ -590,7 +630,12 @@ class _DemoCapture:
         self._closed = threading.Event()
         self.width = self.height = 200
         self.sdk_camera = SimpleNamespace(
-            get_AutoExpoEnable=lambda: False, put_AutoExpoEnable=lambda _value: None
+            get_AutoExpoEnable=lambda: False,
+            put_AutoExpoEnable=lambda _value: None,
+            get_ExpoTime=lambda: 10000,
+            put_ExpoTime=lambda _value: None,
+            get_ExpoAGain=lambda: 100,
+            put_ExpoAGain=lambda _value: None,
         )
 
     def read(self, timeout=0.5):
@@ -647,7 +692,7 @@ def _reduced(pixels):
     return pixels[top : top + keep_height, left : left + keep_width]
 
 
-class MicroscopeService(TurretCalibrationMixin):
+class MicroscopeService(TurretCalibrationMixin, VisualFocusMixin, FocusTravelMixin):
     def __init__(
         self,
         config=None,
@@ -725,7 +770,24 @@ class MicroscopeService(TurretCalibrationMixin):
         # Full steps that nudges turned the turret since select_objective aligned it.
         # None: unknown, at start and after a failed or stopped turn.
         self._objective_offset = None
+        # Full steps that the last aligned turn needed, for each (source, target) pair.
+        self._pair_steps = {}
         self._init_turret_calibration(turret_store)
+        self._focus_travel_limit = DEFAULT_FOCUS_TRAVEL
+        self._apply_autofocus_ranges(DEFAULT_AUTOFOCUS_RANGES)
+        self._focus_verified = None
+        self._autofocus_run = dict(
+            phase="idle",
+            objective_id=None,
+            stage=None,
+            score=None,
+            position_pulses=None,
+            verified=False,
+            completed=[],
+            error=None,
+            sequence=False,
+            search_half_range_pulses=None,
+        )
         self._last_command = self._last_result = None
         self.expiry_count = 0
 
@@ -951,7 +1013,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 video,
                 fps=recording.options["output_fps"],
                 timestamps_path=video.with_suffix(".timestamps.csv"),
-                segment_minutes=60,
+                segment_minutes=RECORDING_SEGMENT_MINUTES,
                 minimum_free_gb=recording.options["minimum_free_gb"],
                 metadata_provider=lambda: self._recording_metadata(recording),
                 metadata_fields=FRAME_METADATA_FIELDS,
@@ -978,7 +1040,7 @@ class MicroscopeService(TurretCalibrationMixin):
                     or not self._camera.is_recording
                 ):
                     raise RuntimeError("Camera recording stopped unexpectedly")
-                if len(self._camera.recording_segments) > 128:
+                if len(self._camera.recording_segments) > MAX_RECORDING_SEGMENTS:
                     raise RuntimeError("Recording segment limit reached")
                 if recording.sequence:
                     sequence = self._readings.snapshot().get("sequence")
@@ -1004,7 +1066,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._camera.recording_error
                 or getattr(self._camera, "last_error", None)
                 or not recording.data["frame_count"]
-                or not 1 <= len(segments) <= 128
+                or not 1 <= len(segments) <= MAX_RECORDING_SEGMENTS
                 or len(set(segments)) != len(segments)
                 or any(not re.fullmatch(r"video_[0-9]{4}\.mp4", name) for name in segments)
             ):
@@ -1078,8 +1140,8 @@ class MicroscopeService(TurretCalibrationMixin):
             "objective_nudge": {"steps": parameter("integer", enum=list(NUDGE_STEPS))},
             "autofocus": {"mode": parameter("string", enum=["full", "local"])},
             "focus_move": {"steps": parameter("integer", minimum=-(2**31), maximum=2**31 - 1)},
-            "home_focus": {},
-            "set_focus_zero": {},
+            "rough_focus_5x": {},
+            "autofocus_sequence": {},
             "snapshot": {"path": parameter("string", minLength=1)},
             "start_recording": self._recording_parameters(),
             "stop_recording": {"recording_id": parameter("string", pattern="^[0-9a-f]{32}$")},
@@ -1094,7 +1156,10 @@ class MicroscopeService(TurretCalibrationMixin):
             demo=self.demo,
             zones=["furnace-window"],
             lease_seconds=self.config.lease_seconds,
-            on_lease_expiry="Cancel work, STOP ALL, disable both motors, and lose focus zero.",
+            on_lease_expiry=(
+                "Cancel work, STOP ALL and disable both motors. "
+                "Verify focus sharpness before a lens change."
+            ),
             commands={
                 name: command(
                     parameter(
@@ -1121,6 +1186,16 @@ class MicroscopeService(TurretCalibrationMixin):
         lease_state = self._lease.snapshot()
         with self._lock:
             status = self._status
+            connected = bool(self._started and self._motor and self._motor.connected)
+            power_status = (
+                status
+                if connected
+                and status is not None
+                and self._motor.fault is None
+                and status.session == self._motor.session
+                and status.reference_epoch == self._motor.reference_epoch
+                else None
+            )
             if (
                 self._reference is not None
                 and self._motor is not None
@@ -1134,7 +1209,7 @@ class MicroscopeService(TurretCalibrationMixin):
                 seq=self._seq,
                 ts_unix=self._wall_clock(),
                 demo=self.demo,
-                connected=bool(self._started and self._motor and self._motor.connected),
+                connected=connected,
                 busy=self._job is not None
                 or self._turret_session is not None
                 or self._stopping
@@ -1148,7 +1223,35 @@ class MicroscopeService(TurretCalibrationMixin):
                 objective_offset_limit_steps=self.config.nudge_steps,
                 focus_position_pulses=status.focus.position if known and status else None,
                 focus_zero_known=known,
-                focus_limits_pulses=list(self.config.focus_limits or ()),
+                focus_reference="relative_command",
+                focus_travel_limit_pulses=self._focus_travel_limit,
+                autofocus_settings=self.autofocus_settings(),
+                autofocus_run=copy.deepcopy(self._autofocus_run),
+                focus_limits_pulses=list(
+                    getattr(
+                        self._job,
+                        "visual_limits",
+                        (-self._focus_travel_limit, self._focus_travel_limit),
+                    )
+                ),
+                turret_profile=self._visual_profile_summary(),
+                visual_focus=copy.deepcopy(self._visual_focus),
+                motor_power={
+                    "objective": {
+                        "enabled": power_status.objective.enabled if power_status else None,
+                        "sleeping": (
+                            getattr(power_status.objective, "sleeping", None)
+                            if power_status
+                            else None
+                        ),
+                    },
+                    "focus": {
+                        "enabled": power_status.focus.enabled if power_status else None,
+                        "sleeping": (
+                            getattr(power_status.focus, "sleeping", None) if power_status else None
+                        ),
+                    },
+                },
                 cameras={
                     "microscope": bool(self._camera and self._camera.is_open),
                     "side": bool(
@@ -1277,6 +1380,8 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._starting = True
             try:
                 self.config.validate()
+                self._load_focus_travel()
+                self._load_autofocus_settings()
                 if self.demo and self._motor is None:
                     self._demo_port = _DemoSerial(home_switch=self.config.home_switch)
                     self._motor = MotorController(serial_factory=lambda **_: self._demo_port)
@@ -1326,12 +1431,21 @@ class MicroscopeService(TurretCalibrationMixin):
         return self
 
     def _poll(self):
+        next_status = 0.0
         while not self._quit.wait(0.05):
             try:
                 self.lease.poll()
                 if self._motor is not None and self._motor.fault:
                     if self._latch_fault("motor", self._motor.fault):
                         self.stop("motor-monitor", 0, keep_recording=True)
+                with self._lock:
+                    idle = self._job is None and not self._stopping
+                if idle and self._started and self._motor and time.monotonic() >= next_status:
+                    next_status = time.monotonic() + 1.0
+                    status = self._motor.read_status()
+                    with self._lock:
+                        self._status = status
+                        self._seq += 1
             except Exception as error:
                 if self._latch_fault("monitor", str(error)):
                     self.stop("motor-monitor", 0, keep_recording=True)
@@ -1506,16 +1620,7 @@ class MicroscopeService(TurretCalibrationMixin):
                     or self._recording.client != client
                 ):
                     raise ServiceError(409, "The recording ID is not active for this client")
-            if (
-                action in ("focus_move", "select_objective", "objective_nudge", "autofocus")
-                and self._reference is None
-            ):
-                raise ServiceError(409, "focus position unknown")
-            if action == "focus_move" and self._status is not None:
-                # Refuse before dispatch: a refused job stops the motors and clears focus zero.
-                low, high = self.config.focus_limits
-                if not low <= self._status.focus.position + args["steps"] <= high:
-                    raise ServiceError(409, "Focus move exceeds the configured limits")
+            profile = self._require_visual_profile() if action in VISUAL_ACTIONS else None
             if action == "objective_nudge":
                 self._check_nudge(args["steps"])
             if action == "home_focus" and not self.config.home_switch:
@@ -1529,8 +1634,14 @@ class MicroscopeService(TurretCalibrationMixin):
                 copy.deepcopy(args),
                 _AuthorityCancel(self._clock, deadline),
             )
-            if action == "select_objective":
-                job.turret_profile = self._turret_profile_for_switch()
+            if profile is not None:
+                job.turret_profile = profile
+                job.focus_travel_limit = self._focus_travel_limit
+                job.focus_travel_used = 0
+                job.manual_focus_limit = self._focus_travel_limit
+                job.autofocus_half_ranges = dict(enumerate(self._autofocus_range_values().values()))
+                if action == "autofocus_sequence":
+                    job.focus_travel_limit += 16 * sum(job.autofocus_half_ranges.values())
             self._job = job
             self._seq += 1
             thread = threading.Thread(
@@ -1591,7 +1702,8 @@ class MicroscopeService(TurretCalibrationMixin):
                 and status.microstep == 4
                 and status.zeroed
                 and status.limited
-                and (status.minimum, status.maximum) == self.config.focus_limits
+                and (status.minimum, status.maximum)
+                == getattr(job, "visual_limits", self.config.focus_limits)
                 and not status.homing
                 and status.focus.enabled
                 and status.minimum <= status.focus.position <= status.maximum
@@ -1600,7 +1712,9 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._reference = None
                 raise RuntimeError("focus position unknown or reference changed")
             if clearance and (
-                status.focus.moving or status.focus.position != self.config.switch_focus
+                status.focus.moving
+                or status.focus.position
+                != getattr(job, "visual_clearance", self.config.switch_focus)
             ):
                 raise RuntimeError("Focus is not stationary at the verified clearance position")
         return status
@@ -1649,6 +1763,8 @@ class MicroscopeService(TurretCalibrationMixin):
             if fresh:
                 latest = self._side.get_frame_packet(wait=False, copy=False)
                 cursor = latest[0] if latest is not None else None
+                if cursor is not None and (type(cursor) is not int or cursor < 0):
+                    raise _Unidentified("Invalid side-camera frame ID")
                 threshold, deadline = time.monotonic(), time.monotonic() + 5.0
                 packet = None
                 while time.monotonic() < deadline:
@@ -1659,6 +1775,7 @@ class MicroscopeService(TurretCalibrationMixin):
                     frame_id, captured_at, _ = candidate
                     if (
                         type(frame_id) is not int
+                        or frame_id < 0
                         or isinstance(captured_at, bool)
                         or not isinstance(captured_at, (int, float))
                         or not math.isfinite(captured_at)
@@ -1669,6 +1786,8 @@ class MicroscopeService(TurretCalibrationMixin):
                         break
             else:
                 packet = self._side.get_frame_packet(timeout=5.0)
+        except SideCaptureCancelled:
+            raise
         except RuntimeError as error:
             cause = error.__cause__ or error
             raise _Unidentified(f"Side camera is unavailable: {cause}") from error
@@ -1693,50 +1812,56 @@ class MicroscopeService(TurretCalibrationMixin):
         return select_objective(measurement["markers"])["id"]
 
     def _select(self, job, motor):
-        # The side stream runs only during a switch. At 3840x2160 it truncates
-        # the frames of other cameras on the shared USB 2 link.
-        profile = getattr(job, "turret_profile", None)
-        locator = self._profile_locator(profile) if profile is not None else self._locator()
-        try:
-            self._side.open()
-        except RuntimeError as error:
-            raise _Unidentified(f"Side camera is unavailable: {error}") from error
-        try:
-            if profile is not None:
-                # Check objective visibility before moving focus. Compare its
-                # coordinates only at the configured clearance position.
-                detection = detect_objectives(self._side_frame(job))
-                if detection["status"] != "ok" or not detection["markers"]:
-                    raise _Unidentified(f"Objective identification failed: {detection['status']}")
-                height, width = detection["shape"]
-                ref_height, ref_width = next(iter(profile["captures"].values()))["shape"]
-                if height * ref_width != width * ref_height:
-                    raise _Unidentified(
-                        "Side-camera aspect ratio does not match the turret profile"
-                    )
-                position = self._guard_reference(job).focus.position
-                if position != self.config.switch_focus:
-                    motor.focus_move(self.config.switch_focus - position)
-                self._guard_reference(job, clearance=True)
-            return self._switch(job, motor, locator)
-        finally:
-            self._side.close()
+        if job.args["id"] == self._objective_id:
+            return {"objective_id": self._objective_id, "switches": [], "autofocus_run": False}
+        self._autofocus_update(phase="switching", verified=False)
+        result = self._switch(job, motor, self._profile_locator(job.turret_profile))
+        job.focus_evidence = None
+        self._focus_verified = None
+        self._autofocus_update(objective_id=result["objective_id"], verified=False)
+        result["autofocus_run"] = False
+        return result
 
-    def _switch(self, job, motor, locator):
+    def _autofocus_sequence(self, job, motor):
+        self._rough_position_5x(job)
+        results = []
+        for objective in OBJECTIVE_ORDER:
+            self._check_job(job)
+            if self._objective_id != objective:
+                raise ValueError("The autofocus sequence lost the expected objective identity")
+            result = self._autofocus(job, motor)
+            self._remember_autofocus(job, result)
+            results.append({"objective_id": objective, **result})
+            if objective != OBJECTIVE_ORDER[-1]:
+                self._verify_switch_focus(job)
+                self._autofocus_update(phase="switching", verified=False)
+                self._switch(
+                    job, motor, self._profile_locator(job.turret_profile), target=objective + 1
+                )
+                job.focus_evidence = None
+        return {"objective_id": self._objective_id, "autofocus_results": results}
+
+    def _switch(self, job, motor, locator, *, target=None):
         current = self._identify(
             job, locator, fresh=getattr(job, "turret_profile", None) is not None
         )
-        target = job.args["id"]
+        target = job.args["id"] if target is None else target
         completed = []
         for _ in range(3):
             if current == target:
                 break
-            position = self._guard_reference(job).focus.position
-            motor.focus_move(self.config.switch_focus - position)
+            if job.action == "autofocus_sequence":
+                self._verify_switch_focus(job)
             self._guard_reference(job, clearance=True)
             # The turret has a gap between the last and the first objective. Never cross it.
             direction = 1 if OBJECTIVE_ORDER.index(target) > OBJECTIVE_ORDER.index(current) else -1
-            settings = SwitchSettings()
+            expected = OBJECTIVE_ORDER[OBJECTIVE_ORDER.index(current) + direction]
+            # The objectives are not evenly spaced. Start from the steps that this
+            # pair needed last time, so the turn lands near the target.
+            default_steps = SwitchSettings().switch_steps
+            settings = SwitchSettings(
+                switch_steps=self._pair_steps.get((current, expected), default_steps)
+            )
             if self.demo:
                 settings = replace(
                     settings,
@@ -1755,16 +1880,27 @@ class MicroscopeService(TurretCalibrationMixin):
             with self._lock:
                 # The turret leaves the confirmed objective. A failed turn keeps it unknown.
                 self._objective_id = self._objective_offset = None
-            result = switcher.run(
-                direction, f"microscope/{job.ident}-switch-{len(completed)}.csv", source_id=current
-            )
+            switch_index = getattr(job, "switch_index", 0)
+            job.switch_index = switch_index + 1
+            try:
+                result = switcher.run(
+                    direction,
+                    f"microscope/{job.ident}-switch-{switch_index}.csv",
+                    source_id=current,
+                )
+            except SwitchVisionError as error:
+                # The switcher stopped and disabled the turret. Focus did not move.
+                raise _Unidentified(str(error)) from error
             self._check_job(job)
-            expected = OBJECTIVE_ORDER[
-                (OBJECTIVE_ORDER.index(current) + direction) % len(OBJECTIVE_ORDER)
-            ]
             if result.target_id != expected:
                 raise RuntimeError("Objective switch returned an unexpected identity")
+            learned = round(abs(result.commanded_full_steps))
+            self._pair_steps[(current, expected)] = max(
+                default_steps - PAIR_STEPS_RANGE, min(default_steps + PAIR_STEPS_RANGE, learned)
+            )
             current = result.target_id
+            if getattr(job, "visual_open", False):
+                self._visual_measure(job, job.turret_profile, current)
             item = asdict(result)
             item["log_path"] = str(item["log_path"])
             completed.append(item)
@@ -1816,20 +1952,35 @@ class MicroscopeService(TurretCalibrationMixin):
 
     def _autofocus(self, job, motor):
         status = self._guard_reference(job)
-        half_range = (status.maximum - status.minimum) // 2
-        if job.args["mode"] == "local":
-            half_range = min(half_range, 1500)
-        if half_range < 1:
-            raise ValueError("No two-sided autofocus window fits inside the focus limits")
-        center = status.minimum + half_range
-        if job.args["mode"] == "local":
-            center = max(center, min(status.focus.position, status.maximum - half_range))
-        # The preserved algorithm scans symmetrically around its starting point.
-        # Place that window inside measured bounds, including clearance at an end.
+        half_range = job.autofocus_half_ranges[self._objective_id]
+        remaining = job.focus_travel_limit - job.focus_travel_used
+        if remaining < 16 * half_range:
+            raise ValueError(
+                "The remaining autofocus travel budget cannot cover the selected scan range"
+            )
+        self._autofocus_update(
+            phase="autofocus",
+            objective_id=self._objective_id,
+            verified=False,
+            search_half_range_pulses=half_range,
+        )
+        center = max(
+            status.minimum + half_range, min(status.focus.position, status.maximum - half_range)
+        )
+        # Preserve the requested scan range; never silently shrink it to the manual cap.
         if center != status.focus.position:
             motor.focus_move(center - status.focus.position)
         self._guard_reference(job)
-        options = dict(speed=self.config.focus_speed, cancel_event=job.cancel)
+
+        def progress(measurement):
+            self._check_job(job)
+            self._autofocus_update(
+                stage=measurement.stage,
+                score=measurement.score,
+                position_pulses=center + measurement.position,
+            )
+
+        options = dict(speed=self.config.focus_speed, cancel_event=job.cancel, progress=progress)
         if self.demo:
             options.update(
                 settle_seconds=0,
@@ -1839,9 +1990,12 @@ class MicroscopeService(TurretCalibrationMixin):
                 backlash_steps=min(200, 2 * half_range),
             )
         focuser = self._autofocus_factory(self._camera, motor, **options)
-        if job.args["mode"] == "local" or half_range < 3:
+        if job.args.get("mode", "full") == "local":
             result = focuser.run_local(
-                half_range=half_range, step=min(100, half_range), lock_exposure=not self.demo
+                half_range=half_range,
+                step=min(100, max(1, half_range // 4)),
+                fine_radius=max(1, half_range // 2),
+                lock_exposure=False,
             )
         else:
             fine = min(100, max(2, half_range // 4))
@@ -1850,9 +2004,16 @@ class MicroscopeService(TurretCalibrationMixin):
                 coarse_step=max(fine + 1, min(1000, half_range)),
                 fine_step=fine,
                 ultrafine_step=min(10, fine - 1),
-                lock_exposure=not self.demo,
+                lock_exposure=False,
             )
         self._check_job(job)
+        # A best score on a window edge that is not a focus limit is a rising curve.
+        edge = center + result.position
+        if abs(result.position) >= half_range and status.minimum < edge < status.maximum - 1:
+            raise NoFocusPeak(
+                "The best focus score is at the edge of the autofocus window; "
+                "the focus peak may be outside it. Run full autofocus."
+            )
         status = self._guard_reference(job)
         return {"measurement": asdict(result), "focus_position_pulses": status.focus.position}
 
@@ -1876,6 +2037,13 @@ class MicroscopeService(TurretCalibrationMixin):
         result, outcome, message = None, "ok", ""
         try:
             motor = _GuardedMotor(self, job)
+            if job.action in VISUAL_ACTIONS:
+                self._prepare_visual(job)
+                if job.action == "objective_nudge":
+                    try:
+                        self._check_nudge(job.args["steps"])
+                    except ServiceError as error:
+                        raise ValueError(str(error)) from error
             if job.action in ("set_focus_zero", "home_focus"):
                 result = self._reference_focus(job)
             elif job.action == "focus_move":
@@ -1886,17 +2054,28 @@ class MicroscopeService(TurretCalibrationMixin):
             elif job.action == "objective_nudge":
                 result = self._nudge(job)
             elif job.action == "autofocus":
+                if self._objective_id == 0:
+                    self._rough_position_5x(job)
                 result = self._autofocus(job, motor)
+                self._remember_autofocus(job, result)
+            elif job.action == "autofocus_sequence":
+                result = self._autofocus_sequence(job, motor)
+            elif job.action == "rough_focus_5x":
+                result = self._rough_position_5x(job)
             elif job.action == "snapshot":
                 result = self._save_snapshot(job)
             elif job.action in RECORDING_ACTIONS:
                 result = self._recording_command(job)
             self._check_job(job)
+            if job.action in VISUAL_ACTIONS:
+                self._finish_visual(job, "ok")
         except (SideCaptureCancelled, AutofocusCancelled) as error:
             outcome, message = "stopped", str(error)
             self.stop("command-cancel", 0, keep_recording=True)
-        except _Unidentified as error:
-            # No turret turn started. Keep the confirmed focus reference.
+        except (_Unidentified, NoFocusPeak) as error:
+            # No turret turn started, the switcher stopped and disabled the turret after
+            # the side camera lost the marker, or autofocus ended its motion normally.
+            # Keep the confirmed focus reference.
             outcome, message = "failed", str(error)
         except Exception as error:
             if job.action in CAMERA_ACTIONS:
@@ -1916,6 +2095,15 @@ class MicroscopeService(TurretCalibrationMixin):
                     outcome = "stopped"
                 self.stop("command-failure", 0, keep_recording=True)
         finally:
+            job.failure_message = message or None
+            if getattr(job, "visual_open", False):
+                self._finish_visual(job, outcome)
+            if job.action in VISUAL_ACTIONS and outcome != "ok":
+                self._autofocus_update(
+                    phase="stopped" if outcome == "stopped" else "failed",
+                    error=message,
+                    verified=False,
+                )
             with self._lock:
                 if job.cancel.is_set() and outcome == "ok":
                     self.stop("completion-authority-expired", 0, keep_recording=True)
@@ -1970,6 +2158,8 @@ class MicroscopeService(TurretCalibrationMixin):
                 self._recording_sequence["armed"] = False
             self._reference = None
             self._handoff_deadline = None
+            self._visual_nudge_reference = None
+            self._focus_verified = None
             self._seq += 1
             if not self._stopping:
                 if self._motor is None:
@@ -2105,6 +2295,11 @@ class _GuardedMotor:
     def connected(self):
         return self.service._motor.connected
 
+    @property
+    def ramped_motion(self):
+        # The demo advances virtual time. Real elapsed time cannot locate its moving frames.
+        return self.service.demo or self.service._motor.ramped_motion
+
     def _call(self, name, *args):
         self.service._guard_reference(self.job)
         return getattr(self.service._motor, name)(*args, cancel_event=self.job.cancel)
@@ -2133,7 +2328,8 @@ class _GuardedMotor:
             type(steps) is not int
             or not status.minimum <= status.focus.position + steps <= status.maximum
         ):
-            raise ValueError("Focus move exceeds the configured limits")
+            raise ValueError("Focus move exceeds the relative command travel bounds")
+        self.service._reserve_focus_travel(self.job, steps)
         return self.service._motor.focus_move_async(steps, cancel_event=self.job.cancel)
 
     def wait_focus_done(self, ticket, *, cancel_event=None):

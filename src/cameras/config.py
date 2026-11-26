@@ -22,7 +22,7 @@ MJPEG_MODES = frozenset(
         (320, 240, 30),
     }
 )
-DEVICE = re.compile(r"/dev/v4l/by-path/[A-Za-z0-9_.:+-]{1,255}")
+DEVICE = re.compile(r"/dev/v4l/by-(?:path|id)/[A-Za-z0-9_.:+-]{1,255}")
 MODE = re.compile(r"([1-9][0-9]{0,3})x([1-9][0-9]{0,3})@([1-9][0-9]{0,2})")
 
 
@@ -33,13 +33,13 @@ def _text(value, name):
 
 
 def camera_devices(value):
-    """Return 1–4 distinct stable device paths, or an empty list for cameras off."""
+    """Return 1–5 distinct stable device paths, or an empty list for cameras off."""
     value = _text(value, "MG400_CAMERA_DEVICES")
     if not value:
         return []
     devices = [part.strip() for part in value.split(",")]
-    if not 1 <= len(devices) <= 4:
-        raise ValueError("MG400_CAMERA_DEVICES must list 1 to 4 devices or none.")
+    if not 1 <= len(devices) <= 5:
+        raise ValueError("MG400_CAMERA_DEVICES must list 1 to 5 devices or none.")
     for device in devices:
         if not DEVICE.fullmatch(device) or device.rsplit("/", 1)[-1] in {".", ".."}:
             raise ValueError(f"Invalid camera device path: {device!r}")

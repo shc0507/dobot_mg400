@@ -39,7 +39,7 @@ function walk(node) { return [node, ...node.children.flatMap(walk)]; }
 function role(ui, name) { return [...walk(ui.element), ...walk(ui.profileSelector)].find(node => node.getAttribute("data-role") === "turret-" + name); }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const cap = () => ({ shape: [360, 640], objective_corners: [[40, 40], [48, 40], [48, 48], [40, 48]], preview_jpeg: "/9j/2w==" });
-const profile = (captures = {}) => ({ schema_version: 2, profile_id: "a".repeat(32), name: "Bench turret", camera: "camera3", focus_position: 100, dictionary: "DICT_4X4_50", objective_side_mm: 8, captures });
+const profile = (captures = {}) => ({ schema_version: 5, profile_id: "a".repeat(32), name: "Bench turret", camera: "camera3", focus_position: null, dictionary: "DICT_4X4_50", objective_side_mm: 8, captures, initial_5x_capture: Object.keys(captures).length === 4 ? cap() : null });
 const state = (overrides = {}) => ({ session: { active: false, mine: false }, draft: null, profiles: [], selected_profile: null, camera: { stream: "camera3", dimensions: [640, 360] }, ...overrides });
 
 function setup(initial = state(), { owns = true, request } = {}) {
@@ -52,7 +52,7 @@ function setup(initial = state(), { owns = true, request } = {}) {
   const global = {
     setInterval: fn => { interval = fn; return 1; }, clearInterval: () => { interval = null; }, setTimeout: fn => fn(),
     Blob, URL: { createObjectURL: () => "blob:profile", revokeObjectURL: url => revoked.push(url) },
-    LabCameras: { tile: name => { assert.equal(name, "camera3"); const node = el("div"); node.labCameras = { stop: () => { stops++; } }; return node; } },
+    LabCameras: { tile: name => { assert.ok(["camera3", "microscope"].includes(name)); const node = el("div", { "data-camera": name }); node.labCameras = { stop: () => { stops++; } }; return node; } },
   };
   const ui = turret.create(api, global);
   ui._test.applyState(initial);
@@ -65,16 +65,19 @@ test("objective IDs and bilingual instructions agree", () => {
   assert.deepEqual(Object.keys(turret.i18n.en).sort(), Object.keys(turret.i18n.zh).sort());
   assert.equal(turret.logic.MAX_UPLOAD, 2 * 1024 * 1024);
   const { ui, lang } = setup();
-  assert.match(ui.element.textContent, /Start releases only the turret motor/);
+  assert.match(ui.element.textContent, /Start releases both motors/);
+  assert.match(ui.element.textContent, /Calibration does not power the motors/);
+  assert.ok(walk(ui.element).some(node => node.getAttribute("data-camera") === "microscope"));
+  assert.ok(walk(ui.element).some(node => node.getAttribute("data-camera") === "camera3"));
   assert.match(ui.element.textContent, /current objective marker in focus and fully visible/);
-  assert.match(ui.element.textContent, /Alignment uses recorded image coordinates/);
-  assert.match(ui.element.textContent, /Retake all 4 objectives after moving Camera3 or changing camera focus or zoom/);
+  assert.match(ui.element.textContent, /retake all 4 turret positions and the 5× starting point/);
+  assert.match(ui.element.textContent, /After moving it or changing camera focus or zoom/);
   assert.doesNotMatch(ui.element.textContent, /marker 35|fixed reference|perspective correction/i);
   lang("zh");
-  assert.match(ui.element.textContent, /对焦轴不会移动/);
+  assert.match(ui.element.textContent, /开始时释放两个电机/);
   assert.match(ui.element.textContent, /当前物镜标记必须清晰且完整可见/);
-  assert.match(ui.element.textContent, /图像坐标/);
-  assert.match(ui.element.textContent, /改变摄像头对焦、变焦后，重新记录全部 4 个物镜/);
+  assert.match(ui.element.textContent, /保持 Camera3 固定/);
+  assert.match(ui.element.textContent, /改变摄像头对焦、变焦后，重新记录全部 4 个转盘位置和 5× 起点/);
   assert.doesNotMatch(ui.element.textContent, /35|固定参考|透视校正/);
 });
 
@@ -88,28 +91,31 @@ test("Start sends only begin and requires microscope control except in demo", as
   assert.deepEqual(demo.calls.map(call => call.slice(0, 2)), [["turret/begin", { name: "My turret", new: true }]]);
 });
 
-test("recording each manual detent keeps progress and allows Retake", async () => {
+test("records four turret X positions and one separate 5x initial point without motion", async () => {
   let value = state({ session: { active: true, mine: true }, draft: profile() });
   const { ui, calls } = setup(value, { request: async (path, data) => {
-    assert.equal(path, "turret/record");
-    value = { ...value, draft: { ...value.draft, captures: { ...value.draft.captures, [data.objective_id]: cap() } } };
+    if (path === "turret/record") {
+      value = { ...value, draft: { ...value.draft, captures: { ...value.draft.captures, [data.objective_id]: cap() } } };
+    }
+    if (path === "turret/record_initial") value = { ...value, draft: { ...value.draft, initial_5x_capture: cap() } };
     return value;
   } });
-  ui.show();
-  for (let id = 0; id < 4; id++) {
-    if (id) await role(ui, "next").click();
-    assert.match(role(ui, "record").textContent, new RegExp("Record " + turret.logic.OBJECTIVES[id]));
+  for (const [index, id] of [2, 0, 3, 1].entries()) {
+    await role(ui, "step-" + id).click();
     await role(ui, "record").click();
-    assert.equal(role(ui, "progress").textContent, `${id + 1} of 4 objectives recorded`);
     assert.match(role(ui, "record").textContent, /Retake/);
     assert.equal(role(ui, "still").getAttribute("src"), "data:image/jpeg;base64,/9j/2w==");
-    assert.equal(role(ui, "finish").disabled, id !== 3);
+    assert.equal(role(ui, "progress").textContent, `${index + 1} of 4 turret positions recorded`);
+    assert.equal(role(ui, "finish").disabled, true);
   }
-  await role(ui, "step-1").click();
-  await role(ui, "record").click();
-  assert.deepEqual(calls.filter(call => call[0] === "turret/record").map(call => call[1].objective_id), [0, 1, 2, 3, 1]);
-  assert.equal(role(ui, "progress").textContent, "4 of 4 objectives recorded");
-  ui.hide();
+  assert.deepEqual(calls.map(call => call.slice(0, 2)), [2, 0, 3, 1].map(objective_id => ["turret/record", { objective_id }]));
+  for (const name of ["response", "focus-jog--10", "return-clearance", "kind-clearance", "kind-focus"]) assert.equal(role(ui, name), undefined);
+  assert.match(role(ui, "focus-summary").textContent, /X 264.0 px/);
+  assert.doesNotMatch(role(ui, "focus-summary").textContent, /Y /);
+  await role(ui, "initial-record").click();
+  assert.deepEqual(calls.at(-1).slice(0, 2), ["turret/record_initial", {}]);
+  assert.match(role(ui, "initial-state").textContent, /Y 264.0 px/);
+  assert.equal(role(ui, "finish").disabled, false);
 });
 
 test("a rejected record preserves prior captures and leaves an inline error", async () => {
@@ -117,14 +123,14 @@ test("a rejected record preserves prior captures and leaves an inline error", as
   const { ui } = setup(state({ session: { active: true, mine: true }, draft: before }), { request: async () => { throw new Error("Objective marker 0 is missing."); } });
   await role(ui, "record").click();
   assert.equal(ui._test.state().draft, before);
-  assert.equal(role(ui, "progress").textContent, "1 of 4 objectives recorded");
+  assert.equal(role(ui, "progress").textContent, "1 of 4 turret positions recorded");
   assert.match(role(ui, "error").textContent, /Objective marker 0 is missing/);
   assert.equal(role(ui, "error").hidden, false);
 });
 
 test("finish retains captures, then Save & use saves and selects without recorded focus", async () => {
   const complete = { ...profile(Object.fromEntries([0, 1, 2, 3].map(id => [id, cap()]))), focus_position: null };
-  const catalog = [{ profile_id: complete.profile_id, name: complete.name, complete: true }];
+  const catalog = [{ profile_id: complete.profile_id, name: complete.name, complete: true, ready: true }];
   let value = state({ session: { active: true, mine: true }, draft: complete });
   const { ui, calls } = setup(value, { request: async (path, data) => {
     if (path === "turret/finish") value = { ...value, session: { active: false, mine: false } };
@@ -154,8 +160,8 @@ test("partial Save profile saves without selecting or moving a lens", async () =
 
 test("Save & use retains the saved profile and prior selection when activation fails", async () => {
   const draft = profile(Object.fromEntries([0, 1, 2, 3].map(id => [id, cap()])));
-  const old = { profile_id: "b".repeat(32), name: "Old profile", complete: true };
-  const saved = state({ draft, profiles: [old, { ...draft, complete: true }], selected_profile: old.profile_id });
+  const old = { profile_id: "b".repeat(32), name: "Old profile", complete: true, ready: true };
+  const saved = state({ draft, profiles: [old, { ...draft, complete: true, ready: true }], selected_profile: old.profile_id });
   let finishSave, finishSelect;
   const { ui, calls, notices } = setup(state({ draft, profiles: [old], selected_profile: old.profile_id }), {
     request: path => path === "turret/save" ? new Promise(resolve => { finishSave = resolve; }) : new Promise((_, reject) => { finishSelect = reject; }),
@@ -190,8 +196,8 @@ test("Save & use does not select when saving fails", async () => {
 });
 
 test("lens calibration lists complete profiles and follows selected poll metadata", async () => {
-  const first = { profile_id: "a".repeat(32), name: "Bench turret", complete: true };
-  const second = { profile_id: "b".repeat(32), name: "Other turret", complete: true };
+  const first = { profile_id: "a".repeat(32), name: "Bench turret", complete: true, ready: true };
+  const second = { profile_id: "b".repeat(32), name: "Other turret", complete: true, ready: true };
   const partial = { profile_id: "c".repeat(32), name: "Partial", complete: false };
   let value = state({ profiles: [first, second, partial], selected_profile: first.profile_id });
   const { ui, calls, lang } = setup(value, { request: async (path, data) => {
@@ -213,8 +219,8 @@ test("lens calibration lists complete profiles and follows selected poll metadat
 });
 
 test("lens calibration restores the prior selection on rejection and ignores unconfirmed selection", async () => {
-  const first = { profile_id: "a".repeat(32), name: "First", complete: true };
-  const second = { profile_id: "b".repeat(32), name: "Second", complete: true };
+  const first = { profile_id: "a".repeat(32), name: "First", complete: true, ready: true };
+  const second = { profile_id: "b".repeat(32), name: "Second", complete: true, ready: true };
   const before = state({ profiles: [first, second], selected_profile: first.profile_id });
   for (const request of [async () => { throw new Error("Selection refused."); }, async () => before]) {
     const { ui } = setup(before, { request });
@@ -226,7 +232,7 @@ test("lens calibration restores the prior selection on rejection and ignores unc
 });
 
 test("lens calibration requires control and waits for requests, motion and sessions", async () => {
-  const item = { profile_id: "a".repeat(32), name: "Profile", complete: true };
+  const item = { profile_id: "a".repeat(32), name: "Profile", complete: true, ready: true };
   const value = state({ profiles: [item] });
   const denied = setup(value, { owns: false });
   assert.equal(role(denied.ui, "profile-select").disabled, true);
@@ -262,7 +268,7 @@ test("resuming a draft preserves captures; New profile starts a fresh draft", as
   await role(ui, "start").click();
   assert.deepEqual(calls[0].slice(0, 2), ["turret/begin", {}]);
   await role(ui, "new").click();
-  assert.equal(role(ui, "progress").textContent, "0 of 4 objectives recorded");
+  assert.equal(role(ui, "progress").textContent, "0 of 4 turret positions recorded");
   role(ui, "name").type("New turret");
   await role(ui, "start").click();
   assert.deepEqual(calls[1].slice(0, 2), ["turret/begin", { name: "New turret", new: true }]);
@@ -281,12 +287,12 @@ test("upload rejects oversized, malformed and invalid profiles without clearing 
   await upload(file('{"schema_version":999}'));
   assert.match(role(ui, "error").textContent, /Unsupported schema_version/);
   assert.equal(ui._test.state().draft, before);
-  assert.equal(role(ui, "progress").textContent, "1 of 4 objectives recorded");
+  assert.equal(role(ui, "progress").textContent, "1 of 4 turret positions recorded");
 });
 
 test("profile names are text, and actions use the saved profile ID", async () => {
   const id = "b".repeat(32), name = '<img src=x onerror="alert(1)">';
-  const { ui, calls, revoked } = setup(state({ profiles: [{ profile_id: id, name, complete: true }] }), {
+  const { ui, calls, revoked } = setup(state({ profiles: [{ profile_id: id, name, complete: true, ready: true }] }), {
     request: async path => path.startsWith("turret/profile/") ? profile() : state(),
   });
   assert.match(ui.element.textContent, /<img src=x/);
@@ -299,7 +305,7 @@ test("profile names are text, and actions use the saved profile ID", async () =>
 
 test("another client's session disables mutations", () => {
   const id = "c".repeat(32);
-  const { ui } = setup(state({ session: { active: true, mine: false }, draft: profile(), profiles: [{ profile_id: id, name: "Profile", complete: true }] }));
+  const { ui } = setup(state({ session: { active: true, mine: false }, draft: profile(), profiles: [{ profile_id: id, name: "Profile", complete: true, ready: true }] }));
   assert.equal(role(ui, "record").hidden, true);
   assert.equal(role(ui, "new").disabled, true);
   assert.equal(role(ui, "upload").disabled, true);
@@ -323,21 +329,49 @@ test("a saved profile is labeled Saved before it is selected", () => {
   assert.equal(role(ui, "select-" + draft.profile_id).textContent, "Load draft");
 });
 
-test("focus guidance recommends clearance while all captures enable Save & use", () => {
-  const draft = profile(Object.fromEntries([0, 1, 2, 3].map(id => [id, cap()])));
-  const { ui, lang } = setup(state({ draft, switch_focus: 800, compatible_for_switch: false }));
-  assert.equal(role(ui, "focus-summary").textContent, "Clearance: 800 MICRO 4 pulses · Recorded: 100 MICRO 4 pulses");
+test("legacy profiles stay editable but cannot substitute for height calibration", () => {
+  const draft = { ...profile(Object.fromEntries([0, 1, 2, 3].map(id => [id, cap()]))), schema_version: 2 };
+  const { ui } = setup(state({ draft, profiles: [{ ...draft, complete: true, ready: false, needs_height_calibration: true }] }));
   assert.equal(role(ui, "switch-warning").hidden, false);
-  assert.equal(role(ui, "switch-warning").textContent, "We recommend recording at clearance 800 MICRO 4 pulses.");
-  assert.match(ui.element.textContent, /Before Start, we recommend moving focus manually to clearance/);
-  ui._test.applyState(state({ draft: { ...draft, focus_position: null }, switch_focus: 800, compatible_for_switch: false }));
-  assert.match(role(ui, "focus-summary").textContent, /Recorded: \(focus not zeroed\)/);
-  assert.equal(role(ui, "save").textContent, "Save & use");
-  assert.equal(role(ui, "save").disabled, false);
-  lang("zh");
-  assert.match(role(ui, "focus-summary").textContent, /记录位置：（对焦未归零）/);
-  ui._test.applyState(state({ draft: { ...draft, focus_position: 800 }, switch_focus: 800, compatible_for_switch: true }));
-  assert.equal(role(ui, "switch-warning").hidden, false);
+  assert.match(role(ui, "switch-warning").textContent, /keep its turret X records/);
+  assert.equal(role(ui, "save").textContent, "Save profile");
+  assert.equal(role(ui, "select-" + draft.profile_id).textContent, "Load draft");
+  assert.equal(role(ui, "profile-select").children.length, 1);
+});
+
+test("a selected legacy profile can load an upgrade draft while ready selections stay selected", async () => {
+  const old = { ...profile(), schema_version: 4, complete: true, ready: false, needs_initial_focus: true };
+  const value = state({ profiles: [old], selected_profile: old.profile_id });
+  const { ui, calls } = setup(value);
+  const choice = role(ui, "select-" + old.profile_id);
+  assert.equal(choice.textContent, "Load draft");
+  assert.equal(choice.disabled, false);
+  await choice.click();
+  assert.deepEqual(calls.map(call => call.slice(0, 2)), [["turret/load", { id: old.profile_id }]]);
+  ui.setMicroscopeBusy(true);
+  assert.equal(role(ui, "select-" + old.profile_id).disabled, true);
+  ui.setMicroscopeBusy(false);
+  ui._test.applyState({ ...value, session: { active: true, mine: false } });
+  assert.equal(role(ui, "select-" + old.profile_id).disabled, true);
+  const observer = setup(value, { owns: false });
+  assert.equal(role(observer.ui, "select-" + old.profile_id).disabled, true);
+  ui._test.applyState({ ...value, profiles: [{ ...old, ready: true }] });
+  assert.equal(role(ui, "select-" + old.profile_id).textContent, "Selected");
+  assert.equal(role(ui, "select-" + old.profile_id).disabled, true);
+});
+
+test("calibration camera stops while Operate is visible but profile polling continues", async () => {
+  const value = state({ demo: true, camera: { frame_url: "/lab/api/console/ws/process/turret/frame" } });
+  const { ui, interval } = setup(value);
+  ui.show();
+  await flush();
+  ui.setCalibrationVisible(false);
+  assert.equal(typeof interval(), "function");
+  const image = walk(ui.element).find(node => node.tagName === "img" && node.getAttribute("alt") === "Camera3");
+  assert.equal(image.getAttribute("src"), null);
+  ui.setCalibrationVisible(true);
+  assert.match(image.getAttribute("src"), /turret\/frame/);
+  ui.hide();
 });
 
 test("selection errors remain visible until backend state clears them", () => {

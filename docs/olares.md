@@ -263,8 +263,8 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 ## 摄像头
 
-在 `MG400_CAMERA_DEVICES` 中配置 1 到 4 台 USB 摄像头。使用不同的 USB 接口路径。
-视频流按设备顺序命名为 `camera1` 到 `camera4`。配置为空时关闭摄像头。
+在 `MG400_CAMERA_DEVICES` 中配置 1 到 5 台 USB 摄像头。使用 `/dev/v4l/by-path/` 或 `/dev/v4l/by-id/` 下不同的稳定路径。
+视频流按设备顺序命名为 `camera1` 到 `camera5`。配置为空时关闭摄像头。此控制台显示前 4 个 USB 摄像头视图，并接受配置中的第 5 个共享设备。
 在 `MG400_CAMERA_MODES` 中为每台设备指定 1 个 MJPEG 模式，用逗号分隔。
 软件只接受以下模式，列表来自 AC410（`camera2` 到 `camera4`）。所选摄像头也必须报告支持该模式：
 

@@ -105,3 +105,17 @@ def test_the_stored_error_moves_no_pose_by_more_than_some_millimetres():
                 continue
             real = kinematics.true_pose((reach, 0.0, z, 0.0))
             assert math.dist(real[:3], (reach, 0.0, z)) < 6.0
+
+
+def test_a_place_outside_the_arm_gets_the_error_of_the_stretched_arm():
+    edge = 109.5 + math.sqrt((174.208 + 175.070) ** 2 - (-189.0 + 53.0) ** 2)
+
+    inside = kinematics.true_pose((edge - 1e-4, 0.0, -189.0), ERROR)
+    outside = kinematics.true_pose((edge + 1e-4, 0.0, -189.0), ERROR)
+    far = kinematics.true_pose((edge + 60.0, 0.0, -189.0), ERROR)
+
+    # The error has no step at the edge of the reach.
+    assert outside[0] == pytest.approx(inside[0], abs=0.02)
+    assert outside[2] == pytest.approx(inside[2], abs=0.02)
+    assert abs(far[0] - edge - 60.0) < 6 and abs(far[2] + 189.0) < 6
+    assert kinematics.true_pose(kinematics.reported_pose(far, ERROR), ERROR) == pytest.approx(far)

@@ -33,6 +33,7 @@ TERMS = ("j2_zero_deg", "j3_zero_deg", "rear_arm_mm", "forearm_mm")
 HOLE_PX = (14.0, 90.0)  # diameter of a hole in a 3840x2160 frame, lens 135 to 600 mm above
 ROUND_LIMIT = 0.12  # spread of the rim radius of a hole, as a part of the radius
 MATCH_MM = 4.0
+REMATCH_PX = 6.0
 OUTLIER_SIGMAS = 4.0
 MIN_VIEWS, MIN_HOLES = 12, 8
 
@@ -124,8 +125,8 @@ def match_grid(model, views, table_touch_z):
 
     views: [{"pose": [x, y, z, r], "holes": [[u, v], ...]}]. table_touch_z is the flange z
     at which the tool tip touches the table, within some millimetres. Returns the view
-    number, the normalised pixel and the grid place (i, j) of each matched hole, and the
-    yaw and the origin of the grid in arm coordinates.
+    number, the normalised pixel and the grid place (i, j) of each blob, a mark for the
+    blobs that are on the grid, and the yaw and the origin of the grid in arm coordinates.
     """
     matrix, distortion = model["camera_matrix"], model["distortion"]
     view, normal, place = [], [], []
@@ -148,21 +149,22 @@ def match_grid(model, views, table_touch_z):
     grid = np.round((turned - origin) / PITCH_MM)
     keep = np.linalg.norm(turned - origin - grid * PITCH_MM, axis=1) < MATCH_MM
     start = np.array([cos * origin[0] - sin * origin[1], sin * origin[0] + cos * origin[1]])
-    return view[keep], normal[keep], grid[keep], yaw, start
+    return view, normal, grid, keep, yaw, start
 
 
-def _solve(model, poses, view, normal, grid, start, terms, table_touch_z):
+def _predictor(model, poses, terms):
+    """Return predict(x, view, grid): the place in the picture of grid holes, in focal pixels."""
     rotation = cv2.Rodrigues(np.array(model["mount"]["rotation_link_to_camera"], float))[0].ravel()
     focal = float(model["camera_matrix"][0][0])
-    j1 = np.arctan2(poses[:, 1], poses[:, 0])[view]
-    across, along = PITCH_MM * grid[:, 0], PITCH_MM * grid[:, 1]
+    angles = np.arctan2(poses[:, 1], poses[:, 0])
     count = len(terms)
 
-    def error(x):
+    def predict(x, view, grid):
         arm = ArmError(**dict(zip(terms, x[:count])))
         flange = np.array([kinematics.true_pose(pose, arm)[:3] for pose in poses])[view]
         gx, gy, gz, yaw, tilt_x, tilt_y = x[count + 5 :]
         cos, sin = math.cos(yaw), math.sin(yaw)
+        across, along = PITCH_MM * grid[:, 0], PITCH_MM * grid[:, 1]
         points = np.column_stack(
             [
                 gx + cos * across - sin * along,
@@ -170,22 +172,38 @@ def _solve(model, poses, view, normal, grid, start, terms, table_touch_z):
                 gz + tilt_x * across + tilt_y * along,
             ]
         )
-        linked = wrist_camera.link_points(points, flange, j1, x[count : count + 2])
+        linked = wrist_camera.link_points(points, flange, angles[view], x[count : count + 2])
         camera = linked @ cv2.Rodrigues(rotation + x[count + 2 : count + 5])[0].T
-        return ((camera[:, :2] / camera[:, 2:3] - normal) * focal).ravel()
+        return camera[:, :2] / camera[:, 2:3] * focal
 
-    plane = table_touch_z - model["mount"]["camera_above_tip_mm"]
-    x = np.concatenate(
-        [
-            np.zeros(count),
-            model["mount"]["offset_xy_mm"],
-            np.zeros(3),
-            start[1],
-            [plane, start[0], 0, 0],
-        ]
-    )
+    return predict, focal
+
+
+def _solve(model, poses, view, normal, grid, x, terms):
+    predict, focal = _predictor(model, poses, terms)
+
+    def error(values):
+        return (predict(values, view, grid) - normal * focal).ravel()
+
     x, residual = wrist_camera._minimize(error, x)
     return x, residual.reshape(-1, 2), error
+
+
+def _rematch(model, poses, x, terms, view, normal, grid):
+    """Give each blob the grid hole that the fitted model puts nearest to it in the picture."""
+    predict, focal = _predictor(model, poses, terms)
+    low, high = grid.min(0) - 3, grid.max(0) + 3
+    steps = [np.arange(low[k], high[k] + 1) for k in (0, 1)]
+    holes = np.array([(i, j) for i in steps[0] for j in steps[1]], float)
+    keep, place = np.zeros(len(view), bool), np.zeros((len(view), 2))
+    for number in np.unique(view):
+        rows = np.flatnonzero(view == number)
+        seen = predict(x, np.full(len(holes), number), holes)
+        gap = np.linalg.norm(normal[rows, None] * focal - seen[None], axis=2)
+        nearest = gap.argmin(1)
+        keep[rows] = gap[np.arange(len(rows)), nearest] < REMATCH_PX
+        place[rows] = holes[nearest]
+    return keep, place
 
 
 def _view_shifts(error, x, view, views):
@@ -219,25 +237,33 @@ def fit(model, views, table_touch_z, terms=TERMS):
     that the views do not separate from another term has a large sigma.
     """
     poses = np.array([record["pose"] for record in views], float)
-    view, normal, grid, yaw, start = match_grid(model, views, table_touch_z)
-    seen = np.unique(view)
-    if len(seen) < MIN_VIEWS or len(np.unique(grid, axis=0)) < MIN_HOLES:
+    all_view, all_normal, first_grid, on_grid, yaw, start = match_grid(model, views, table_touch_z)
+    holes = np.unique(first_grid[on_grid], axis=0)
+    if len(np.unique(all_view[on_grid])) < MIN_VIEWS or len(holes) < MIN_HOLES:
         raise ValueError(f"The fit needs {MIN_VIEWS} views of {MIN_HOLES} holes of the table")
+    plane = table_touch_z - model["mount"]["camera_above_tip_mm"]
+    tail = [*model["mount"]["offset_xy_mm"], 0, 0, 0, *start, plane, yaw, 0, 0]
     result = {}
     for name, used in (("before", ()), ("after", tuple(terms))):
-        rows = np.ones(len(view), bool)
-        for _ in range(3):
-            data = view[rows], normal[rows], grid[rows]
-            x, residual, error = _solve(model, poses, *data, (yaw, start), used, table_touch_z)
+        x = np.array([0.0] * len(used) + tail)
+        # Round 1 uses the blobs that the stored mapping puts on the grid. The next rounds
+        # match with the fitted model, so the result does not change with the stored ArmError.
+        keep, grid = on_grid, first_grid
+        for _ in range(4):
+            data = all_view[keep], all_normal[keep], grid[keep]
+            x, residual, error = _solve(model, poses, *data, x, used)
             size = np.linalg.norm(residual, axis=1)
             good = size <= OUTLIER_SIGMAS * 1.4826 * np.median(size) + 0.5
-            if good.all():
+            again, new_grid = _rematch(model, poses, x, used, all_view, all_normal, holes)
+            again[np.flatnonzero(keep)[~good]] = False
+            if np.array_equal(again, keep) and np.array_equal(new_grid[keep], grid[keep]):
                 break
-            rows[np.flatnonzero(rows)[~good]] = False
+            keep, grid = again, new_grid
+        seen = np.unique(data[0])
         shifts = _view_shifts(error, x, data[0], len(views))
         result[name] = {
             "rms_px": float(np.sqrt(np.mean(size**2))),
-            "holes": int(rows.sum()),
+            "holes": int(len(size)),
             "view_shift_rms_mm": dict(zip(("reach", "sideways", "height"), _rms(shifts).tolist())),
             "view_shift_mm": shifts.tolist(),
         }

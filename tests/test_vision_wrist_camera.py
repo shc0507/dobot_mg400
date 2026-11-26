@@ -461,3 +461,23 @@ def test_the_mapping_uses_the_real_place_of_the_flange(monkeypatch):
     monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError())
     plain = wrist_camera.surface_points(model, [pixels[0]], looks[0], touch[2])[0]
     assert np.linalg.norm(plain - touch[:2]) > 0.3
+
+
+def test_a_point_outside_the_arm_maps_without_a_failure(monkeypatch):
+    model = wrist_camera.load()
+    pose = (-39.0, -236.0, 163.8, -25.2)
+    far = wrist_camera.surface_points(model, [[1900.0, 1150.0], [3600.0, 2000.0]], pose, -189.0)
+    assert np.hypot(*far[1]) > 470  # no arm pose puts the cup there
+
+    monkeypatch.setattr(kinematics, "ERROR", kinematics.ArmError(0.4, 0.9, -2.5, 0.6))
+    corrected = wrist_camera.surface_points(
+        model, [[1900.0, 1150.0], [3600.0, 2000.0]], pose, -189.0
+    )
+
+    assert np.isfinite(corrected).all()
+    assert np.linalg.norm(corrected[1] - far[1]) < 12
+    back = wrist_camera.surface_pixels(model, corrected, pose, -189.0)
+    assert back == pytest.approx(np.array([[1900.0, 1150.0], [3600.0, 2000.0]]), abs=0.5)
+    assert np.isfinite(
+        wrist_camera.locate(model, [[3600.0, 2000.0]] * 2, [pose, (1.0, -276.0, 125.8, -25.2)])[:2]
+    ).all()

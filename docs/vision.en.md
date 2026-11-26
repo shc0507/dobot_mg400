@@ -526,7 +526,7 @@ The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays
 - The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
 - `arm_radial_scale` and `calibration_radius_mm`: the board run gives the reported radial moves of the arm this scale factor about this radius. The factor is valid only near the run poses, from X -79 to 41 and from Y -316 to -236. The mapping functions do not use it.
 - `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
-- `arm`: along the reach, the arm reports a longer move than the real one between a look pose and a touch. In the link frame, the mapping multiplies the reach part of the vector from the flange to the point by `radial_scale`. It adds `radial_drift` times the flange radius of the look pose minus `radius_mm`. Sideways moves of the arm are true.
+- `arm`: along the reach, the arm reports a longer move than the real one between a look pose and a touch. In the link frame, the mapping multiplies the reach part of the vector from the flange to the point by `radial_scale`. It adds `radial_drift` times the flange radius of the look pose minus `radius_mm`. Sideways moves of the arm are true. These terms are the part of the arm error that `ERROR` in `src/mg400/kinematics.py` does not have.
 - `tool`: `offset_xy_mm` is the place of the cup centre from the flange axis, in the flange frame.
 - `touch_fit`: the data counts and the errors of the touch fit.
 - The fit error in pixels.
@@ -582,6 +582,55 @@ The `run` and `fit` commands keep the stored value. Fit it again after a change 
 - On the stage plate, the result is within 0.5 mm from a pose with the lens 200 mm or more above the surface.
 - The wrist camera weights know chips only on the tray plate. On the bare stage plate, `detect` does not find a chip.
 - The pad of the cup is 4 mm wide. A chip that is narrower than about 4 mm needs the cup within 0.2 mm of the middle of its width, so a pick routine must be able to touch again 0.5 mm to the side.
+
+## Arm kinematic error
+
+The controller calculates the flange pose from its joint angles. Its model has a rear arm (the link that J2 moves) of 174.208 mm and a forearm (the link that J3 moves) of 175.070 mm. The real arm is different from this model. `src/mg400/kinematics.py` stores the difference as `ERROR`:
+
+- `j3_zero_deg`: 0.79 degrees. The real J3 angle is the reported angle plus this value.
+- `rear_arm_mm`: -2.70 mm. The real rear arm is shorter than the model.
+
+`true_pose()` gives the real place of the flange at a reported pose. `reported_pose()` gives the pose to command for a real place.
+The wrist camera mapping uses these functions. The camera is at the real place of the flange, and `surface_points()` and `locate()` return the pose to command.
+The robot service, `labctl robot move`, the stored positions and the recipes use the reported coordinates. They have no correction.
+
+### Measure the arm error with the table holes
+
+The wrist camera takes views of the threaded holes of the optical table. The hole pitch of 25.4 mm is the length reference. The run makes no touch and needs no board.
+
+1. Make sure that the tray table is at its usual place. Remove items from the tray that are higher than 20 mm.
+2. Park the arm at X -39, Y -236, Z 163.8, within 5 mm. The script refuses a different start pose. It also refuses to start if the camera sees fewer than 10 holes of the table.
+3. Make sure that the space above the tray is clear. The arm moves to 75 poses in a fan, at speed 10. The fan has J1 at -99, -91 and -83 degrees and a reach of 236 to 316 mm. The flange Z goes from 163.8 down to 50. At Z 50, the tip of the cup is 28 mm above the tray plate.
+4. Run `uv run python scripts/arm_calibrate.py run work/arm-calibration/run`. Monitor the arm or the camera views. `sudo labctl robot stop` stops it.
+5. Run `uv run python scripts/arm_calibrate.py fit work/arm-calibration/run/frames.json`.
+6. Write the printed `ERROR` line into `src/mg400/kinematics.py`.
+7. Fit the wrist camera to the touch data again: `uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json`.
+8. Commit `src/mg400/kinematics.py` and `config/cameras/wrist.json` in the same change.
+
+The script takes control of the robot with the session `arm-calibration`. Each move goes through the collision check of `labctl robot move`.
+The script writes 1 still for each pose and `frames.json` to the output directory. Then it moves the arm back to the start pose and releases the robot.
+After a failed move or an alarm, the script sends no more moves and releases the robot. The release disables the arm, and the arm stays where it is.
+
+The `fit` command prints these values:
+
+- `error` and `sigma`: the fitted terms and their 1-sigma values.
+- `left_out`: the smallest and the largest value of each term when the fit does not use the views of 1 J1 direction.
+- `before` and `after`: the pixel error of the holes, and the camera shift that the views ask for along the reach, sideways and in height. `before` is without the fitted error, and `after` is with it.
+
+`--terms` selects the terms. The default is `j3_zero_deg,rear_arm_mm`. The other terms are `j2_zero_deg`, `forearm_mm`, `j2_scale` and `j3_scale`.
+Store a term only if its value is more than 3 times its `sigma` and its `left_out` values have the same sign.
+The fit does not change with the stored `ERROR`: it matches the holes again with the fitted error.
+
+### Limits of the arm error
+
+- The views cover J2 from -16 to 15 degrees and J3 from -16 to 24 degrees. The stored values are not verified for poses near the table, where J2 is near 80 degrees.
+- The views do not separate a short rear arm from a J2 angle scale. Near the table, the 2 causes give different errors.
+- The views do not give `j2_zero_deg` and `forearm_mm`. Their values change when the fit does not use 1 J1 direction.
+- The error has no constant part of the reach or of the height. Use the real places for the difference between 2 poses, for example a look pose and a touch pose. Do not use them as an absolute height.
+- The height error comes from the lens height above the table only. The Z error of the cup tip at a touch needs touch measurements.
+- J1 and the tool rotation have no correction.
+- A place outside the reach of the arm gets the error of the stretched arm that points at it.
+- A change of `ERROR` makes the touch fit of the wrist camera invalid. Fit it again.
 
 ## Stop and shutdown
 

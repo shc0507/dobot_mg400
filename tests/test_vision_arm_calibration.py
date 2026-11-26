@@ -160,29 +160,21 @@ def test_fit_refuses_too_few_views():
         arm_calibration.fit(model, [{"pose": views[0]["pose"], "holes": []}], TABLE_TOUCH_Z)
 
 
-def test_view_poses_are_inside_the_joint_ranges_and_cover_j2_and_j3():
+def test_view_poses_are_inside_the_joint_ranges_and_stay_above_the_tray():
     script = load_script()
 
-    poses = script.view_poses(74.0)
+    poses = script.view_poses(-25.3)
 
     joints = [kinematics.joints_from_plane(math.hypot(x, y), z) for x, y, z, _ in poses]
-    assert len(poses) >= 80
-    assert max(j2 for j2, _ in joints) - min(j2 for j2, _ in joints) > 50
-    assert max(j3 for _, j3 in joints) - min(j3 for _, j3 in joints) > 70
-    assert min(z for _, _, z, _ in poses) == -50.0
+    assert len(poses) == 75
+    assert max(j2 for j2, _ in joints) - min(j2 for j2, _ in joints) > 25
+    assert max(j3 for _, j3 in joints) - min(j3 for _, j3 in joints) > 35
+    assert min(z for _, _, z, _ in poses) == 50.0
+    assert {round(math.degrees(math.atan2(y, x))) for x, y, _, _ in poses} == {-99, -91, -83}
+    assert all(r == -25.3 for _, _, _, r in poses)
     steps = [math.dist(a[:3], b[:3]) for a, b in zip(poses, poses[1:])]
-    assert max(steps) < 75
-
-
-def test_the_arc_goes_from_the_start_to_the_first_view_at_the_start_height():
-    script = load_script()
-
-    arc = script.arc_poses(-99.3, 74.0)
-
-    assert all(z == script.START[2] for _, _, z, _ in arc)
-    assert all(math.hypot(x, y) == pytest.approx(250.0) for x, y, _, _ in arc)
-    assert math.degrees(math.atan2(arc[-1][1], arc[-1][0])) == pytest.approx(105.0)
-    assert arc[-1][3] == pytest.approx(179.0)
+    assert max(steps) < 50
+    assert math.dist(poses[0][:3], script.START) < 5
 
 
 def test_run_refuses_a_start_that_was_not_checked():
@@ -202,4 +194,6 @@ def test_fit_command_prints_the_error_and_the_bands(tmp_path, capsys):
 
     assert result["error"]["j3_zero_deg"] == pytest.approx(0.9, abs=0.05)
     assert any(row["band"].startswith("reach") for row in result["after"]["bands"])
+    low, high = result["left_out"]["j3_zero_deg"]
+    assert 0.8 < low <= high < 1.0
     assert "ERROR = ArmError(j2_zero_deg=0.4" in capsys.readouterr().out

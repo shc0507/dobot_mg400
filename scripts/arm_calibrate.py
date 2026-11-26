@@ -3,11 +3,7 @@
 uv run python scripts/arm_calibrate.py run work/arm-calibration/run-1
 uv run python scripts/arm_calibrate.py fit work/arm-calibration/run-1/frames.json
 
-`run` moves the arm and makes no touch. Park the arm at the tray look pose (START) and set
-the collision level of the controller first. The arm turns on an arc to the +Y side of the
-base and takes 90 stills of the bare table there, from flange Z 150 down to -50. Each move
-goes through the collision check of `labctl robot move`. After a failure the arm stays
-where it is and the run releases it.
+`run` moves the arm and makes no touch. Read the procedure in docs/vision.en.md first.
 `fit` prints the ArmError for `src/mg400/kinematics.py` and the errors of the views.
 """
 
@@ -30,17 +26,16 @@ SESSION = "arm-calibration"
 # The moves were checked in the bench twin for this start pose (the tray look pose).
 START = (-39.0, -236.0, 163.8)
 START_TOLERANCE_MM = 5.0
-SPEED = 15
+SPEED = 10
 SETTLE_S = 1.5
-# The arm turns from the start to the first view on an arc at this reach and height.
-ARC_REACH_MM, ARC_STEP_DEG = 250.0, 15.0
-# Views over the bare table on the +Y side of the base: J1 (deg), reach (mm), flange Z (mm).
-VIEW_J1 = (105.0, 115.0, 125.0)
-VIEW_REACH = (235.0, 265.0, 295.0, 325.0, 350.0)
-VIEW_Z = (150.0, 110.0, 70.0, 30.0, -10.0, -50.0)
+# Views over the tray sector, with the tool rotation of the start: J1 (deg), reach (mm) and
+# flange Z (mm). At the lowest Z the tip of the cup is 28 mm above the tray plate.
+VIEW_J1 = (-99.0, -91.0, -83.0)
+VIEW_REACH = (236.0, 256.0, 276.0, 296.0, 316.0)
+VIEW_Z = (163.8, 135.0, 107.0, 78.0, 50.0)
 # Flange Z at which the tool tip touches the table. The fit corrects a small error.
 TABLE_TOUCH_Z = -189.0
-MIN_HOLES_AT_START = 20
+MIN_HOLES_AT_START = 10
 
 
 def labctl(*arguments):
@@ -87,30 +82,17 @@ def frame():
     return data, gray
 
 
-def _pose(j1, reach, z, j4):
-    angle = math.radians(j1)
-    return (reach * math.cos(angle), reach * math.sin(angle), z, j1 + j4)
-
-
-def arc_poses(start_j1, j4):
-    """Poses on the arc from the J1 of the start to the J1 of the first view."""
-    poses, j1 = [], start_j1
-    while j1 < VIEW_J1[0] - 1e-6:
-        j1 = min(j1 + ARC_STEP_DEG, VIEW_J1[0])
-        poses.append(_pose(j1, ARC_REACH_MM, START[2], j4))
-    return poses
-
-
-def view_poses(j4):
-    """View poses inside the joint ranges, ordered so that each move is short."""
+def view_poses(r):
+    """View poses with the tool rotation r, ordered so that each move is short."""
     poses = []
     for column, j1 in enumerate(VIEW_J1):
+        angle = math.radians(j1)
         for reach in VIEW_REACH if column % 2 == 0 else VIEW_REACH[::-1]:
             heights = []
             for z in VIEW_Z:
                 try:
                     j2, j3 = kinematics.joints_from_plane(reach, z)
-                    joint_limits.validate_joints((j1, j2, j3, j4))
+                    joint_limits.validate_joints((j1, j2, j3, r - j1))
                 except ValueError:
                     continue
                 heights.append(z)
@@ -121,7 +103,7 @@ def view_poses(j4):
                 and abs(heights[-1] - poses[-1][2]) < abs(heights[0] - poses[-1][2])
             ):
                 heights.reverse()
-            poses += [_pose(j1, reach, z, j4) for z in heights]
+            poses += [(reach * math.cos(angle), reach * math.sin(angle), z, r) for z in heights]
     return poses
 
 
@@ -139,22 +121,15 @@ def collect(out):
     time.sleep(3)
     start = state()["actual"]
     check_start(start)
-    start_j1 = math.degrees(math.atan2(start[1], start[0]))
-    j4 = start[3] - start_j1
-    arc = arc_poses(start_j1, j4)
+    seen = len(arm_calibration.find_holes(frame()[1]))
+    if seen < MIN_HOLES_AT_START:
+        robot("release")
+        raise RuntimeError(f"The camera sees {seen} holes of the table, not {MIN_HOLES_AT_START}")
     robot("enable")
     time.sleep(1)
     records = []
     try:
-        for target in arc:
-            move(*target)
-        time.sleep(SETTLE_S)
-        seen = len(arm_calibration.find_holes(frame()[1]))
-        if seen < MIN_HOLES_AT_START:
-            raise RuntimeError(
-                f"The camera sees {seen} holes of the table, not {MIN_HOLES_AT_START}"
-            )
-        for target in view_poses(j4):
+        for target in view_poses(start[3]):
             now = move(*target)
             time.sleep(SETTLE_S)
             data, gray = frame()
@@ -177,8 +152,7 @@ def collect(out):
             )
         now = state()["actual"]
         move(now[0], now[1], START[2], now[3])
-        for target in [*arc[::-1][1:], (*start[:2], START[2], start[3])]:
-            move(*target)
+        move(*start[:2], START[2], start[3])
     finally:
         # After a failure the arm stays where it is. The release disables it.
         robot("release")
@@ -204,6 +178,24 @@ def bands(records, shifts):
     return rows
 
 
+def left_out(records, terms):
+    """Smallest and largest value of each term when the views of 1 J1 direction are left out.
+
+    A term whose values differ by much more than its sigma is not known from these views.
+    """
+    j1 = [round(math.degrees(math.atan2(r["pose"][1], r["pose"][0]))) for r in records]
+    values = {name: [] for name in terms}
+    for group in sorted(set(j1)) if len(set(j1)) >= 3 else ():
+        rest = [record for record, angle in zip(records, j1) if angle != group]
+        try:
+            error = arm_calibration.fit(wrist_camera.load(), rest, TABLE_TOUCH_Z, terms)["error"]
+        except ValueError:
+            continue
+        for name in terms:
+            values[name].append(getattr(error, name))
+    return {name: [min(found), max(found)] for name, found in values.items() if found}
+
+
 def fit(path, terms):
     records = json.loads(Path(path).read_text())
     for record in records:
@@ -213,6 +205,7 @@ def fit(path, terms):
     result = arm_calibration.fit(wrist_camera.load(), records, TABLE_TOUCH_Z, terms)
     for key in ("before", "after"):
         result[key]["bands"] = bands(records, result[key].pop("view_shift_mm"))
+    result["left_out"] = left_out(records, terms)
     error = result.pop("error")
     result["error"] = error._asdict()
     print(json.dumps(result, indent=1))
@@ -227,7 +220,7 @@ def main():
     commands.add_parser("run").add_argument("out")
     fit_parser = commands.add_parser("fit")
     fit_parser.add_argument("frames")
-    fit_parser.add_argument("--terms", default=",".join(arm_calibration.TERMS))
+    fit_parser.add_argument("--terms", default="j3_zero_deg,rear_arm_mm")
     arguments = parser.parse_args()
     if arguments.command == "run":
         collect(arguments.out)

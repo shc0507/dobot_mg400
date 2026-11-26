@@ -340,7 +340,7 @@ def _real(poses):
     """Real flange x, y, z of reported poses."""
     if kinematics.ERROR == kinematics.ArmError():
         return np.array(poses[:, :3], float)
-    return np.array([kinematics.true_pose(pose)[:3] for pose in poses])
+    return np.array([kinematics.true_pose(pose)[:3] for pose in poses], float)
 
 
 def _on_surface(model, centre, directions, touch_z):
@@ -434,7 +434,7 @@ def locate(model, pixels, poses):
     point = np.linalg.solve(normal, target)
     height = model["mount"].get("camera_above_tip_mm")
     # The point is in real coordinates. Give the pose to command for a touch.
-    x, y, z = kinematics.reported_pose((point[0], point[1], point[2] + (height or 0.0)))
+    x, y, z = kinematics.reported_pose((point[0], point[1], point[2] + (height or 0.0)))[:3]
     touch_z = None if height is None else float(z)
     return float(x), float(y), touch_z, float(z - (height or 0.0))
 

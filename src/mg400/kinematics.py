@@ -41,7 +41,7 @@ class ArmError(NamedTuple):
 # From `scripts/arm_calibrate.py fit`: views with J2 -16 to 15 degrees and J3 -16 to 24
 # degrees. The views do not separate a short rear arm from a J2 angle scale, so the values
 # are not verified for J2 above 45 degrees (poses near the table).
-ERROR = ArmError(j3_zero_deg=0.88, rear_arm_mm=-2.50)
+ERROR = ArmError(j3_zero_deg=0.79, rear_arm_mm=-2.70)
 
 
 def plane_from_joints(j2_deg, j3_deg, error=None):
@@ -55,22 +55,30 @@ def plane_from_joints(j2_deg, j3_deg, error=None):
     return reach, height
 
 
-def joints_from_plane(reach, height):
-    """J2 and J3 in degrees that the controller reports at a reach and a height."""
+def _joints(reach, height, stretch):
     across, up = reach - REACH_OFFSET_MM, height - HEIGHT_OFFSET_MM
     # across^2 + up^2 = rear^2 + fore^2 + 2 rear fore sin(J2 - J3)
     sine = (across**2 + up**2 - REAR_ARM_MM**2 - FOREARM_MM**2) / (2 * REAR_ARM_MM * FOREARM_MM)
     if not -1.0 <= sine <= 1.0:
-        raise ValueError(f"Reach {reach:g} mm at height {height:g} mm is outside the arm")
+        if not stretch:
+            raise ValueError(f"Reach {reach:g} mm at height {height:g} mm is outside the arm")
+        sine = max(-1.0, min(1.0, sine))
     bend = math.asin(sine)
     along, side = REAR_ARM_MM + FOREARM_MM * math.sin(bend), FOREARM_MM * math.cos(bend)
     j2 = math.atan2(along * across - side * up, side * across + along * up)
     return math.degrees(j2), math.degrees(j2 - bend)
 
 
+def joints_from_plane(reach, height):
+    """J2 and J3 in degrees that the controller reports at a reach and a height."""
+    return _joints(reach, height, stretch=False)
+
+
 def _plane_error(reach, height, error):
-    real = plane_from_joints(*joints_from_plane(reach, height), error)
-    return real[0] - reach, real[1] - height
+    # A place outside the arm gets the error of the stretched arm that points at it.
+    joints = _joints(reach, height, stretch=True)
+    model, real = plane_from_joints(*joints), plane_from_joints(*joints, error)
+    return real[0] - model[0], real[1] - model[1]
 
 
 def _moved(pose, reach, shift):
@@ -80,7 +88,10 @@ def _moved(pose, reach, shift):
 
 
 def true_pose(pose, error=None):
-    """Real flange place (x, y, z, ...) of a reported pose. Other values pass unchanged."""
+    """Real flange place (x, y, z, ...) of a reported pose. Other values pass unchanged.
+
+    A place outside the arm does not raise: a camera can see such a place.
+    """
     error = ERROR if error is None else error
     reach = math.hypot(pose[0], pose[1])
     return _moved(pose, reach, _plane_error(reach, pose[2], error))

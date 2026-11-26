@@ -12,6 +12,10 @@ The real arm differs from this model. An ArmError holds the differences. `true_p
 the place that the flange really has at a reported pose, and `reported_pose` gives the pose
 to command for a wanted real place. J1 and the tool rotation have no correction: an error of
 the J1 zero only turns the frame of the arm.
+
+The calibration gives no constant offset of the reach or of the height. Use the real places
+for the difference between 2 poses, for example a look pose and a touch pose. Do not use
+them as an absolute height.
 """
 
 import math

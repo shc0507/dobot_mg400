@@ -414,8 +414,8 @@ Its size is 3,447,272 bytes. Its SHA-256 is `1cf153e44ffe8d68d1f3edb60b896b7d8fc
 The destination is `/var/lib/mg400/twin/twin.glb`, with permissions `0640`. The asset belongs to `orch`.
 Installation does not require it. Without it, the Twin workspace shows that it cannot load the model.
 
-The `twin-collision` entry specifies `collision.json` in this repository's `twin-collision-v1` release. It is the collision world of the bench twin: convex hulls and the joint tree of the arm and the bench.
-Its size is 3,043,062 bytes. Its SHA-256 is `e37df1804b57607bfc556b593025b3e131c173990a8f6380387abe1b97a511bd`.
+The `twin-collision` entry specifies `collision.json` in this repository's `twin-collision-v2` release. It is the collision world of the bench twin: convex hulls and the joint tree of the arm and the bench.
+Its size is 3,164,921 bytes. Its SHA-256 is `5ce043aadb397e2da3237a026c540963a9082fe7f9f524c2034209e651dcc6ef`.
 The destination is `/var/lib/mg400/twin/collision.json`, with permissions `0640`. The asset belongs to `orch`.
 Without it, `labctl robot move` refuses each move that does not have `--no-collision-check`. See [Collision check](agent-cli.en.md#collision-check).
 

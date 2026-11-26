@@ -29,9 +29,9 @@ source = "Bench twin authoring folder, build.py --console (Draco GLB)"
 license = "Project internal; MG400 links cut from Dobot's MG400 STEP model"
 
 [twin-collision]
-url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-collision-v1/collision.json"
-sha256 = "e37df1804b57607bfc556b593025b3e131c173990a8f6380387abe1b97a511bd"
-bytes = 3043062
+url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-collision-v2/collision.json"
+sha256 = "5ce043aadb397e2da3237a026c540963a9082fe7f9f524c2034209e651dcc6ef"
+bytes = 3164921
 install = "/var/lib/mg400/twin/collision.json"
 mode = "0640"
 service = "orch"

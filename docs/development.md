@@ -256,7 +256,7 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 | `busy`、`locked`、`stop_unconfirmed`、`recoverable` | 执行中、控制锁定、停止未确认、可恢复 |
 | `alarms` | 当前报警列表，见上文 |
 | `message`、`last_command` | 服务消息和最近命令结果 |
-| `vacuum`、`payload_kg` | 吸盘实测状态和负载，见 [真空吸盘](#真空吸盘) |
+| `vacuum`、`payload_kg`、`pressure` | 吸盘实测状态、负载和吸盘管路压力，见 [真空吸盘](#真空吸盘) |
 | `controller_id` | 持有控制权的客户端 ID，无持有者时为 `null` |
 | `keyboard_enabled`、`keyboard_arming` | 键盘点动已开启，正在开启 |
 | `keyboard_active_key`、`keyboard_speed_percent`、`keyboard_disarm_reason` | 正在执行的按键、键盘速度和关闭原因 |
@@ -505,6 +505,7 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 - 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。`held` 是 DI8（`GRIP_DI`）的实测电平；`GRIP_DI` 为 `None` 或无反馈时为 `null`。
 - 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。服务每次使能时用 `EnableRobot` 命令发送 `PAYLOAD_KG` 和 `PAYLOAD_CENTER_MM`。两个常量在 `src/mg400/joint_control.py` 中。`PAYLOAD_KG` 是末端工具、腕部相机和相机支架的总质量。`PAYLOAD_CENTER_MM` 是 J4 为 0° 时该质量的重心相对 J4 轴的位置。
+- 状态对象的 `pressure` 为压力传感器板给出的 `{"abs_hpa": ..., "gauge_hpa": ...}`；最近 1 s 内没有读数时为 `null`。`gauge_hpa` 相对于服务打开串口时板子测得的零点。打开串口会复位板子，因此启动服务时吸盘必须通向室内空气。`src/mg400/pressure.py` 在后台线程中读取串口 `PORT`，5 s 内没有采样时重新打开串口。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
 - 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。DO2 为高电平时，模拟器同时置高 DI8。
 - 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。

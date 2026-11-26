@@ -96,6 +96,7 @@ ROBOT_FIELDS = (
     "syncing",
     "feedback_fresh",
     "vacuum",
+    "pressure",
     "keyboard_enabled",
     "keyboard_arming",
     "keyboard_speed_percent",

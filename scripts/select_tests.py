@@ -27,6 +27,7 @@ ROBOT = [
     "test_control_mode.py",
     "test_mg400_sim.py",
     "test_suction.py",
+    "test_pressure.py",
     "test_console*.py",
     "test_orchestrator_clients.py",
     "test_orchestrator_rehearsal.py",
@@ -117,6 +118,8 @@ AREAS = [
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
     # Host tests cannot detect firmware bugs; the stage-firmware CI job runs the native checks.
     ("firmware/stage-controller-v3/*", []),
+    # Host tests cannot detect firmware bugs; nothing tests this sketch.
+    ("firmware/pressure-sensor/*", []),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
     ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_position_finder.py"]),
     (

@@ -102,6 +102,7 @@ The Dobot Mini Vacuum Source (DT-AC-MAP1-001) drives the suction cup. The MG400 
 - Stop and disable do not change DO2. A held part does not drop because of a stop. When DO1 is high or a blow is in progress, stop and disable send `DOExecute(1,0)` to end the blow.
 - The vacuum switch is on base DI8 (`GRIP_DI` in `src/mg400/suction.py`). DI8 is high when the cup seals on a part or a flat surface.
 - With the cup on, the vacuum switch is a Z touch probe: suck, step down at `SpeedL=1`, and take the first step where DI8 goes high as the contact. The contact force is almost zero. The surface must be flat and must not leak air; the cup does not seal over a breadboard hole. Blow for 0.3 seconds before you lift.
+- An Adafruit MPRLS pressure sensor (0 to 25 PSI absolute) on its own Arduino Uno measures the suction line pressure. The Uno has USB serial `1453230313235111B180`. For the wiring and the serial protocol, see the [firmware guide](../firmware/pressure-sensor/README.en.md).
 
 ## Completion checks and failure handling
 

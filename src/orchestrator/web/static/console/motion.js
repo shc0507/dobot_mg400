@@ -228,6 +228,14 @@
     return { state, held: typeof vacuum?.held === "boolean" ? vacuum.held : null };
   }
 
+  /** Gauge pressure of the suction line in hPa with 1 decimal and a sign, or null without a fresh reading. */
+  function pressureText(pressure) {
+    const value = pressure?.gauge_hpa;
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    const text = Math.abs(value).toFixed(1);
+    return (value < 0 && Number(text) !== 0 ? "−" : "") + text;
+  }
+
   /** The controller alarms as {id, text}: the description, the source and the solution. */
   function alarmRows(robot) {
     return (Array.isArray(robot?.alarms) ? robot.alarms : []).filter(item => item && typeof item === "object").map(item => {
@@ -313,7 +321,7 @@
       "pose.xy": "X/Y position", "pose.current": "Current", "pose.last": "Last known", "pose.unknown": "No position",
       "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop",
       "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
-      "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
+      "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}", "vac.pressure": "Line pressure",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
       "confirm": "Confirm", "cancel": "Cancel",
       "stage.stop": "Stop stage", "stage.connected": "Connected", "stage.disconnected": "Arduino not connected",
@@ -444,7 +452,7 @@
       "pose.xy": "X/Y 位置", "pose.current": "当前位置", "pose.last": "最后位置", "pose.unknown": "无位置",
       "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下",
       "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
-      "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
+      "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}", "vac.pressure": "管路压力",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
       "confirm": "确认", "cancel": "取消",
       "stage.stop": "停止位移台", "stage.connected": "已连接", "stage.disconnected": "Arduino 未连接",
@@ -541,7 +549,7 @@
     },
   };
 
-  Object.assign(logic, { vacuumView, alarmRows });
+  Object.assign(logic, { vacuumView, pressureText, alarmRows });
 
   function workspace() {
     let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false, refreshing = false;
@@ -779,6 +787,7 @@
       refs.vacState = el("span", { class: "mo-vac-state" });
       // The grip switch is not installed yet. Held shows when the robot service reports it.
       refs.vacHeld = el("span", { class: "mo-vac-held", hidden: true });
+      refs.vacPressure = el("b", { class: "mo-num-small" });
       refs.vac = Object.fromEntries(["suck", "release"].map(operation => [operation,
         el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
           onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
@@ -790,7 +799,9 @@
           el("div", { class: "mo-pose mo-zr-readings" }, poseReading("z", 2), poseReading("r", 3))),
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
-        el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
+        el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld,
+          el("span", { class: "mo-vac-pressure", title: t("vac.pressure"), "aria-label": t("vac.pressure") },
+            refs.vacPressure, el("span", { class: "mo-unit", text: "hPa" }))),
         el("div", { class: "mo-grid2" }, refs.vac.suck, refs.vac.release));
 
       // Jog buttons: rarely used, so folded.
@@ -1614,6 +1625,7 @@
       refs.vacHeld.hidden = vac.held === null;
       refs.vacHeld.textContent = vac.held === null ? "" : t(vac.held ? "vac.held" : "vac.notHeld");
       refs.vacHeld.className = "mo-vac-held" + (vac.held ? " mo-ok" : "");
+      refs.vacPressure.textContent = pressureText(robot?.pressure) ?? "—";
       const vacReady = ready && vac.state !== null && !robot.busy && !busy("robot");
       for (const [operation, node] of Object.entries(refs.vac)) {
         node.disabled = !vacReady;

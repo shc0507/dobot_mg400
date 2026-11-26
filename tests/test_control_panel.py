@@ -33,6 +33,15 @@ ROBOT_HEADERS = {
 pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
+@pytest.fixture(autouse=True)
+def pressure_reader(monkeypatch):
+    """main() must not open the real pressure sensor port in tests."""
+    reader = Mock()
+    monkeypatch.setitem(PANEL["main"].__globals__, "PressureReader", Mock(return_value=reader))
+    reader.start.return_value = reader
+    return reader
+
+
 def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
     calls = []
 
@@ -675,7 +684,9 @@ def run_panel(monkeypatch, state, serve_forever=None, server_close_error=None):
     return main([]), server
 
 
-def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal_table):
+def test_cli_defaults_to_robot_without_starting_sync(
+    monkeypatch, capsys, signal_table, pressure_reader
+):
     original = dict(signal_table)
     before_close = []
     state = closing_state(close=lambda: before_close.append(capsys.readouterr().err))
@@ -685,7 +696,9 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=20, max_acc_l=20)
+    backends["RobotPanelState"].assert_called_once_with(
+        "robot.test", pressure=pressure_reader, max_speed_l=20, max_acc_l=20
+    )
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -988,14 +1001,14 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403
 
 
-def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table):
+def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table, pressure_reader):
     # The host environment no longer raises or lowers the speed cap.
     monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", "100")
     monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", "100")
     code, _ = run_panel(monkeypatch, closing_state())
     assert code == 0
     PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
-        "robot.test", max_speed_l=20, max_acc_l=20
+        "robot.test", pressure=pressure_reader, max_speed_l=20, max_acc_l=20
     )
 
 

@@ -1504,7 +1504,7 @@ def inventory_udev(module, host, monkeypatch):
 
 def test_inventory_udev_install_selects_only_registered_enabled_services(host, inventory_udev):
     assert host.install() == 0
-    expected = {"camera", "stage", "furnace", "microscope"}
+    expected = {"camera", "stage", "furnace", "microscope", "web"}
     rules = host.root / "etc/udev/rules.d"
     assert {p.name for p in rules.iterdir()} == {f"70-mg400-{name}.rules" for name in expected}
     for name in expected:
@@ -1524,7 +1524,7 @@ def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, invent
     assert not (host.root / "etc/udev").exists()
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
     output = host.out.getvalue()
-    for name in ("camera", "stage", "furnace", "microscope"):
+    for name in ("camera", "stage", "furnace", "microscope", "web"):
         assert f"70-mg400-{name}.rules" in output
     assert "70-mg400-thermal.rules" not in output
     assert "Would run: udevadm control --reload-rules" in output

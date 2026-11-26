@@ -120,6 +120,7 @@ class RobotPanelState:
         connection_factory=FeedbackConnection,
         control_factory=JointControl,
         session_factory=KeyboardJogSession,
+        pressure=None,
     ):
         for name, value in (("max_speed_l", max_speed_l), ("max_acc_l", max_acc_l)):
             if type(value) is not int or not 1 <= value <= 100:
@@ -130,6 +131,8 @@ class RobotPanelState:
         self._connection_factory = connection_factory
         self._control_factory = control_factory
         self._session_factory = session_factory
+        # Optional suction line pressure reader with a reading() method.
+        self._pressure = pressure
         self._ownership = ControllerOwnership(host)
         # A new dashboard connection drops the previous one, so these stops send one at a time.
         self._unowned_stop_lock = threading.Lock()
@@ -255,6 +258,7 @@ class RobotPanelState:
                     sample.digital_inputs if sample else None,
                 ),
                 "payload_kg": self._finite(getattr(sample, "load_kg", None)),
+                "pressure": self._pressure.reading() if self._pressure else None,
                 "controller_id": self._owner,
                 "keyboard_enabled": self._kb_on,
                 "keyboard_arming": self._kb_arming,

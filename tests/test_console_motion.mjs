@@ -695,6 +695,19 @@ test("the suction buttons wait for a measured state and show held when the servi
   assert.equal(node.textContent, "Held");
 });
 
+test("the suction row shows the gauge line pressure, or a dash without a fresh reading", async () => {
+  assert.equal(logic.pressureText({ abs_hpa: 960.1, gauge_hpa: -52.34 }), "−52.3");
+  assert.equal(logic.pressureText({ abs_hpa: 1009.3, gauge_hpa: 0.06 }), "0.1");
+  assert.equal(logic.pressureText({ abs_hpa: 1009.3, gauge_hpa: -0.04 }), "0.0");
+  assert.equal(logic.pressureText(null), null);
+  assert.equal(logic.pressureText({ gauge_hpa: "1" }), null);
+  const reading = await mounted({ robot: { ...ROBOT, pressure: { abs_hpa: 960.1, gauge_hpa: -52.34 } } });
+  const node = reading.root.all().find(item => item.className === "mo-vac-pressure");
+  assert.equal(node.textContent, "−52.3hPa");
+  const missing = await mounted({ robot: { ...ROBOT, pressure: null } });
+  assert.equal(missing.root.all().find(item => item.className === "mo-vac-pressure").textContent, "—hPa");
+});
+
 test("an absolute target needs calibration and sends fractional encoder coordinates", async () => {
   const motor = { ...STAGE.motors[0], positioning_ready: true, calibration: "done",
     lower_limit_set: true, upper_limit_set: true, lower_limit_rotations: 0, upper_limit_rotations: 12.5 };

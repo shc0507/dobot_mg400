@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from labkit import ports  # noqa: E402
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
+from mg400.pressure import PressureReader  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
 from mg400.web_control import RobotPanelState  # noqa: E402
 
@@ -405,7 +406,10 @@ def main(argv=None):
         except (OSError, ValueError) as error:
             # Exit status 2 tells systemd not to restart a configuration error.
             parser.error(str(error))
-    state = RobotPanelState(host, **caps) if args.mode == "robot" else ReadOnlyPanelState(host)
+    if args.mode == "robot":
+        state = RobotPanelState(host, pressure=PressureReader().start(), **caps)
+    else:
+        state = ReadOnlyPanelState(host)
     server = PanelServer((bind, port), state, args.base_path)
     print(
         f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",

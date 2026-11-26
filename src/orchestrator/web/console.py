@@ -166,14 +166,15 @@ class Console:
                     self.threads.discard(threading.current_thread())
 
         worker = threading.Thread(target=work, name="console-" + name, daemon=True)
+        # Add and start under one lock hold: close() reads self.threads under the
+        # lock and joins each thread, so it must never see an unstarted thread.
         with self.lock:
             self.threads.add(worker)
-        try:
-            worker.start()
-        except Exception:
-            with self.lock:
+            try:
+                worker.start()
+            except Exception:
                 self.threads.discard(worker)
-            raise
+                raise
         return worker
 
     def _watch(self):

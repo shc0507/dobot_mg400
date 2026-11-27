@@ -16,7 +16,7 @@ units = ["mg400-vision.service"]
 optional = true
 venv = ".venv-vision"
 groups = ["vision", "vision-gpu"]
-assets = ["vision-weights"]
+assets = ["vision-weights", "vision-wrist-weights"]
 
 [[service]]
 name = "thermal"
@@ -48,7 +48,7 @@ units = ["mg400-orchestrator.service"]
 optional = false
 venv = ".venv"
 groups = ["orchestrator"]
-assets = ["twin-model"]
+assets = ["twin-model", "twin-collision"]
 
 [[service]]
 name = "stage"

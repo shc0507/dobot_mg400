@@ -39,6 +39,12 @@ def console_blueprints(service, prefix):
         # Resolved per request: some service stubs have no console.
         return service.console
 
+    def touch():
+        # An agent page that reads events, history or a description is still active.
+        page = request.headers.get("X-MG400-Client")
+        if page:
+            console().touch(page)
+
     blueprint = Blueprint("console", __name__, template_folder="templates", url_prefix=prefix)
     static = blueprint.root_path + "/static/console"
 
@@ -69,6 +75,7 @@ def console_blueprints(service, prefix):
         report.update(
             console={"commit": console().commit, "demo": service.demo},
             control=console().control(page),
+            control_ended=console().control_ended(page) if page else {},
             workspaces=[{"id": item.id, "title": item.title} for item in workspaces],
         )
         return jsonify(report)
@@ -97,21 +104,27 @@ def console_blueprints(service, prefix):
 
     @blueprint.get("/api/console/events")
     def events():
+        touch()
         console().refresh_events()
         return jsonify(console().event_report(**_history_query("since")))
 
     @blueprint.get("/api/console/history")
     def history():
+        touch()
         return jsonify(states=service.store.device_states(**_history_query()))
 
     @blueprint.get("/api/console/describe/<name>")
     def describe(name):
+        touch()
         return jsonify(console().describe(_device(name)))
 
     @blueprint.post("/api/console/heartbeat")
     def heartbeat():
         _empty()
-        return jsonify(control=console().heartbeat(_page()))
+        page = _page()
+        return jsonify(
+            control=console().heartbeat(page), control_ended=console().control_ended(page)
+        )
 
     @blueprint.post("/api/console/control/<name>/take")
     def take(name):
@@ -140,7 +153,11 @@ def console_blueprints(service, prefix):
         if set(data) - {"action", "params"} or "action" not in data:
             raise ValueError("Send action and optional params only.")
         result = console().command(_device(name), _page(), data["action"], data.get("params", {}))
-        status = {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
+        # A refusal relays the service status, so labctl tells invalid params from a conflict.
+        status = (
+            result.pop("status", None)
+            or {"accepted": 202, "refused": 409, "unknown": 502}[result["outcome"]]
+        )
         return jsonify(result), status
 
     @blueprint.post("/api/console/stop/<name>")

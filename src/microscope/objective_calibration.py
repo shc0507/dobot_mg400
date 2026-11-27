@@ -20,10 +20,15 @@ import numpy as np
 from toupcam_camera import MicroscopeCamera
 
 from .paths import calibration_path, private_open
+from .side_capture import SideCaptureCancelled
 
 
 class ObjectiveCalibrationCancelled(RuntimeError):
     """Raised when the operator stops objective calibration."""
+
+
+# Cancellation subclasses RuntimeError. Re-raise it before each RuntimeError handler.
+_CANCELLED = (ObjectiveCalibrationCancelled, SideCaptureCancelled)
 
 
 class _AtlasStepRegistrationError(RuntimeError):
@@ -225,7 +230,8 @@ def measure_image_displacement(
         raise ValueError("Enabled and disabled frames have different scales")
 
     window = cv2.createHanningWindow((first.shape[1], first.shape[0]), cv2.CV_32F)
-    (work_dx, work_dy), phase_response = cv2.phaseCorrelate(first, second, window)
+    # phaseCorrelate can apply the window to its inputs in place.
+    (work_dx, work_dy), phase_response = cv2.phaseCorrelate(first.copy(), second.copy(), window)
     rounded_dx = int(round(work_dx))
     rounded_dy = int(round(work_dy))
     overlap = max(0.0, 1.0 - abs(work_dx) / first.shape[1]) * max(
@@ -339,663 +345,6 @@ def reference_view_similarity(
     )
 
 
-class _EdgeReacquireObjectiveCalibrator:
-    """Previous edge-reacquisition implementation kept for comparison."""
-
-    def __init__(
-        self,
-        camera: MicroscopeCamera,
-        motor,
-        *,
-        reference_frame: np.ndarray,
-        reference_threshold: float = 0.45,
-        speed: int = 200,
-        move_settle_seconds: float = 0.15,
-        precision_settle_seconds: float = 0.80,
-        enable_settle_seconds: float = 0.20,
-        release_settle_seconds: float = 0.35,
-        roi_fraction: float = 1.0,
-        min_confidence: float = 0.15,
-        min_overlap: float = 0.50,
-        max_valid_displacement: float = 250.0,
-        peak_threshold: float = 8.0,
-        stable_threshold: float = 4.0,
-        progress=None,
-        cancel_event: threading.Event | None = None,
-    ):
-        if speed <= 0:
-            raise ValueError("speed must be positive")
-        if (
-            min(
-                move_settle_seconds,
-                precision_settle_seconds,
-                enable_settle_seconds,
-                release_settle_seconds,
-            )
-            < 0
-        ):
-            raise ValueError("wait times cannot be negative")
-        if not 0 < roi_fraction <= 1:
-            raise ValueError("roi_fraction must be greater than 0 and at most 1")
-        if not 0 <= min_confidence <= 1:
-            raise ValueError("min_confidence must be between 0 and 1")
-        if not 0 <= reference_threshold <= 1:
-            raise ValueError("reference_threshold must be between 0 and 1")
-        if not 0 < min_overlap <= 1:
-            raise ValueError("min_overlap must be greater than 0 and at most 1")
-        if min(max_valid_displacement, peak_threshold, stable_threshold) <= 0:
-            raise ValueError("displacement thresholds must be positive")
-
-        self.camera = camera
-        self.motor = motor
-        if reference_frame is None or reference_frame.size == 0:
-            raise ValueError("A non-empty objective reference frame is required")
-        self.reference_frame = reference_frame.copy()
-        self.reference_threshold = float(reference_threshold)
-        self.speed = int(speed)
-        self.move_settle_seconds = float(move_settle_seconds)
-        self.precision_settle_seconds = float(precision_settle_seconds)
-        self.enable_settle_seconds = float(enable_settle_seconds)
-        self.release_settle_seconds = float(release_settle_seconds)
-        self.roi_fraction = float(roi_fraction)
-        self.min_confidence = float(min_confidence)
-        self.min_overlap = float(min_overlap)
-        self.max_valid_displacement = float(max_valid_displacement)
-        self.peak_threshold = float(peak_threshold)
-        self.stable_threshold = float(stable_threshold)
-        self.progress = progress
-        self.cancel_event = cancel_event or threading.Event()
-        self.position = 0
-        self.last_relative_position: int | None = None
-        self.last_frame_id = None
-        self.measurements: list[ObjectiveMeasurement] = []
-        self.edge_confirmation_positions = 2
-        self.edge_exit_threshold = max(0.0, self.reference_threshold * 0.80)
-
-    def _wait(self, seconds: float) -> None:
-        if self.cancel_event.wait(max(0.0, seconds)):
-            try:
-                self.motor.objective_stop()
-            finally:
-                raise ObjectiveCalibrationCancelled("Objective calibration was stopped")
-
-    def _check_cancelled(self) -> None:
-        if self.cancel_event.is_set():
-            try:
-                self.motor.objective_stop()
-            finally:
-                raise ObjectiveCalibrationCancelled("Objective calibration was stopped")
-
-    def _move_to(self, target: int, *, settle_seconds: float | None = None) -> None:
-        self._check_cancelled()
-        distance = int(target) - self.position
-        if distance == 0:
-            return
-        self.motor.objective_move(distance)
-        if settle_seconds is None:
-            settle_seconds = self.move_settle_seconds
-        self._wait(abs(distance) / self.speed + settle_seconds)
-        self.position = int(target)
-
-    def _move_by(self, distance: int, *, settle_seconds: float | None = None) -> None:
-        self._move_to(self.position + int(distance), settle_seconds=settle_seconds)
-
-    def _new_frame(self) -> tuple[int, np.ndarray]:
-        packet = self.camera.get_frame_packet(
-            after_id=self.last_frame_id,
-            wait=True,
-            timeout=2.5,
-            raw=True,
-            copy=True,
-        )
-        if packet is None:
-            raise RuntimeError("No new camera frame is available")
-        frame_id, _captured_at, frame = packet
-        self.last_frame_id = frame_id
-        return frame_id, frame
-
-    def _measure_current_position(
-        self,
-        relative_position: int,
-        stage: str,
-    ) -> ObjectiveMeasurement:
-        """Release once at a position found from a fresh visual anchor."""
-        enabled_frame_id, enabled_frame = self._new_frame()
-
-        self.motor.objective_disable()
-        self._wait(self.release_settle_seconds)
-        disabled_frame_id, disabled_frame = self._new_frame()
-        enabled_similarity = reference_view_similarity(self.reference_frame, enabled_frame)
-        disabled_similarity = reference_view_similarity(self.reference_frame, disabled_frame)
-        reference_similarity = min(enabled_similarity, disabled_similarity)
-        if reference_similarity < self.reference_threshold:
-            dx = dy = displacement = float("nan")
-            confidence = overlap = 0.0
-            valid = False
-            status = "SCENE_MISMATCH"
-        else:
-            dx, dy, displacement, confidence, overlap = measure_image_displacement(
-                enabled_frame,
-                disabled_frame,
-                roi_fraction=self.roi_fraction,
-            )
-            # A fast mechanical release can still be moving when the first
-            # post-release frame arrives.  Retry once after the precision
-            # settling time and keep whichever registration is clearer.
-            if confidence < self.min_confidence:
-                self._wait(self.precision_settle_seconds)
-                retry_frame_id, retry_frame, retry_similarity = self._reference_sample()
-                if retry_similarity >= self.reference_threshold:
-                    retry_values = measure_image_displacement(
-                        enabled_frame,
-                        retry_frame,
-                        roi_fraction=self.roi_fraction,
-                    )
-                    if retry_values[3] > confidence:
-                        dx, dy, displacement, confidence, overlap = retry_values
-                        disabled_frame_id = retry_frame_id
-                        disabled_frame = retry_frame
-                        disabled_similarity = retry_similarity
-                        reference_similarity = min(enabled_similarity, disabled_similarity)
-            valid = (
-                confidence >= self.min_confidence
-                and overlap >= self.min_overlap
-                and displacement <= self.max_valid_displacement
-            )
-            if valid:
-                status = "VALID"
-            elif confidence < self.min_confidence:
-                status = "LOW_CONFIDENCE"
-            else:
-                status = "LARGE_MOVE"
-        item = ObjectiveMeasurement(
-            position=int(relative_position),
-            displacement=displacement,
-            dx=dx,
-            dy=dy,
-            confidence=confidence,
-            overlap=overlap,
-            valid=valid,
-            stage=stage,
-            enabled_frame_id=enabled_frame_id,
-            disabled_frame_id=disabled_frame_id,
-            reference_similarity=reference_similarity,
-            status=status,
-        )
-        self.measurements.append(item)
-        if self.progress is not None:
-            self.progress(item)
-        return item
-
-    def _reference_sample(self) -> tuple[int, float]:
-        """Capture one powered frame and return its ID and reference score."""
-        frame_id, frame = self._new_frame()
-        similarity = reference_view_similarity(self.reference_frame, frame)
-        return frame_id, similarity
-
-    def _publish_reference_sample(
-        self,
-        relative_position: int,
-        stage: str,
-        frame_id: int,
-        similarity: float,
-    ) -> ObjectiveMeasurement:
-        matched = similarity >= self.reference_threshold
-        item = ObjectiveMeasurement(
-            position=int(relative_position),
-            displacement=float("nan"),
-            dx=float("nan"),
-            dy=float("nan"),
-            confidence=similarity,
-            overlap=1.0,
-            valid=matched,
-            stage=stage,
-            enabled_frame_id=frame_id,
-            reference_similarity=similarity,
-            status="REFERENCE_MATCH" if matched else "REFERENCE_MISS",
-        )
-        self.measurements.append(item)
-        if self.progress is not None:
-            self.progress(item)
-        return item
-
-    @staticmethod
-    def _positions(start: int, stop: int, step: int) -> list[int]:
-        positions = list(range(start, stop + 1, step))
-        if not positions or positions[-1] != stop:
-            positions.append(stop)
-        return positions
-
-    def _find_visual_anchor(
-        self,
-        direction: int,
-        *,
-        outside_margin: int,
-        max_search_steps: int,
-    ) -> None:
-        """Find a reference-region edge from outside using image feedback.
-
-        ``direction`` is +1 for the left edge and -1 for the right edge.  The
-        returned physical location is the second consecutive matched point.
-        No commanded absolute position is used as an anchor.
-        """
-        if direction not in (-1, 1):
-            raise ValueError("anchor direction must be -1 or 1")
-
-        self.motor.objective_enable()
-        self._wait(self.enable_settle_seconds)
-
-        # First move away from the matching region.  Continue in that same
-        # direction until two consecutive images prove that we are outside.
-        self._move_by(
-            -direction * max(1, int(outside_margin)),
-            settle_seconds=self.move_settle_seconds,
-        )
-        outside_count = 0
-        for _ in range(max_search_steps):
-            self._check_cancelled()
-            _frame_id, similarity = self._reference_sample()
-            if similarity < self.edge_exit_threshold:
-                outside_count += 1
-                if outside_count >= self.edge_confirmation_positions:
-                    break
-            else:
-                outside_count = 0
-            self._move_by(-direction, settle_seconds=self.move_settle_seconds)
-        else:
-            raise RuntimeError(
-                "Could not find the outside of the saved-view region. "
-                "Increase Edge search range or raise Reference threshold."
-            )
-
-        # Reverse once, discard however many pulses the reversal consumes,
-        # and stop only when the camera sees the edge.  Variable backlash
-        # therefore changes the pulse count, not the physical anchor.
-        matched_count = 0
-        for _ in range(max_search_steps):
-            self._move_by(direction, settle_seconds=self.move_settle_seconds)
-            _frame_id, similarity = self._reference_sample()
-            if similarity >= self.reference_threshold:
-                matched_count += 1
-                if matched_count >= self.edge_confirmation_positions:
-                    return
-            else:
-                matched_count = 0
-        side = "left" if direction > 0 else "right"
-        raise RuntimeError(
-            f"Could not reacquire the {side} saved-view edge. Increase Edge "
-            "search range, lower Reference threshold, or record a new image."
-        )
-
-    def _map_reference_region(
-        self,
-        *,
-        outside_margin: int,
-        max_search_steps: int,
-    ) -> int:
-        """Map the saved-view interval in one powered left-to-right pass."""
-        self._find_visual_anchor(
-            1,
-            outside_margin=outside_margin,
-            max_search_steps=max_search_steps,
-        )
-        anchor_frame_id, anchor_similarity = self._reference_sample()
-        self._publish_reference_sample(0, "reference_map", anchor_frame_id, anchor_similarity)
-
-        offset = 0
-        last_matched_offset = 0
-        outside_count = 0
-        for _ in range(max_search_steps):
-            self._move_by(1, settle_seconds=self.move_settle_seconds)
-            offset += 1
-            frame_id, similarity = self._reference_sample()
-            self._publish_reference_sample(offset, "reference_map", frame_id, similarity)
-            if similarity >= self.reference_threshold:
-                last_matched_offset = offset
-            if similarity < self.edge_exit_threshold:
-                outside_count += 1
-                if outside_count >= self.edge_confirmation_positions:
-                    break
-            else:
-                outside_count = 0
-        else:
-            raise RuntimeError(
-                "Could not find the right edge of the saved-view region. "
-                "Increase Edge search range or raise Reference threshold."
-            )
-
-        # A right-edge search approaches from the right and confirms on its
-        # second matched point, so use the corresponding interior point here.
-        width = last_matched_offset - (self.edge_confirmation_positions - 1)
-        if width <= 0:
-            raise RuntimeError(
-                "The saved-view region is too narrow for reliable image "
-                "anchoring. Lower Reference threshold or record a clearer view."
-            )
-        return int(width)
-
-    def _locate_relative_position(
-        self,
-        relative_position: int,
-        match_width: int,
-        *,
-        outside_margin: int,
-        max_search_steps: int,
-    ) -> None:
-        """Reach one candidate from the nearest usable visual edge."""
-        relative_position = int(relative_position)
-        if relative_position < 0:
-            direction = -1
-        elif relative_position > match_width:
-            direction = 1
-        elif relative_position <= match_width - relative_position:
-            direction = 1
-        else:
-            direction = -1
-
-        seek_margin = max(1, int(outside_margin))
-        if self.last_relative_position is not None:
-            if direction > 0:
-                # Cross from the previous candidate to the left side first.
-                seek_margin += max(0, self.last_relative_position)
-            else:
-                # Cross from the previous candidate to the right side first.
-                seek_margin += max(0, match_width - self.last_relative_position)
-
-        self._find_visual_anchor(
-            direction,
-            outside_margin=seek_margin,
-            max_search_steps=max_search_steps,
-        )
-        distance = relative_position if direction > 0 else match_width - relative_position
-        if distance < 0:
-            raise RuntimeError("Candidate lies behind its visual anchor")
-        if distance:
-            self._move_by(
-                direction * distance,
-                settle_seconds=self.precision_settle_seconds,
-            )
-        else:
-            self._wait(self.precision_settle_seconds)
-
-    def _measure_relative_position(
-        self,
-        relative_position: int,
-        match_width: int,
-        stage: str,
-        *,
-        outside_margin: int,
-        max_search_steps: int,
-    ) -> ObjectiveMeasurement:
-        self._locate_relative_position(
-            relative_position,
-            match_width,
-            outside_margin=outside_margin,
-            max_search_steps=max_search_steps,
-        )
-        item = self._measure_current_position(relative_position, stage)
-        self.last_relative_position = int(relative_position)
-        return item
-
-    def _is_peak_signal(self, item: ObjectiveMeasurement) -> bool:
-        # A low-overlap measurement can locate a violent-release region, but
-        # its dx/dy is never used to choose a direction.
-        if not np.isfinite(item.displacement):
-            return False
-        return item.status == "LARGE_MOVE" or (
-            item.valid and item.displacement >= self.peak_threshold
-        )
-
-    @staticmethod
-    def _group_positions(positions: list[int], max_gap: int) -> list[tuple[int, int]]:
-        ordered = sorted(set(positions))
-        if not ordered:
-            return []
-        groups = []
-        start = previous = ordered[0]
-        for position in ordered[1:]:
-            if position - previous > max_gap:
-                groups.append((start, previous))
-                start = position
-            previous = position
-        groups.append((start, previous))
-        return groups
-
-    @staticmethod
-    def _best_valid_by_position(
-        measurements: list[ObjectiveMeasurement],
-    ) -> dict[int, float]:
-        by_position: dict[int, list[float]] = {}
-        for item in measurements:
-            if item.valid and np.isfinite(item.displacement):
-                by_position.setdefault(item.position, []).append(item.displacement)
-        return {position: float(np.median(values)) for position, values in by_position.items()}
-
-    def _local_three_point_search(
-        self,
-        start: int,
-        lower: int,
-        upper: int,
-        step: int,
-        match_width: int,
-        *,
-        outside_margin: int,
-        max_search_steps: int,
-    ) -> int:
-        candidate = int(np.clip(start, lower, upper))
-        visited = set()
-        best_seen = (float("inf"), candidate)
-
-        while candidate not in visited:
-            visited.add(candidate)
-            positions = sorted(
-                set(
-                    (
-                        max(lower, candidate - step),
-                        candidate,
-                        min(upper, candidate + step),
-                    )
-                )
-            )
-            trio = [
-                self._measure_relative_position(
-                    position,
-                    match_width,
-                    "direction",
-                    outside_margin=outside_margin,
-                    max_search_steps=max_search_steps,
-                )
-                for position in positions
-            ]
-            usable = [item for item in trio if item.valid]
-            if not usable:
-                break
-            local_best = min(usable, key=lambda item: item.displacement)
-            center = next((item for item in usable if item.position == candidate), None)
-            # Sub-pixel differences are normally registration noise.  Keep
-            # the center instead of drifting one pulse left because of list
-            # ordering when the three positions are effectively equivalent.
-            if center is not None and center.displacement <= local_best.displacement + 0.25:
-                if center.displacement < best_seen[0]:
-                    best_seen = (center.displacement, center.position)
-                return candidate
-            if local_best.displacement < best_seen[0]:
-                best_seen = (local_best.displacement, local_best.position)
-            if local_best.position == candidate:
-                return candidate
-            candidate = local_best.position
-        return best_seen[1]
-
-    def run(
-        self,
-        *,
-        half_range: int = 30,
-        coarse_step: int = 5,
-        stagger_offset: int = 2,
-        refine_radius: int = 5,
-        fine_step: int = 1,
-        verification_repeats: int = 3,
-        lock_exposure: bool = True,
-    ) -> ObjectiveCalibrationResult:
-        """Map visual edges, then measure every release from a fresh edge."""
-        if half_range <= 0:
-            raise ValueError("half_range must be positive")
-        if coarse_step <= 0 or refine_radius < 0 or fine_step <= 0:
-            raise ValueError("scan steps and radii must be positive")
-        if stagger_offset < 1:
-            raise ValueError("edge confirmation count must be at least 1")
-        if verification_repeats < 1:
-            raise ValueError("verification_repeats must be at least 1")
-        if not self.camera.is_open:
-            raise RuntimeError("Camera is not open")
-        if not self.motor.connected:
-            raise RuntimeError("Motor controller is not connected")
-
-        self.position = 0
-        self.last_relative_position = None
-        self.last_frame_id = None
-        self.measurements.clear()
-        self.edge_confirmation_positions = int(stagger_offset)
-        stabilization_before = self.camera.stabilization_enabled
-        auto_exposure_before = None
-        peak_regions: list[tuple[int, int]] = []
-
-        try:
-            self.camera.set_stabilization(False)
-            if lock_exposure:
-                time.sleep(0.7)
-                try:
-                    auto_exposure_before = bool(self.camera.sdk_camera.get_AutoExpoEnable())
-                except Exception:
-                    pass
-                self.camera.set_auto_exposure(False)
-
-            self.motor.objective_speed(self.speed)
-            self.motor.objective_enable()
-            self._wait(self.enable_settle_seconds)
-
-            # Build a fresh coordinate system from image edges.  Position 0
-            # is the confirmed left edge; match_width is the confirmed right
-            # edge.  Motor pulse totals never become calibration coordinates.
-            outside_margin = max(2, int(coarse_step))
-            max_search_steps = 2 * int(half_range) + 2 * int(refine_radius) + outside_margin
-            match_width = self._map_reference_region(
-                outside_margin=outside_margin,
-                max_search_steps=max_search_steps,
-            )
-            self.last_relative_position = match_width + (self.edge_confirmation_positions + 1)
-            selected_match_region = (0, match_width)
-
-            # Release scanning covers the complete matched interval plus the
-            # requested number of pulses outside both of its boundaries.
-            release_lower = -int(refine_radius)
-            release_upper = match_width + int(refine_radius)
-            release_positions = self._positions(release_lower, release_upper, fine_step)
-            for relative_position in release_positions:
-                # Each ENABLE-to-DISABLE test gets a new visual anchor.  Any
-                # motion caused by the previous release is intentionally not
-                # carried into the next candidate.
-                self._measure_relative_position(
-                    relative_position,
-                    match_width,
-                    "release_scan",
-                    outside_margin=outside_margin,
-                    max_search_steps=max_search_steps,
-                )
-
-            peak_positions = [
-                item.position for item in self.measurements if self._is_peak_signal(item)
-            ]
-            peak_regions = self._group_positions(peak_positions, max(1, fine_step))
-
-            displacement_map = self._best_valid_by_position(self.measurements)
-            if not displacement_map:
-                raise RuntimeError(
-                    "No trustworthy image-overlap measurements were found. "
-                    "Lower Min confidence or increase Max valid shift."
-                )
-            coarse_best = min(displacement_map, key=displacement_map.get)
-            search_start = coarse_best
-            # When two release peaks have been mapped, begin at the middle of
-            # the valley they enclose.  The three-point measurements then
-            # compensate for an asymmetric mechanical detent.
-            enclosing_pairs = []
-            for left_region, right_region in zip(peak_regions, peak_regions[1:]):
-                valley_start = left_region[1] + fine_step
-                valley_stop = right_region[0] - fine_step
-                if valley_start > valley_stop:
-                    continue
-                valley_values = [
-                    value
-                    for position, value in displacement_map.items()
-                    if valley_start <= position <= valley_stop
-                ]
-                if valley_values:
-                    enclosing_pairs.append(
-                        (
-                            min(valley_values),
-                            valley_start,
-                            valley_stop,
-                        )
-                    )
-            if enclosing_pairs:
-                _score, valley_start, valley_stop = min(enclosing_pairs)
-                search_start = int(round((valley_start + valley_stop) / 2))
-            best_position = self._local_three_point_search(
-                search_start,
-                release_lower,
-                release_upper,
-                fine_step,
-                match_width,
-                outside_margin=outside_margin,
-                max_search_steps=max_search_steps,
-            )
-
-            verification = [
-                self._measure_relative_position(
-                    best_position,
-                    match_width,
-                    "verify",
-                    outside_margin=outside_margin,
-                    max_search_steps=max_search_steps,
-                )
-                for _ in range(verification_repeats)
-            ]
-
-            distances = [item.displacement for item in verification]
-            valid_verification = [item.valid for item in verification]
-            result = ObjectiveCalibrationResult(
-                position=best_position,
-                median_displacement=float(np.median(distances)),
-                maximum_displacement=float(max(distances)),
-                minimum_confidence=float(min(item.confidence for item in verification)),
-                stable=(
-                    all(valid_verification) and float(np.median(distances)) <= self.stable_threshold
-                ),
-                peak_regions=tuple(peak_regions),
-                match_region=selected_match_region,
-                release_range=(release_lower, release_upper),
-                verification_count=verification_repeats,
-            )
-            return result
-        finally:
-            # The mechanical detent, rather than motor torque, must hold the
-            # objective after every successful, cancelled, or failed run.
-            try:
-                if self.motor.connected:
-                    self.motor.objective_stop()
-            except Exception:
-                pass
-            try:
-                if self.motor.connected:
-                    self.motor.objective_disable()
-            except Exception:
-                pass
-            self.camera.set_stabilization(stabilization_before)
-            if lock_exposure and auto_exposure_before is not None:
-                self.camera.set_auto_exposure(auto_exposure_before)
-
-
 class ObjectiveCalibrator:
     """Calibrate the detent with an in-memory visual position atlas.
 
@@ -1102,7 +451,8 @@ class ObjectiveCalibrator:
         self.atlas: list[_AtlasNode] = []
         self.atlas_segments: list[_AtlasSegment] = []
         self.atlas_attempt_counter = 0
-        self.peak_frames: list[tuple[float, np.ndarray, np.ndarray]] = []
+        # Atlas pixels per full-resolution ROI pixel, set by _prepare_atlas_frame.
+        self.atlas_scale: float | None = None
 
     @staticmethod
     def _units_per_pulse(microstep: int) -> int:
@@ -1224,7 +574,8 @@ class ObjectiveCalibrator:
         return frame_id, frame, similarity
 
     def _prepare_atlas_frame(self, frame: np.ndarray) -> np.ndarray:
-        gray, _scale_x, _scale_y = _center_gray(frame, self.roi_fraction)
+        gray, scale_x, _scale_y = _center_gray(frame, self.roi_fraction)
+        roi_width = gray.shape[1] * scale_x
         if max(gray.shape) > 512:
             scale = 512.0 / max(gray.shape)
             gray = cv2.resize(
@@ -1234,6 +585,7 @@ class ObjectiveCalibrator:
                 fy=scale,
                 interpolation=cv2.INTER_AREA,
             )
+        self.atlas_scale = gray.shape[1] / roi_width
         # uint8 keeps a 512-pixel atlas frame near 0.25 MB instead of roughly
         # 1 MB.  The displacement routine converts it to float only while a
         # comparison is active.
@@ -1436,23 +788,6 @@ class ObjectiveCalibrator:
             return None
         return values
 
-    def _adjacent_registration(
-        self,
-        first: np.ndarray,
-        second: np.ndarray,
-    ) -> tuple[float, float, float, float, float] | None:
-        return self._prepared_adjacent_registration(
-            self._prepare_atlas_frame(first),
-            self._prepare_atlas_frame(second),
-        )
-
-    def _adjacent_registration_is_usable(
-        self,
-        first: np.ndarray,
-        second: np.ndarray,
-    ) -> bool:
-        return self._adjacent_registration(first, second) is not None
-
     def _choose_atlas_microstep(
         self,
         *,
@@ -1531,6 +866,8 @@ class ObjectiveCalibrator:
                     valid=valid,
                     status=status,
                 )
+            except _CANCELLED:
+                raise
             except RuntimeError as exc:
                 self._finish_atlas_attempt(
                     attempt_id,
@@ -1698,7 +1035,7 @@ class ObjectiveCalibrator:
                     "preceding trustworthy node.",
                 )
                 continue
-            except ObjectiveCalibrationCancelled:
+            except _CANCELLED:
                 raise
             except RuntimeError as exc:
                 if (
@@ -1844,7 +1181,7 @@ class ObjectiveCalibrator:
                     attempt_id,
                     failed_position_hint=failed_position_hint,
                 )
-            except ObjectiveCalibrationCancelled:
+            except _CANCELLED:
                 raise
             except RuntimeError as exc:
                 # Recovery may temporarily select a stronger microstep mode.
@@ -2170,12 +1507,15 @@ class ObjectiveCalibrator:
         displacement: float,
         disabled_position: float | None,
     ) -> float:
-        """Return release distance signed along the one-dimensional atlas."""
+        """Return release distance in atlas pixels, signed along the one-dimensional atlas.
+
+        ``dx``, ``dy`` and ``displacement`` are full-resolution ROI pixels.
+        """
         if disabled_position is not None and np.isfinite(disabled_position):
             return float(disabled_position - position)
         if not (np.isfinite(dx) and np.isfinite(dy) and np.isfinite(displacement)):
             return float("nan")
-        if not self.atlas_segments:
+        if not self.atlas_segments or self.atlas_scale is None:
             return float("nan")
         segment = min(
             self.atlas_segments,
@@ -2191,7 +1531,7 @@ class ObjectiveCalibrator:
         dot = dx * segment.dx + dy * segment.dy
         if abs(dot) < 1e-9:
             return 0.0
-        return float(np.copysign(displacement, dot))
+        return float(np.copysign(displacement * self.atlas_scale, dot))
 
     def _merge_release_points(
         self,
@@ -2391,14 +1731,6 @@ class ObjectiveCalibrator:
             signed_displacement=signed_displacement,
             scan_direction=int(scan_direction),
         )
-        if np.isfinite(displacement) and displacement >= self.peak_threshold:
-            self.peak_frames.append(
-                (
-                    float(visual_position),
-                    self._prepare_atlas_frame(enabled_frame),
-                    self._prepare_atlas_frame(disabled_frame),
-                )
-            )
         return self._publish(item)
 
     def _release_scan_pass(
@@ -3144,7 +2476,7 @@ class ObjectiveCalibrator:
                 for target in probe_targets:
                     try:
                         measurement = measure_target(float(target), "balance_probe", pixel_step)
-                    except ObjectiveCalibrationCancelled:
+                    except _CANCELLED:
                         raise
                     except RuntimeError as exc:
                         self._publish_diagnostic(
@@ -3378,7 +2710,6 @@ class ObjectiveCalibrator:
         self.atlas.clear()
         self.atlas_segments.clear()
         self.atlas_attempt_counter = 0
-        self.peak_frames.clear()
         stabilization_before = self.camera.stabilization_enabled
         auto_exposure_before = None
         outside_margin = int(coarse_step)
@@ -3621,7 +2952,7 @@ class ObjectiveCalibrator:
                             stage="verify_position",
                             max_target_crossings=3,
                         )
-                    except ObjectiveCalibrationCancelled:
+                    except _CANCELLED:
                         raise
                     except _VisualTargetUnreachable as exc:
                         verification.append(self._record_skipped_target(exc, "verify"))

@@ -8,16 +8,16 @@ Agents on Olares operate the lab devices with `labctl` device groups. Each call 
 - Checkout: `uv run labctl <group> ...` against the same loopback services.
 - Demo: start `uv run python -m orchestrator serve --demo --port 18772 --base-path /lab/`, then add `--url http://127.0.0.1:18772/lab/` to each call.
 
-The CLI adds no limits and no checks. The services keep the test-stage protections: stops, 1 controller per device, the furnace caps, the robot speed cap and alarm block, the microscope focus limits and turret clearance, and the stage soft limits.
+Services retain Stop, 1 controller per device, furnace caps, robot speed and alarm checks, microscope relative focus bounds, and stage soft limits. The operator must provide physical clearance for objective selection. `robot move` also checks the bench twin. See [Collision check](#collision-check).
 
 ## Sessions and control
 
 - `--session NAME` selects the agent session. The default is `main`. The console page is `agent-NAME`, and the holder on the Overview **Control** card is `agent-NAME-<12 hex>`.
 - Use 1 session for each agent. Calls with the same session share control.
 - `labctl <device> take` takes control through the Lab Console. The console holds the lease between calls and renews it every 1 second.
-- The console releases the session's devices after 10 minutes without a call from the session. A release of the robot disables the arm first.
+- The console releases the session's devices after 10 minutes without a call from the session. A release of the robot disables the arm first. A release of the stage stops the stage first.
 - `labctl <device> release` releases 1 device. `labctl all release` releases every device of the session.
-- The owner takes control back with **Release all** on the Overview, or with `sudo labctl all release --session NAME`.
+- The owner takes control back with **Release all** on the Overview, or with `sudo labctl all release --session NAME`. Both skip devices lent to a run. Stop or abort the run first.
 
 ## Commands
 
@@ -25,7 +25,7 @@ The CLI adds no limits and no checks. The services keep the test-stage protectio
 | --- | --- |
 | `labctl all state` | State of every device, the control holders and the current run |
 | `labctl all session` | This session's devices and the idle time left (`idle_left_s`) |
-| `labctl all events [--since ID] [--device D]` | Stored events, newest first. `ID` is the `id` of an event. `fields` holds the event details, for example `action`, `params`, `client` and `result` |
+| `labctl all events [--since ID] [--device D]` | Stored events, newest first. `ID` is the `id` of an event. With `--since`, the reply holds the oldest 500 events after `ID`. To read all new events, repeat with the largest `id` until the reply is empty. `fields` holds the event details, for example `action`, `params`, `client` and `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | Stored device state rows, newest first. `T` is a Unix time |
 | `labctl <device> state` | Full state of 1 device, its holder and `mine` |
 | `labctl <device> describe` | Described commands and their JSON Schemas |
@@ -44,7 +44,7 @@ Shortcuts:
 | Shortcut | Sends |
 | --- | --- |
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`, `disable`, `home`, `clear_alarm` |
-| `robot move X Y Z R [--speed N] [--relative]` | `execute` with flange `targets`. `--relative` adds the values to the current `actual` pose |
+| `robot move X Y Z R [--speed N] [--relative] [--no-collision-check]` | `execute` with flange `targets`. `--relative` adds the values to the current `actual` pose. The CLI does the [collision check](#collision-check) before it sends the command |
 | `robot vacuum suck\|release\|off` | `vacuum` |
 | `stage move MOTOR ROTATIONS [--speed N]` | Relative `move`. Positive ROTATIONS use `ccw`; negative values use `cw`. Default speed is 0.25 rotations/s |
 | `stage goto MOTOR POSITION [--speed N]` | `move_to_position` at an absolute rotation coordinate. Default speed is 0.25 rotations/s |
@@ -54,7 +54,7 @@ Shortcuts:
 | `stage connect [PORT]` | Connect the stage port. Without PORT, list the ports |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | `set_sequence`, or `start_sequence`, from a JSON file |
-| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`, `set_gas_valve` |
+| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`, `set_gas_valve`. `CHANNEL` is 0, 1 or 2 for Gas 1 to 3 |
 | `furnace acknowledge` | Acknowledge the furnace alarm |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`, `objective_nudge`, `focus_move` |
 | `microscope autofocus full\|local` | `autofocus` |
@@ -63,6 +63,7 @@ Shortcuts:
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | `start_recording` with a new `recording_id` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`, `read_markers`, `read_labels`. The result is in `state.last_command.output` |
+| `vision locate markers\|chips CAMERA TOUCH_Z` | `read_markers` or `detect` for the wrist camera, with the current flange pose and `touch_z_mm`. Each marker or detection gets `robot_mm`. `TOUCH_Z` is the flange Z at which the tool tip touches the surface below them. For chips, add the chip thickness. A move to `robot_mm` with the tool rotation of the look puts the cup over the point. Keep the arm still |
 
 Before microscope motion, a human must create and select a complete profile in the Console. See [microscope calibration](microscope.en.md#guided-turret-calibration).
 With both motors released, the human records each lens's X alignment and 1 separate focused 5x initial image. Only 5x Y controls coarse positioning.
@@ -82,12 +83,16 @@ Each command waits for its result. The default `--timeout` is 300 seconds. `--no
 | `labctl do RECIPE [NAME=VALUE ...] [--timeout S]` | Run 1 catalog recipe with the devices that the session holds |
 | `labctl chip locate SLOT` | Run `slot-state` for 1 slot. Print `state`, `center_xy_mm` and `angle_deg` |
 
+Agent Connect does not expose recipe dispatch.
+
 - Take every device of the recipe first. Otherwise the call fails, and `hint` names the `take` commands.
 - The run borrows the session's devices. The console keeps the leases, so the arm stays enabled. The microscope refreshes its camera reference for each motion operation and releases focus after that operation. During the run, the session cannot command these devices. Stops still work.
 - The CLI holds the orchestrator lease during the run. A run that holds after a failed step is aborted. When the run ends, the devices return to the session.
+- A completed run sends no stop. Devices return to the session in the state that the last step left, including the arm's enabled state. A failed, held or aborted run stops each device that it used. A microscope stop disables the motors and clears the temporary focus reference. Before the next microscope motion, check the selected complete profile and physical clearance. The service uses fresh images and relative pulse bounds for that operation.
 - Run 1 `do` at a time in a session. During a run, `do` and `chip locate` of the same session fail with `busy`. The run continues.
-- If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort the run on the Overview.
+- If the CLI stops during the run, the orchestrator lease expires. The run holds and motion stops. Abort it with `POST /lab/api/runs/<run_id>/abort`. See the HTTP routes in [Recipe orchestrator](orchestrator.en.md).
 - The default `--timeout` is 1800 seconds. At the timeout, the CLI aborts the run.
+- `microscope-record` needs time to finalize after the capture. Set `seconds` to at most 3000, and set `--timeout` to at least `seconds` plus 600.
 - The output has `run_id`, `status` (`completed` or `aborted`), `steps` with `skill`, `status`, `result` and `error`, and `devices`.
 - One-step catalog recipes: `slot-state`, `station-transfer`, `crucible-load`, `crucible-unload`, `microscope-record`, `check-calibration`. `chip-pick` and `tray-transfer` are also in the catalog.
 
@@ -106,7 +111,41 @@ Stops need no control and no session. They are sent once and never retried.
 
 With the default `--url`, each stop also goes straight to the service on loopback, so it works when the console is down. With another `--url`, stops go only through that console.
 
-A robot service with no syncing client cannot confirm a stop. It reports `unconfirmed` and locks. Recover it with `labctl robot take` and `labctl robot disable`, or with **Recover** in the console.
+`sudo labctl` stops also run when `/etc/mg400/mg400.env` is missing or invalid.
+
+The furnace cannot read back the flow of a write-only flow controller. A gas stop of such a channel sends the zero and closes the valve, but its result stays `unconfirmed`. Check the channel with `labctl furnace state`.
+
+A robot service with no syncing client cannot confirm a stop. It sends `ResetRobot()` and reports `unconfirmed`, but it does not lock. A later `labctl robot take` reads the robot state again.
+
+## Collision check
+
+The robot service checks the joint range, the speed and the alarms. It does not check obstacles. Thus `robot move` checks the move against the bench twin before it sends the command.
+
+- The move is a straight line of the flange from the current `actual` pose to the target. The check samples it at intervals of 2 mm.
+- The check uses the `twin-collision` asset at `/var/lib/mg400/twin/collision.json` (see [External assets](deploy.en.md#external-assets)). It puts the stage at the position that the Twin workspace reports. If that position is unknown, it uses the stage position of the model.
+- The CLI refuses the move with `error.code` `collision` when the twin shows contact or a clearance below 10 mm. No command is sent. The `collision` object gives `obstacle`, `group`, `arm_part`, `clearance_mm`, `along_mm` (the distance along the line), `pose` (the flange pose at that point) and `start_clearance_mm`.
+- An obstacle that is nearer than 10 mm at the start is a near obstacle. The move must not go closer to it. `start_clearance_mm` is then a number. A move away from it is permitted.
+- A move that starts in contact with an obstacle is not checked against that obstacle. The twin does not give the depth of an overlap.
+- The CLI also refuses the move when the check cannot run: the asset is missing, or a point of the line has no joint solution.
+- `--no-collision-check` sends the move without the check. Use it only for a taught move that a person monitors. A move that ends in a touch, such as a pick, needs it.
+- Only `robot move` does the check. `robot home`, `robot call execute`, recipes, the keyboard jog and the web panels do not. Stops never do it.
+
+A refusal:
+
+```json
+{"ok": false, "device": "robot", "collision": {"obstacle": "pole tube 1", "group": "fixtures", "arm_part": "link4_3_0", "clearance_mm": 0.0, "along_mm": 48.8, "pose": [-117.8, -243.0, 163.7, -31.3], "start_clearance_mm": null}, "outcome": "refused", "error": {"code": "collision", "status": null, "message": "The bench twin shows contact of the arm (link4_3_0) with 'pole tube 1' (fixtures) 48.8 mm along the line, at flange (-117.8, -243, 163.7). No command was sent. For a taught, supervised move, add --no-collision-check."}}
+```
+
+The twin does not show all of the bench:
+
+- Cables, hoses and loose items are not in the collision world.
+- The arm has the suction tool and the wrist camera. The size of the wrist camera is an estimate. A different tool or a carried sample is not in the collision world.
+- The tray table is in the collision world as an empty flat plate. Its legs, its plate thickness and its corner tiles are estimates.
+- Each shape is a convex hull. A hull fills the hollows of its part, so the check can refuse a move that is free on the bench.
+- The focus and the turret of the microscope stay at their model positions.
+- The Twin workspace gives no stage position for an encoder stage. The check then keeps the stage at its model position. This fallback stage geometry is uncalibrated.
+
+To plan a move, use the collision tool of the twin authoring folder, outside the repository: `tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`, `descend X Y R --top Z` (the flange Z of the first contact) and `pose X Y Z R`.
 
 ## Output and exit codes
 
@@ -123,9 +162,10 @@ A refusal:
 ```
 
 - `outcome`: `ok`, `accepted`, `failed`, `rejected`, `stopped`, `refused`, `unknown`, `interrupted`.
-- `error.code`: `usage`, `invalid`, `not_controlled`, `held_by_other`, `locked`, `busy`, `refused`, `failed`, `rejected`, `stopped`, `unknown`, `timeout`, `unreachable`, `interrupted`.
+- `error.code`: `usage`, `invalid`, `not_controlled`, `held_by_other`, `locked`, `busy`, `collision`, `refused`, `failed`, `rejected`, `stopped`, `unknown`, `timeout`, `unreachable`, `interrupted`.
 - `hint`: the next command to run, when one applies.
 - A stop prints `results` with `confirmed`, `pending`, `unconfirmed`, `unreachable` or `not-configured` for each device.
+- If the reply to a command is lost, the CLI reads the device state for up to 3 s. If the service recorded the command for this session, the CLI reports that result. A robot command stays `unknown`.
 
 | Exit | Meaning | Next step |
 | --- | --- | --- |
@@ -138,6 +178,6 @@ A refusal:
 ## Limitations
 
 - No operator prompt for a held run: `do` aborts it.
-- No keyboard jog and no stage hold. They need refreshes every 100 ms and 500 ms.
+- No keyboard jog and no stage hold. They need a refresh within 0.4 s (keyboard jog) and 1 s (stage hold).
 - A motion that started before the CLI stopped continues as commanded.
-- Image files go to `/tmp/labctl/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.
+- Image files go to `/tmp/labctl-<UID>/` unless `--out` is given. The installed CLI runs as UID 1000 and cannot write into `/home/olares`.

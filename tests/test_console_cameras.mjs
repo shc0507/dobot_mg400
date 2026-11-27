@@ -92,7 +92,7 @@ test("overlay geometry, retry delay and translations", () => {
   assert.equal(logic.translate("zh", "badge.live"), "实时");
   assert.equal(logic.translate("en", "age", { age: "1.0" }), "1.0 s");
   for (const key of Object.keys(cameras.i18n.en)) assert.ok(key in cameras.i18n.zh, key);
-  assert.deepEqual(cameras.VIEWS, ["camera1", "camera2", "camera3", "camera4", "thermal", "microscope"]);
+  assert.deepEqual(cameras.VIEWS, ["camera1", "camera2", "camera3", "camera4", "camera5", "thermal", "microscope"]);
   assert.throws(() => cameras.tile("camera9"), /Unknown camera view/);
 });
 
@@ -127,8 +127,8 @@ test("H.265 turns into H.264 only when it cannot play, not when the host does no
   assert.equal(logic.fallbackFor(true, false, true, true), "h264");
   // go2rtc restarts: retry H.265 after the backoff, so a 4K camera does not turn into MJPEG.
   assert.equal(logic.fallbackFor(true, false, true, false), null);
-  // H.264 that never played turns into MJPEG.
-  assert.equal(logic.fallbackFor(true, false, false, false), "mjpeg");
+  // H.264 that never played turns into MJPEG only when it cannot play; a 502 retries H.264.
+  assert.equal(logic.fallbackFor(true, false, false, false), null);
   assert.equal(logic.fallbackFor(true, false, false, true), "mjpeg");
   // A stream that played, and an MJPEG stream, retry the same format.
   assert.equal(logic.fallbackFor(true, true, true, true), null);
@@ -148,6 +148,31 @@ test("a playing microscope tile is live", () => {
   } finally {
     cameras.engine.tiles.delete(tile);
     cameras.engine.status.delete("microscope");
+  }
+});
+
+test("a live MJPEG tile whose sender rate stays 0 for 3 s reconnects", () => {
+  const row = { id: "camera2", fps: 3 };
+  cameras.engine.status.set("camera2", row);
+  const saved = cameras.engine.statusAt;
+  let failures = 0;
+  const tile = { view: "camera2", running: true, live: true, stopVideo: null, img: { src: "/camera/camera2.mjpeg" }, quietSince: null, failed() { failures++; } };
+  const check = now => { cameras.engine.statusAt = now; cameras.Tile.prototype.checkQuiet.call(tile, now); };
+  try {
+    check(1000);
+    row.fps = 0;
+    check(2000); check(4900);
+    assert.equal(failures, 0);
+    check(5000);
+    assert.equal(failures, 1);
+    // A sender rate above 0 resets the count; an H.264 tile is never judged by it.
+    check(6000); row.fps = 2; check(7000); row.fps = 0; check(9500);
+    assert.equal(failures, 1);
+    tile.stopVideo = () => {}; check(20000); check(30000);
+    assert.equal(failures, 1);
+  } finally {
+    cameras.engine.status.delete("camera2");
+    cameras.engine.statusAt = saved;
   }
 });
 
@@ -269,7 +294,7 @@ async function mountWorkspace() {
   return { doc, rootNode, sent, refresh, button, cell, restore };
 }
 
-test("the wall shows all 6 views without a side panel; Large view puts 1 view large beside a rail", async () => {
+test("the wall shows all 7 views without a side panel; Large view puts 1 view large beside a rail", async () => {
   const page = await mountWorkspace();
   try {
     const wall = page.rootNode.all().find(node => node.className.startsWith("lcam-wall"));
@@ -278,7 +303,7 @@ test("the wall shows all 6 views without a side panel; Large view puts 1 view la
     cameras.engine.thermal = null;
     for (const tile of cameras.engine.tiles) if (tile.view === "thermal") tile.paint();
     assert.equal(page.cell("thermal").all().find(node => node.className === "lcam-colorbar").hidden, true);
-    assert.equal(wall.children.length, 6);
+    assert.equal(wall.children.length, 7);
     assert.equal(page.rootNode.all().some(node => /lcam-side/.test(node.className)), false);
     const camera2Tile = page.cell("camera2").children[0];
     page.button("Large view").click();

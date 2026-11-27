@@ -8,12 +8,6 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--library",
-        required=True,
-        type=Path,
-        help="Installed AccelStepper folder containing src/AccelStepper.cpp",
-    )
     parser.add_argument("--compiler", default="g++", help="C++ compiler executable")
     parser.add_argument(
         "--compiler-arg",
@@ -42,9 +36,6 @@ def main():
         help="Save UART output from six spaced held-direction warning incidents",
     )
     args = parser.parse_args()
-    library = args.library.resolve() / "src"
-    if not (library / "AccelStepper.cpp").is_file():
-        parser.error("--library must contain src/AccelStepper.cpp")
     sketch = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="stage-feedback-") as directory:
         binary = Path(directory) / "native.exe"
@@ -60,11 +51,8 @@ def main():
             "-O2",
             "-I",
             str(sketch / "tests"),
-            "-I",
-            str(library),
             str(sketch / "tests/native.cpp"),
             str(sketch / "Encoders.cpp"),
-            str(library / "AccelStepper.cpp"),
             "-o",
             str(binary),
         ]

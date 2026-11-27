@@ -15,6 +15,7 @@ from threading import Condition, Lock, Thread
 from cameras.config import camera_configuration
 from cameras.jpeg import jpeg_size
 from cameras.rate import SendRate
+from cameras.usb import reset_usb_device
 from labkit import ports
 
 CAMERAS = camera_configuration(os.environ)
@@ -40,14 +41,14 @@ MAX_FPS = 30
 GO2RTC = ports.url("go2rtc").rstrip("/")
 # A full-resolution still needs the shared USB 2 link alone: its stream uses almost all of
 # it. go2rtc reads this overlay after its main config. The overlay turns off the other
-# cameras and the H.264 encoders and sets one camera to the largest AC410 MJPEG mode.
+# cameras and the H.264 encoders and sets one camera to its largest MJPEG mode.
 # The capture unit deletes a left-over overlay before go2rtc starts.
 STILL_CONFIG = Path("/var/lib/mg400/camera/still.yaml")
-STILL_MODE = (4000, 3000, 15)
 STILL_MAX_FRAME = 16 * 1024 * 1024
 # Auto exposure settles after the mode change. Older frames are too dark or too bright.
 STILL_SETTLE_S = 1.0
 STILL_TIMEOUT_S = 10.0
+STILL_TRIES = 3
 STILLS = {f"{stream}.full.jpg": stream for stream in CAMERAS.streams}
 STILL_LOCK = Lock()
 # The microscope service makes its lossless full-size still. go2rtc has only the preview.
@@ -128,10 +129,8 @@ def iter_mjpeg(upstream, *, keep_reading=lambda: True, max_frame=MAX_FRAME):
 
 
 def still_mode(stream):
-    """Largest AC410 mode. A camera above 1280x720 keeps its own: the 4K one has no 4000x3000."""
-    if stream in CAMERAS.preloaded:
-        return STILL_MODE
-    return CAMERAS.mode(CAMERAS.streams.index(stream) + 1)
+    """The mode of a full-resolution still of `stream`."""
+    return CAMERAS.still_mode(CAMERAS.streams.index(stream) + 1)
 
 
 def still_overlay(stream):
@@ -153,6 +152,13 @@ def still_overlay(stream):
 
 def restart_go2rtc():
     """Re-exec go2rtc with its config files, then wait until its API answers again."""
+    for device in CAMERAS.wrist:
+        # After a stream stop, the wrist camera refuses about 1 open in 4, and go2rtc opens
+        # a camera again only after a restart. A USB reset before the open prevents that.
+        try:
+            reset_usb_device(device)
+        except (OSError, ValueError):
+            pass  # The camera is absent. go2rtc reports that.
     try:
         urllib.request.urlopen(
             urllib.request.Request(GO2RTC + "/api/restart", method="POST"), timeout=2
@@ -185,26 +191,36 @@ def microscope_busy():
         return False
 
 
+def read_still(stream, deadline):
+    """Read the go2rtc stream until 1 settled frame of the still mode arrives."""
+    start = time.monotonic()
+    with urllib.request.urlopen(GO2RTC + "/api/stream.mjpeg?src=" + stream, timeout=5) as upstream:
+        for frame in iter_mjpeg(upstream, max_frame=STILL_MAX_FRAME):
+            now = time.monotonic()
+            if now > deadline:
+                break
+            try:
+                size = jpeg_size(frame)
+            except RuntimeError:
+                continue
+            if now - start >= STILL_SETTLE_S and size == still_mode(stream)[:2]:
+                return frame
+    raise OSError("The camera sent no full-resolution frame")
+
+
 def grab_still(stream):
     """Return 1 settled full-resolution JPEG. The other cameras pause for a few seconds."""
     STILL_CONFIG.write_text(still_overlay(stream))
     try:
-        restart_go2rtc()
-        start = time.monotonic()
-        with urllib.request.urlopen(
-            GO2RTC + "/api/stream.mjpeg?src=" + stream, timeout=5
-        ) as upstream:
-            for frame in iter_mjpeg(upstream, max_frame=STILL_MAX_FRAME):
-                now = time.monotonic()
-                if now - start > STILL_TIMEOUT_S:
-                    break
-                try:
-                    size = jpeg_size(frame)
-                except RuntimeError:
-                    continue
-                if now - start >= STILL_SETTLE_S and size == still_mode(stream)[:2]:
-                    return frame
-        raise OSError("The camera sent no full-resolution frame")
+        deadline = time.monotonic() + STILL_TIMEOUT_S
+        for attempt in range(STILL_TRIES):
+            restart_go2rtc()
+            try:
+                return read_still(stream, deadline)
+            except (OSError, ValueError, HTTPException):
+                # The wrist camera can refuse an open after a mode change.
+                if attempt == STILL_TRIES - 1 or time.monotonic() >= deadline:
+                    raise
     finally:
         STILL_CONFIG.unlink(missing_ok=True)
         restart_go2rtc()
@@ -393,13 +409,14 @@ class Preview(BaseHTTPRequestHandler):
         self.respond(body, "image/jpeg")
 
     def still(self, stream):
-        if SIDE == stream and microscope_busy():
-            self.send_error(409, "The microscope is using this camera")
-            return
         if not STILL_LOCK.acquire(timeout=45):
             self.send_error(503, "Another still is in progress")
             return
         try:
+            # Every still overlay stops or resizes the side stream.
+            if SIDE and microscope_busy():
+                self.send_error(409, "A microscope job reads the side camera")
+                return
             body = grab_still(stream)
         except (OSError, ValueError, UnicodeError, HTTPException):
             self.send_error(502)
@@ -493,9 +510,10 @@ class Preview(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     host = sys.argv[1] if len(sys.argv) == 2 else ports.HOST
-    if STILL_CONFIG.exists():
-        # This process stopped during a still. Return go2rtc to the previews.
-        STILL_CONFIG.unlink()
+    if STILL_CONFIG.exists() or CAMERAS.wrist:
+        # This process stopped during a still: return go2rtc to the previews. Or go2rtc
+        # opened the wrist camera without a USB reset: open it again after one.
+        STILL_CONFIG.unlink(missing_ok=True)
         restart_go2rtc()
     else:
         # The capture unit can report started before go2rtc listens.

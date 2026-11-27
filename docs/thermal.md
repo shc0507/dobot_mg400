@@ -5,7 +5,7 @@
 热像仪包为 Thermal Master P1 提供 Python 控制器和采集服务，USB ID 为 `3474:45C2`。
 原生温度数组为 160 × 120 像素。
 FastAPI 和 uvicorn 提供 HTTP API。服务没有网页。
-Lab Console 的 Cameras 工作区显示热像画面。Furnace + microscope 工作区显示坩埚区域读数。
+Lab Console 的 Cameras 工作区显示热像画面。Furnace 工作区显示坩埚区域读数。
 
 ## 主机托管服务
 
@@ -61,7 +61,7 @@ sudo labctl thermal call connect
 sudo labctl thermal state
 ```
 
-连接失败时，状态显示 `error` 和 `diagnostics`：USB 后端和设备访问情况。
+收到第 1 帧后，`connect` 返回 `ok`。连接失败时，`connect` 返回 `failed`，状态显示 `error` 和 `diagnostics`：USB 后端和设备访问情况。
 
 ## 启动服务
 
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 ```
 
 使用 `create_app(demo=True)` 生成合成数据，或用 `create_app(auto_connect=False)` 等待 `connect` 命令。
-监听地址和端口环境变量由命令行读取。嵌入式服务器自行提供配置。
+命令行用 `--bind` 和 `--port` 设置监听地址和端口。嵌入式服务器自行提供。
 挂载 ASGI 应用时，父应用必须管理采集生命周期。
 [FastAPI 不会自动运行已挂载应用的生命周期钩子](https://fastapi.tiangolo.com/advanced/events/#sub-applications)。
 

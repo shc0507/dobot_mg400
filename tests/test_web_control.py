@@ -50,8 +50,8 @@ def execute(state, **extra):
     )
 
 
-@pytest.mark.parametrize("action", ["start_sync", "stop", "disable"])
-def test_another_panel_cannot_connect_or_send_safety_commands(rig, action):
+@pytest.mark.parametrize("action", ["start_sync", "disable"])
+def test_another_panel_cannot_connect_or_disable(rig, action):
     state, feed, controls = rig
     connect(state)
     other_feed = Feed()
@@ -66,6 +66,73 @@ def test_another_panel_cannot_connect_or_send_safety_commands(rig, action):
         assert not other.snapshot()["syncing"]
         assert not other.snapshot()["locked"]
     finally:
+        other.close()
+
+
+@pytest.mark.parametrize("failure", [None, ConnectionError("Robot is offline")])
+def test_stop_without_the_lock_sends_reset_and_stays_unconfirmed(rig, failure):
+    state, feed, controls = rig
+    connect(state)
+    other_feed = Feed()
+    other_controls = []
+
+    def factory(*args, **kwargs):
+        control = PanelControl(*args, **kwargs)
+        control.failure = failure
+        other_controls.append(control)
+        return control
+
+    other = RobotPanelState("robot.test", connection_factory=other_feed, control_factory=factory)
+    try:
+        for _ in range(2):
+            # Each request sends again, like a stop that holds the lock.
+            assert other.stop("browser-b", wait_s=1)["stop"] == "unconfirmed"
+        wait_for(lambda: not other.snapshot()["busy"])
+        assert [control.calls for control in other_controls] == [[], ["send_stop"], ["send_stop"]]
+        snapshot = other.snapshot()
+        assert snapshot["stop_unconfirmed"] and snapshot["locked"]
+        assert not snapshot["syncing"] and other_feed.connections == 0
+        assert snapshot["last_command"]["action"] == "stop"
+        assert snapshot["last_command"]["result"] == "failed"
+        expected = "Robot is offline" if failure else "ResetRobot() is sent without the robot lock"
+        assert expected in snapshot["message"]
+        assert "physical emergency stop" in snapshot["message"]
+        with pytest.raises(RuntimeError, match="Robot controlled by another panel"):
+            other.command({"action": "disable"}, "browser-b")
+        # The lock holder keeps its session.
+        assert state.snapshot()["syncing"] and not state.snapshot()["locked"]
+        assert all("send_stop" not in control.calls for control in controls)
+    finally:
+        other.close()
+
+
+def test_stops_without_the_lock_send_one_at_a_time(rig):
+    state, feed, controls = rig
+    connect(state)
+    active, overlap = [], []
+    gate = threading.Event()
+
+    class GatedControl(PanelControl):
+        def send_stop(self):
+            active.append(self)
+            overlap.append(len(active))
+            gate.wait(2)
+            active.remove(self)
+            super().send_stop()
+
+    other = RobotPanelState("robot.test", connection_factory=Feed(), control_factory=GatedControl)
+    try:
+        # The direct and console paths of one labctl stop arrive together.
+        other.stop("browser-b")
+        other.stop("browser-c")
+        wait_for(lambda: overlap == [1])
+        time.sleep(0.05)
+        assert overlap == [1]
+        gate.set()
+        wait_for(lambda: not other.snapshot()["busy"])
+        assert overlap == [1, 1]
+    finally:
+        gate.set()
         other.close()
 
 
@@ -131,7 +198,114 @@ def test_initial_feedback_failure_releases_ownership_for_another_panel(rig):
         other.close()
 
 
-@pytest.mark.parametrize("action", ["stop", "disable"])
+def test_stop_without_sync_sends_reset_and_reports_unconfirmed_without_a_lock(rig):
+    state, feed, controls = rig
+    gate = threading.Event()
+
+    class GatedControl(PanelControl):
+        def send_stop(self):
+            gate.wait(2)
+            super().send_stop()
+
+    def factory(*args, **kwargs):
+        control = GatedControl(*args, **kwargs)
+        controls.append(control)
+        return control
+
+    state._control_factory = factory
+    try:
+        # The direct and console paths of one labctl stop arrive together.
+        for _ in range(2):
+            assert state.stop("browser-a", wait_s=0)["stop"] == "unconfirmed"
+            assert not state.snapshot()["locked"]
+    finally:
+        gate.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert [control.calls for control in controls] == [[], ["send_stop"], ["send_stop"]]
+    snapshot = state.snapshot()
+    assert not snapshot["locked"] and not snapshot["stop_unconfirmed"]
+    assert snapshot["fault"] is None
+    assert snapshot["last_command"]["result"] == "failed"
+    assert "without robot feedback" in snapshot["message"]
+    contender = ControllerOwnership("robot.test")
+
+    def acquired():
+        try:
+            contender.acquire()
+        except RuntimeError:
+            return False
+        return True
+
+    wait_for(acquired)
+    contender.release()
+    # The next session needs no Recover.
+    connect(state)
+    state.command({"action": "enable"}, "browser-a")
+    wait_for(lambda: state.snapshot()["last_command"]["action"] == "enable")
+    assert state.snapshot()["last_command"]["result"] == "ok"
+
+
+def test_release_before_feedback_connects_sends_nothing_and_stays_unlocked(rig):
+    state, feed, controls = rig
+
+    def fail():
+        raise ConnectionError("Robot is offline")
+
+    feed.read_latest = fail
+    state.acquire("console-a")
+    wait_for(lambda: "Robot is offline" in state.snapshot()["message"])
+    state.release("console-a")
+    snapshot = state.snapshot()
+    assert not snapshot["locked"] and not snapshot["stop_unconfirmed"]
+    assert snapshot["lease"]["holder"] is None and not snapshot["busy"]
+    assert len(controls) == 1 and controls[0].calls == []
+    assert snapshot["last_command"]["action"] == "stop_sync"
+    assert snapshot["last_command"]["result"] == "ok"
+
+
+def test_holder_that_takes_control_again_during_its_release_keeps_the_lease(rig):
+    state, feed, controls = rig
+    entered, release = threading.Event(), threading.Event()
+
+    def block():
+        entered.set()
+        assert release.wait(2)
+        return {"ok": True}
+
+    state.acquire("agent-a")
+    wait_for(lambda: state.snapshot()["feedback_fresh"])
+    controls[0].stop = block
+    state.release("agent-a")
+    try:
+        assert entered.wait(1)
+        assert state.acquire("agent-a")["holder"] == "agent-a"
+    finally:
+        release.set()
+    wait_for(lambda: not state.snapshot()["busy"])
+    assert state.renew("agent-a")["holder"] == "agent-a"
+    assert state.snapshot()["syncing"]
+
+
+def test_non_finite_payload_is_reported_as_unknown(rig):
+    state, feed, controls = rig
+    feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, load_kg=float("inf"))
+    connect(state)
+    assert state.snapshot()["payload_kg"] is None
+    feed.sample = Feedback((1, 2, 3, 4), 5, 0, False, load_kg=0.25)
+    wait_for(lambda: state.snapshot()["payload_kg"] == 0.25)
+
+
+def test_snapshot_reports_the_pressure_reader_and_none_without_one(rig):
+    state, feed, controls = rig
+    assert state.snapshot()["pressure"] is None
+    reader = Mock(reading=Mock(return_value={"abs_hpa": 960.0, "gauge_hpa": -49.5}))
+    assert RobotPanelState("192.0.2.1", pressure=reader).snapshot()["pressure"] == {
+        "abs_hpa": 960.0,
+        "gauge_hpa": -49.5,
+    }
+
+
+@pytest.mark.parametrize("action", ["disable"])
 def test_safety_command_without_sync_retains_ownership_after_unverified_result(rig, action):
     state, feed, controls = rig
     entered, release = threading.Event(), threading.Event()
@@ -569,7 +743,7 @@ def test_enabled_disconnect_keeps_feedback_until_explicit_disable(make_sim_rig, 
     assert snapshot["last_command"]["action"] == "disable"
     assert snapshot["last_command"]["result"] == "ok"
     assert rig.controller.sent().count("DisableRobot()") == 1
-    assert "EnableRobot()" not in rig.controller.sent()
+    assert "EnableRobot(0.117,-27,19,0)" not in rig.controller.sent()
     if new_owner:
         rig.wait_reads(3)
         assert rig.state._ownership.held and rig.state._reader.is_alive()
@@ -655,7 +829,7 @@ def test_short_retained_feedback_gap_allows_disable_after_feedback_returns(
     assert snapshot["last_command"]["result"] == "ok"
     assert rig.controller.sent().count("ResetRobot()") == 1
     assert rig.controller.sent().count("DisableRobot()") == 1
-    assert "EnableRobot()" not in rig.controller.sent()
+    assert "EnableRobot(0.117,-27,19,0)" not in rig.controller.sent()
 
 
 @pytest.mark.parametrize("mode,error", [(7, False), (9, False), (5, True)])
@@ -961,7 +1135,7 @@ def test_clear_alarm_confirms_disable_and_rest_before_unlocking(rig):
     state.command({"action": "clear_alarm"}, "browser-a")
     wait_for(lambda: not state.snapshot()["locked"])
     recovery = controls[1]
-    assert recovery.calls[:2] == ["disable", "stationary"]
+    assert recovery.calls[:3] == ["send_stop", "disable", "stationary"]
     assert not state.snapshot()["stop_unconfirmed"]
     assert state.snapshot()["alarms"] is None
 
@@ -1020,7 +1194,7 @@ def test_recover_confirms_rest_after_the_alarm_cleared_elsewhere(rig):
     state.command({"action": "clear_alarm"}, "browser-a")
     wait_for(lambda: not state.snapshot()["locked"])
     assert "clear_alarms" not in controls[0].calls
-    assert controls[1].calls[:2] == ["disable", "stationary"]
+    assert controls[1].calls[:3] == ["send_stop", "disable", "stationary"]
     snapshot = state.snapshot()
     assert not snapshot["stop_unconfirmed"] and not snapshot["recoverable"]
 
@@ -1039,7 +1213,7 @@ def test_a_stop_that_failed_without_an_alarm_warns_and_recovers(rig):
     state.command({"action": "clear_alarm"}, "browser-a")
     wait_for(lambda: not state.snapshot()["locked"])
     assert "clear_alarms" not in controls[0].calls
-    assert controls[1].calls[:2] == ["disable", "stationary"]
+    assert controls[1].calls[:3] == ["send_stop", "disable", "stationary"]
     assert not state.snapshot()["stop_unconfirmed"]
 
 
@@ -1412,6 +1586,23 @@ def test_rejected_commands_while_disabled_at_rest_point_to_tcp_mode(make_sim_rig
         "DisableRobot()",
         "ResetRobot()",
     ]
+
+
+def test_an_earlier_rejection_does_not_point_to_tcp_mode(make_sim_rig):
+    rig = make_sim_rig()
+    rig.controller.update(mode=4)
+    rig.controller.rejecting = True
+    rig.command("start_sync")
+    rig.wait(lambda s: s["stop_unconfirmed"] and not s["busy"] and TCP_HINT in s["message"])
+    # The controller accepts commands again, for example after an alarm cleared.
+    rig.controller.rejecting = False
+    rig.command("stop")
+    rig.wait(lambda s: not s["busy"] and s["last_command"]["action"] == "stop")
+    snapshot = rig.snapshot()
+    assert TCP_HINT not in snapshot["message"]
+    assert "click Recover" in snapshot["message"]
+    assert snapshot["locked"] and snapshot["stop_unconfirmed"]
+    assert rig.controller.sent()[-1] == "ResetRobot()"
 
 
 def test_rejected_commands_while_enabled_still_require_the_physical_stop(make_sim_rig):

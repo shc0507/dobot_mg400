@@ -21,6 +21,8 @@ DEFAULT_ROTATIONS = 0.25
 MIN_SPEED = 0.001
 MIN_ROTATIONS = 0.001
 MAX_SPEED = 5.0  # Device reports a lower limit for the selected microstep mode.
+# The firmware sends at most this many pulses/s on one axis; see speedLimit().
+MAX_PULSE_RATE = 960
 MAX_ROTATIONS = 10_000
 COOLDOWN_SECONDS = 1.0
 HOLD_TIMEOUT_SECONDS = 1.0  # Matches the Arduino hold watchdog.
@@ -28,6 +30,8 @@ REQUIRED_MICROSTEP = 8
 MICROSTEP_MODES = {REQUIRED_MICROSTEP: "Eighth step (1/8)"}
 TELEMETRY_TIMEOUT_SECONDS = 1.0
 ENCODER_COUNTS_PER_ROTATION = 4096
+# Firmware EncoderConfig::EncoderNoiseCounts: the spread of one encoder sample.
+ENCODER_NOISE_COUNTS = 2
 ENCODER_COUNT_LIMIT = 1_000_000_000
 POSITION_LIMIT = ENCODER_COUNT_LIMIT / ENCODER_COUNTS_PER_ROTATION
 ACTIVE_CALIBRATION = ("lower", "upper", "center")
@@ -266,6 +270,20 @@ def has_calibrated_range(state: MotorStatus) -> bool:
         and state.positive_direction == "ccw"
         and state.lower_limit_direction == "cw"
     )
+
+
+def target_counts(rotations: float) -> int:
+    """Round a target like the firmware: floor(rotations * 4096 + 0.5)."""
+    return math.floor(rotations * ENCODER_COUNTS_PER_ROTATION + 0.5)
+
+
+def position_reached(position: float, target: int, tolerance: float, slack_counts=0) -> bool:
+    """Compare whole encoder counts with the firmware's completion tolerance.
+
+    tolerance is the value that the firmware reports, in rotations. slack_counts
+    covers the start sample of a relative move (ENCODER_NOISE_COUNTS)."""
+    error = abs(round(position * ENCODER_COUNTS_PER_ROTATION) - target)
+    return error <= max(round(tolerance * ENCODER_COUNTS_PER_ROTATION), 1) + slack_counts
 
 
 def absolute_position_error(state: MotorStatus, position: float) -> str | None:
@@ -608,7 +626,9 @@ class SerialTransport:
     def _drain_available(self):
         try:
             count = self.serial.in_waiting
-            if count > 8192:
+            # Linux reports at most 4095 bytes for a tty; a full buffer means the
+            # USB bridge drops bytes and the queued frames are stale.
+            if count >= 4000:
                 raise LinkError("Arduino telemetry backlog is too large to trust. Reconnect.")
             if count:
                 self._feed(self.serial.read(count))
@@ -1056,8 +1076,9 @@ class DemoTransport:
             motor: MotorStatus(
                 motor,
                 encoder="ok",
-                tolerance=math.ceil(0.5 * 4096 / (200 * REQUIRED_MICROSTEP) + 2) / 4096,
-                max_speed=800 / (200 * REQUIRED_MICROSTEP),
+                tolerance=math.ceil(0.5 * 4096 / (200 * REQUIRED_MICROSTEP) + ENCODER_NOISE_COUNTS)
+                / 4096,
+                max_speed=MAX_PULSE_RATE / (200 * REQUIRED_MICROSTEP),
                 lower_limit=-POSITION_LIMIT,
                 upper_limit=POSITION_LIMIT,
                 lower_limit_set=False,
@@ -1362,7 +1383,7 @@ class DemoTransport:
             self.microstep = int(argument)
             for state in self.motors.values():
                 state.max_speed = min(
-                    MAX_SPEED, 800 / (state.steps_per_revolution * self.microstep)
+                    MAX_SPEED, MAX_PULSE_RATE / (state.steps_per_revolution * self.microstep)
                 )
                 state.tolerance = (
                     math.ceil(0.5 * 4096 / (state.steps_per_revolution * self.microstep) + 2) / 4096

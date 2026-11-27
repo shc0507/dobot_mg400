@@ -8,7 +8,10 @@ import pytest
 
 TEMPLATES = Path(__file__).resolve().parents[1] / "config/udev"
 EXPECTED = {
-    "camera": [("video4linux", "f326", "1306", "HU12321178")],
+    "camera": [
+        ("video4linux", "f326", "1306", "HU12321178"),
+        ("usb", "32e4", "3415", "2023121018"),
+    ],
     "furnace": [("tty", "0403", "6015", "DU0DT9G8"), ("tty", "0403", "6001", "ABBCE4JW")],
     "microscope": [
         ("tty", "2341", "0043", "035353433353512070D1"),
@@ -16,6 +19,8 @@ EXPECTED = {
         ("usb", "0547", "1376", None),
     ],
     "stage": [("tty", "2341", "0043", "1453230313235111D1E0")],
+    # The robot service reads the suction line pressure sensor.
+    "web": [("tty", "2341", "0043", "1453230313235111B180")],
     # The P1 serial string carries trailing non-printing bytes, so the rule uses a prefix.
     "thermal": [("usb", "3474", "45c2", "P1016021DG040100208*")],
 }
@@ -45,6 +50,9 @@ def test_device_rules_keep_inventory_identities_and_restricted_permissions(servi
             selectors.append('ENV{DEVTYPE}=="usb_device"')
         if serial is not None:
             selectors.append(f'{attribute}{{serial}}=="{serial}"')
+        if subsystem == "tty":
+            # ModemManager AT probes would corrupt the next line to the firmware.
+            selectors.append('ENV{ID_MM_DEVICE_IGNORE}="1"')
         expected = {*selectors, 'MODE="0660"', 'GROUP="@SERVICE_GROUP@"'}
         assert set(rule.split(", ")) == expected
         assert re.search(r'ATTRS?\{idVendor\}=="[0-9a-f]{4}"', rule)

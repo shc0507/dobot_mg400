@@ -97,6 +97,13 @@ def runs(tmp_path_factory):
     yield from _serve(tmp_path_factory)
 
 
+@pytest.fixture(autouse=True)
+def collision_world(monkeypatch):
+    """`robot move` checks the test world, not the installed asset."""
+    world = ROOT / "tests/fixtures/collision_world.json"
+    monkeypatch.setattr(agent_cli.collision, "WORLD", world)
+
+
 def labctl(console, *argv, session="e2e"):
     out = io.StringIO()
     code = agent_cli.main([*argv, "--url", console, "--session", session], out=out)
@@ -122,7 +129,9 @@ def test_robot_take_enable_move_vacuum_and_release(console):
     assert code == 0, result
     assert pose(console)[2] == pytest.approx(start[2] - 10)
     code, result = labctl(console, "robot", "move", *map(str, start), "--speed", "999")
-    assert code == 1 and result["outcome"] == "refused"
+    # The service answers 400; the relay keeps it, so labctl reports invalid params.
+    assert code == 2 and result["outcome"] == "refused", result
+    assert result["error"]["code"] == "invalid" and result["error"]["status"] == 400
     assert labctl(console, "robot", "vacuum", "suck")[0] == 0
     assert labctl(console, "robot", "vacuum", "off")[0] == 0
     code, result = labctl(console, "robot", "release")
@@ -155,7 +164,7 @@ def test_commands_need_control_and_one_controller_per_device(console):
 def test_furnace_caps_stay_in_the_service(console):
     assert labctl(console, "furnace", "take")[0] == 0
     code, result = labctl(console, "furnace", "setpoint", "5000", "--ramp", "5")
-    assert code == 1 and "at most" in result["error"]["message"]
+    assert code == 2 and "at most" in result["error"]["message"], result
     code, result = labctl(console, "furnace", "stop")
     assert code == 0 and result["results"] == {"furnace": "confirmed"}
     code, result = labctl(console, "all", "session")

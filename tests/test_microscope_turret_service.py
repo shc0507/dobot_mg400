@@ -351,6 +351,10 @@ def test_selected_profile_switches_with_only_lens_markers(demo_rig, monkeypatch,
     if recorded_focus != 30:
         assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
     monkeypatch.setattr(rig.service, "_locator", lambda: pytest.fail("Legacy locator was used"))
+    assert (
+        service_post(rig, "autofocus-settings", {"fifty_x_half_range_pulses": 300}).status_code
+        == 200
+    )
     assert dispatch(rig, "autofocus", mode="local")["last_command"]["result"] == "ok"
     before = len(rig.port.commands)
     state = dispatch(rig, "select_objective", id=2)
@@ -394,6 +398,10 @@ def test_profile_switch_checks_fresh_x_at_verified_focus(demo_rig, monkeypatch):
     assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
     establish_manual_reference(rig)
     assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
+    assert (
+        service_post(rig, "autofocus-settings", {"fifty_x_half_range_pulses": 300}).status_code
+        == 200
+    )
     assert dispatch(rig, "autofocus", mode="local")["last_command"]["result"] == "ok"
     expected = rig.port.focus_origin + rig.port.sim.focus.position
     factory = rig.service._profile_locator

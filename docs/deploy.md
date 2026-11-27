@@ -35,7 +35,6 @@
 | `/usr/local/lib/mg400/caddy` | 代理程序 Caddy 2 | `root:root`，`0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | 可选的 Toupcam 59.30594.20260120 Linux x64 库 | `root:root`，`0755` |
 | `/usr/local/bin/labctl` | 日常命令，链接到 `/opt/mg400/deploy/labctl` | 无 |
-| `/usr/local/bin/labctl` | 同一命令的另一个链接，参数和行为相同 | 无 |
 
 所有服务以数字 ID `1000` 的用户和组运行。
 服务定义位于 `config/systemd/`，安装到 `/etc/systemd/system/`：
@@ -135,7 +134,7 @@
    如指定 `--toupcam`，安装第 1 步已校验的库文件内容。
 7. 如有所选服务的 udev 模板，渲染并安装规则，再重新加载规则并触发 USB 设备的 udev 事件。
 8. 安装所选服务定义，重新加载 systemd。
-9. 链接 `labctl`，删除旧的 `labctl` 链接。
+9. 链接 `labctl`，删除旧的 `mg400ctl` 链接。
 
 安装器不启动、不停止，也不重启服务。
 更新代码前必须停止服务。运行中的服务可能读取新旧混合的文件。
@@ -169,6 +168,7 @@
 - 只更改控制台静态 JavaScript/CSS 时，不重启服务。
 - 后端代码或模板更改时，重启 `mg400-twin-test`。
 - 下述相机覆盖配置已生效且通过检查时，相机代码或依赖更改会重启 `mg400-camera-preview.service`。
+  此次重启也会停止 go2rtc 和所有相机流，包括显微镜侧视流。只在没有显微镜或视觉任务运行时部署此类更改。
 
 脚本保留校准配置和运行数据目录。
 部署后，脚本检查服务健康状态，不运行测试。
@@ -310,7 +310,7 @@ systemctl restart mg400-microscope.service
 安装器不加载库，也不打开摄像头。加 `--dry-run` 可校验并列出步骤，不修改文件。
 未指定 `--toupcam` 时，已有库文件保持不变。
 
-没有此库时，安装器打印警告，安装不含摄像头的显微镜服务。
+没有此库时，安装器打印警告，仍安装显微镜服务。没有此库，显微镜服务无法启动。
 已安装的库必须哈希匹配，且属主和权限安全。
 修改主机前，安装器拒绝不可信的目标目录。
 现有目标目录须归 root 所有，允许 UID `1000` 遍历，且不得允许服务或其他用户写入。
@@ -405,10 +405,20 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 清单按 Roboflow 声明记录许可证 `AGPL-3.0`。
 发布中没有文件时，下载会失败。
 
+`vision-wrist-weights` 对应本仓库 `vision-wrist-model-v1` 发布中的 `chip-wrist-yolo26s-seg-v1.pt`。它是腕部相机的检测权重。
+大小为 23,501,597 字节，SHA-256 为 `1683fca75712b6ae0675d23599dcff0e737a33b1a4ac3ba1c3918e71c2d9598b`。
+目标为 `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`，权限为 `0640`。该资源属于 `vision`。
+安装不必包含它。没有它时，视觉服务对腕部相机使用 `vision-weights`。见[配置](vision.md#配置)。
+
 `twin-model` 对应本仓库 `twin-model-v2` 发布中的 `twin.glb`。它是控制台实时台面工作区的 3D 台面模型。
 大小为 3,447,272 字节，SHA-256 为 `1cf153e44ffe8d68d1f3edb60b896b7d8fcacf02f62f419b220bfc8d9d7028bc`。
 目标为 `/var/lib/mg400/twin/twin.glb`，权限为 `0640`。该资源属于 `orch`。
 安装不必包含它。没有它时，实时台面工作区显示无法加载模型。
+
+`twin-collision` 对应本仓库 `twin-collision-v2` 发布中的 `collision.json`。它是台面孪生的碰撞模型：机械臂和台面的凸包与关节树。
+大小为 3,164,921 字节，SHA-256 为 `5ce043aadb397e2da3237a026c540963a9082fe7f9f524c2034209e651dcc6ef`。
+目标为 `/var/lib/mg400/twin/collision.json`，权限为 `0640`。该资源属于 `orch`。
+没有它时，`labctl robot move` 拒绝每个不带 `--no-collision-check` 的移动。见[碰撞检查](agent-cli.md#碰撞检查)。
 
 资源必须属于已启用服务，并列在该服务的 `assets` 中。
 启用 `vision` 时，安装必须包含 `vision-weights`，即使未指定 `--fetch-assets`。
@@ -460,7 +470,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 语法及工艺限制见[炉控配置](furnace.md#配置)。
 每次运行时，安装器把该文件恢复为 `root:root` 和 `0600`。
 
-该文件只含硬件事实。监听地址、端口、基础路径和服务 URL 是代码和单元中的固定默认值。
+该文件只含硬件事实。监听地址、端口和服务 URL 是代码和单元中的固定默认值。
+数据路径使用代码中的默认值。部分服务仍接受路径覆盖，例如 `MG400_ORCH_TOOL_FILE`。不要在此文件中设置路径覆盖。
 所有服务监听 `127.0.0.1`。VPN 上只开放代理端口 `8080`。VPN 是访问边界，服务不检查令牌。
 机械臂连接锁目录为 `/var/lib/mg400/locks`。实验室控制台使用基础路径 `/lab/`。
 
@@ -481,8 +492,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 按[炉控配置](furnace.md#配置)配置炉温上限和气体映射。
 按[显微镜指南](microscope.md#契约服务)配置设备选择、调焦限位和相机视频流。
 
-摄像头使用 `/dev/v4l/by-path/` 或 `/dev/v4l/by-id/` 下不同的稳定路径。接口路径按 USB 接口区分同型号摄像头。
-已配置视频流按设备顺序命名为 `camera1` 到 `camera5`。此控制台显示前 4 个 USB 摄像头视图；它接受第 5 个共享设备，但不添加腕部摄像头控制。
+摄像头使用 `/dev/v4l/by-path/` 下不同的设备路径，按 USB 接口区分同型号摄像头。腕部摄像头使用 `/dev/v4l/by-id/` 下的名称。
+摄像头服务只提供已配置的视频流，按设备顺序命名为 `camera1` 到 `camera5`。
 模式列表为空时，普通摄像头使用 `1280x720@30`。配置的 `MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项。它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
 显式模式列表覆盖这些默认值。数量、路径或模式无效时，安装器在修改主机前退出。
@@ -506,8 +517,8 @@ systemd 报告某单元未安装且未运行时，`stop all` 跳过该单元并�
 | `labctl gpu` | 以 UID `1000` 读取 GPU 名称、已用内存和总内存 |
 | `labctl status` | 显示已启用服务的状态 |
 | `labctl start web stage camera` | 启动服务。名称为 `web`、`stage`、`camera`、`thermal`、`furnace`、`microscope`、`vision`、`orch`、`proxy` 或 `all` |
-| `labctl stop all` | 停止服务。停止炉控时可加 `--force`，见下文 |
-| `labctl restart web` | 重启服务。重启炉控时可加 `--force` |
+| `labctl stop all` | 停止服务。炉控检查拒绝时，先协调关闭加热和气体，再加 `--force`。见下文 |
+| `labctl restart web` | 重启服务。炉控检查拒绝时，先协调关闭加热和气体，再加 `--force`。见下文 |
 | `labctl logs web -n 100` | 显示服务日志。加 `-f` 持续显示 |
 | `labctl mode` | 读取控制器模式，见 [切换 TCP/IP 模式](hardware.md#从服务器切换-tcpip-模式) |
 | `labctl mode --switch-to-tcp` | 把控制器切换到 TCP/IP 模式 |
@@ -525,7 +536,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 
 炉控 `stop` 和 `restart` 在修改任何所选服务前，先读取实时状态。
 检查覆盖混合列表及 `all`，也覆盖 `stop all` 选中的已停用炉控服务。
-仅当 systemd 报告全部炉控单元未安装且未运行时，`stop` 才跳过此检查。systemd 未给出明确结果时，仍执行检查。
+仅当 systemd 报告全部炉控单元未运行时，才跳过此检查：此时没有炉控进程。systemd 未给出明确结果时，仍执行检查。
 活动序列或冷却气体计划必须使用 `--force`。状态不可用、格式错误、断开或锁定时也必须使用 `--force`。
 使用 `labctl stop furnace --force` 或 `labctl restart furnace --force` 前，必须与所有客户端协调。
 强制关闭请求服务停止加热和气体。必须核对停止结果。检查仅作提示性保护：状态读取与 systemd 操作之间仍可能启动序列。
@@ -545,9 +556,11 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 
 ## 面板连接锁
 
-机器人服务、交互终端和模式切换在连接机械臂前取得文件锁。
+机器人服务和模式切换在连接机械臂前取得文件锁。
 机器人服务的只读模式也使用此锁。
-另一个程序持锁时，新连接返回 `Robot controlled by another panel`。
+另一个程序持锁时，新连接返回 `Robot controlled by another panel`，`Disable` 也被拒绝。
+此时 `Stop` 和 STOP ALL 仍发送 1 次 `ResetRobot()`，但不检查静止，结果为未确认。机器人服务锁定控制。锁空闲后，同步反馈并点击 Recover。
+控制器只保留最新的 `29999` 连接。此停止会断开持锁程序的 `29999` 连接。
 正常断开后，机器人服务等待反馈线程和命令任务结束，再释放锁。
 停止状态无法确认时，机器人服务停止常规坐标查询，保留反馈和锁，并显示警告。
 检查机械臂，再点击 Recover。重新加载实验室控制台不会清除警告。
@@ -556,7 +569,6 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 此目录固定在代码中。它必须支持操作系统文件锁。
 所有程序以 UID 1000 运行。锁文件权限为 `0600`。
 以 root 运行时，程序拒绝使用属主不是 root 的锁目录。
-已有锁文件的属主不同时，原地修改属主，保留原文件。
 
 不要删除锁文件来解除占用。进程退出时，操作系统释放该进程持有的锁。
 进程退出不能确认机械臂已停止。
@@ -565,7 +577,7 @@ GPU 输出不能单独证明视觉服务选择了 CUDA。请检查 `labctl logs 
 ## 备份
 
 `labctl backup FILE.tar` 归档 `/etc/mg400/mg400.env` 和 `/var/lib/mg400`，保留数字属主和文件权限。
-它只排除存放进程连接锁的 `/var/lib/mg400/locks`。
+它排除存放进程连接锁的 `/var/lib/mg400/locks`，以及测试控制台部署状态 `/var/lib/mg400/twin-test`。
 它也保留 `/var/lib/mg400/furnace` 下的炉控状态和 `.state.json.lock`。
 
 备份前，按下方迁移步骤停止服务和其他数据写入程序。

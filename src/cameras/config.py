@@ -22,7 +22,12 @@ MJPEG_MODES = frozenset(
         (320, 240, 30),
     }
 )
+# A by-path name follows the USB port. A by-id name follows the serial number: only the
+# wrist camera has a serial of its own, so only that camera uses one.
 DEVICE = re.compile(r"/dev/v4l/by-(?:path|id)/[A-Za-z0-9_.:+-]{1,255}")
+# The largest MJPEG mode, for a full-resolution still: AC410, then the wrist camera.
+STILL_MODE = (4000, 3000, 15)
+WRIST_STILL_MODE = (3840, 2160, 30)
 MODE = re.compile(r"([1-9][0-9]{0,3})x([1-9][0-9]{0,3})@([1-9][0-9]{0,2})")
 
 
@@ -69,6 +74,23 @@ class CameraConfig:
             if width <= 1280 and height <= 720
         )
 
+    @property
+    def wrist(self):
+        """The devices with a by-id name: the wrist camera."""
+        return tuple(device for device in self.devices if device.startswith("/dev/v4l/by-id/"))
+
+    @property
+    def held(self):
+        """Streams that go2rtc holds open: each preloaded stream and the wrist camera.
+
+        The wrist camera can refuse an open after a stream stop, so its stream does not stop.
+        """
+        return tuple(
+            stream
+            for stream, device in zip(self.streams, self.devices)
+            if stream in self.preloaded or device in self.wrist
+        )
+
     def large(self, side=""):
         """Streams above 1280x720 that a viewer starts. The microscope side stream is not one."""
         return tuple(
@@ -79,6 +101,13 @@ class CameraConfig:
         if type(camera) is not int or not 1 <= camera <= self.count:
             raise ValueError("Camera must identify a configured stream.")
         return self.modes[camera - 1]
+
+    def still_mode(self, camera):
+        """The mode of a full-resolution still. A camera above 1280x720 keeps its own mode."""
+        mode = self.mode(camera)
+        if self.streams[camera - 1] not in self.preloaded:
+            return mode
+        return WRIST_STILL_MODE if self.devices[camera - 1] in self.wrist else STILL_MODE
 
 
 def camera_configuration(settings):

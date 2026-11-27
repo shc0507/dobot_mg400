@@ -202,7 +202,7 @@ def test_camera_four_still_uses_the_existing_stream_and_checks_its_mode():
     assert mismatch.closed
 
 
-@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4, 5])
 def test_frame_source_rejects_unconfigured_stream_before_any_request(count):
     opener = Mock(side_effect=AssertionError("No request to an unconfigured stream"))
     source = Go2RTCSource(settings=camera_settings(count), opener=opener)
@@ -437,10 +437,62 @@ def test_frame_failure_is_reported_without_stale_success(make_service):
         frames=SimpleNamespace(read=Mock(side_effect=FrameError("camera unavailable")))
     )
     client = create_app(service).test_client()
+    before = service.snapshot()
+    # A preview read answers the failure and leaves the service state alone.
     assert_error(client.get("/api/detect?camera=1"), 503)
     state = service.snapshot()
-    assert not state["connected"] and not state["busy"] and state["last_result"] is None
+    assert state["connected"] == before["connected"] and state["fault"] is None
+    assert not state["busy"] and state["last_result"] is None
+    headers = {"X-MG400-Client": "owner"}
+    client.post("/api/heartbeat", headers=headers, json={})
+    command = client.post("/api/command", headers=headers, json={"action": "detect", "camera": 1})
+    state = completed(service, command.get_json()["command_id"])
+    assert not state["connected"] and state["last_result"] is None
     assert state["fault"]["code"] == "vision_failed"
+    # A successful preview read clears the fault again.
+    service.frames.read = Mock(return_value=Image.new("RGB", (96, 64)))
+    assert client.get("/api/detect?camera=1").status_code == 200
+    state = service.snapshot()
+    assert state["connected"] and state["fault"] is None
+
+
+def test_a_preview_read_makes_a_leased_command_wait_not_fail(make_service):
+    entered, release = threading.Event(), threading.Event()
+    model = DemoLocalizer()
+    original = model.predict
+    calls = []
+
+    def predict(image):
+        calls.append(image.size)
+        if len(calls) == 2:  # The first call is the startup warm-up.
+            entered.set()
+            assert release.wait(2)
+        return original(image)
+
+    model.predict = predict
+    service = make_service(localizer_factory=lambda: model)
+    app = create_app(service)
+    preview = {}
+    reader = threading.Thread(
+        target=lambda: preview.update(response=app.test_client().get("/api/detect?camera=4"))
+    )
+    reader.start()
+    try:
+        assert entered.wait(1)
+        assert not service.snapshot()["busy"]
+        client = app.test_client()
+        headers = {"X-MG400-Client": "owner"}
+        client.post("/api/heartbeat", headers=headers, json={})
+        command = client.post(
+            "/api/command", headers=headers, json={"action": "detect", "camera": 1}
+        )
+        assert command.status_code == 202
+    finally:
+        release.set()
+        reader.join(2)
+    assert preview["response"].status_code == 200
+    state = completed(service, command.get_json()["command_id"])
+    assert state["last_command"]["result"] == "ok"
 
 
 @pytest.mark.parametrize("expire", [False, True])
@@ -466,7 +518,6 @@ def test_stop_or_expiry_keeps_inference_serial_and_discards_late_result(make_ser
     command = client.post("/api/command", headers=headers, json={"action": "detect", "camera": 1})
     try:
         assert entered.wait(1)
-        assert_error(client.get("/api/labels?camera=2"), 409)
         assert_error(
             client.post("/api/command", headers=headers, json={"action": "detect", "camera": 2}),
             409,
@@ -735,24 +786,42 @@ def test_failed_inference_dispatch_finishes_reservation_and_allows_retry(make_se
     assert client.get("/api/detect?camera=1").status_code == 200
 
 
-def test_each_finished_inference_has_one_small_final_event(make_service):
+def test_preview_events_report_only_new_failure_causes(make_service):
     model = DemoLocalizer()
     service = make_service(localizer_factory=lambda: model)
     client = create_app(service).test_client()
     assert client.get("/api/detect?camera=1").status_code == 200
-
-    def inference_events():
-        events = service.events.since(0)["events"]
-        return [(e["level"], e["message"]) for e in events if "inference" in e["message"]]
-
-    assert inference_events() == [("info", "vision inference complete")]
+    assert not [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
     model.predict = Mock(side_effect=RuntimeError("model broke"))
+    for _ in range(2):
+        assert_error(client.get("/api/detect?camera=1"), 503)
+    events = [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+    assert [e["fields"]["error"] for e in events] == ["Vision processing failed: model broke"]
+    model.predict = Mock(side_effect=RuntimeError("model broke again"))
     assert_error(client.get("/api/detect?camera=1"), 503)
-    assert inference_events() == [
+    events = [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+    assert len(events) == 2
+    assert service._next == 0 and not service._results
+    assert service.snapshot()["last_command"] is None
+
+
+def command_result(service):
+    service.lease.acquire("owner")
+    job_id = service.command("detect", {"camera": 1}, "owner")
+    return completed(service, job_id)["last_command"]["output"]
+
+
+def test_each_finished_command_has_one_small_final_event(make_service):
+    model = DemoLocalizer()
+    service = make_service(localizer_factory=lambda: model)
+    assert command_result(service) is not None
+    model.predict = Mock(side_effect=RuntimeError("model broke"))
+    assert command_result(service) is None
+    records = [e for e in service.events.since(0)["events"] if "inference" in e["message"]]
+    assert [(e["level"], e["message"]) for e in records] == [
         ("info", "vision inference complete"),
         ("error", "vision inference failed"),
     ]
-    records = service.events.since(0)["events"][-2:]
     for event, job_id, status in zip(records, ("1", "2"), ("ok", "failed"), strict=True):
         fields = event["fields"]
         assert fields == {
@@ -775,9 +844,9 @@ def test_result_lookup_matches_instance_and_job_after_later_results(make_service
     service.start()
     assert service.snapshot()["instance"] == service.events.instance == instance
     client = create_app(service, base_path="/vision").test_client()
-    first = client.get("/vision/api/detect?camera=1").get_json()
+    first = command_result(service)
     service._model.predict = Mock(side_effect=RuntimeError("model broke"))
-    assert_error(client.get("/vision/api/detect?camera=1"), 503)
+    assert command_result(service) is None
     for job_id, status in (("1", "ok"), ("2", "failed")):
         response = client.get(f"/vision/api/results/{job_id}?instance={instance}")
         assert response.status_code == 200
@@ -794,7 +863,7 @@ def test_result_lookup_matches_instance_and_job_after_later_results(make_service
     assert service.result(instance, "1")["output"] == first
     restarted = make_service()
     assert restarted.instance != instance
-    restarted.read("detect", 1)
+    command_result(restarted)
     response = create_app(restarted).test_client().get(f"/api/results/1?instance={instance}")
     assert response.status_code == 410
     assert response.get_json() == {
@@ -829,7 +898,7 @@ def test_result_count_limit_evicts_oldest_without_latest_fallback(make_service):
     service = make_service()
     service._process = Mock(return_value=({"camera": 1}, None))
     for _ in range(101):
-        service.read("detect", 1)
+        command_result(service)
     assert len(service._results) == service_module.MAX_RETAINED_RESULTS == 100
     client = create_app(service).test_client()
     evicted = client.get(f"/api/results/1?instance={service.instance}")
@@ -849,7 +918,7 @@ def test_result_cache_has_an_eight_mib_serialized_byte_limit(make_service):
     output = service._bounded_result({"camera": 1, "data": "x" * (256 * 1024 - 64)})
     service._process = Mock(return_value=(output, Image.new("RGB", (1, 1))))
     for _ in range(40):
-        service.read("detect", 1)
+        command_result(service)
     assert service_module.MAX_RETAINED_RESULT_BYTES == 8 * 1024 * 1024
     assert service._result_bytes == sum(len(value[1]) for value in service._results.values())
     assert service._result_bytes <= service_module.MAX_RETAINED_RESULT_BYTES
@@ -862,7 +931,7 @@ def test_result_cache_has_an_eight_mib_serialized_byte_limit(make_service):
 def test_result_expiration_uses_monotonic_time_and_removes_bytes(make_service):
     now, wall = [1000.0], [5000.0]
     service = make_service(clock=lambda: now[0], wall_clock=lambda: wall[0])
-    service.read("detect", 1)
+    command_result(service)
     wall[0] = 1.0
     now[0] += 599.99
     assert service.result(service.instance, "1")["available"]

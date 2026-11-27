@@ -9,9 +9,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "config/systemd"
 HOST_VALUES = ("100.64.", "/olares", "/opt/mg400-", "/root/")
-# deploy/twin.py updates one Olares test instance from a development PC over SSH.
-# It names that host, its user and its checkout. The installed services do not run it.
-HOST_TOOLS = {ROOT / "deploy/twin.py"}
+# These development-PC tools address the Olares test instance. Installed device
+# services do not use them. Keep the exception limited to these exact files.
+HOST_TOOLS = {
+    ROOT / "deploy/twin.py",
+    ROOT / "src/orchestrator/agent_connect/control_portal.py",
+    ROOT / "src/orchestrator/agent_connect/live.py",
+    ROOT / "src/orchestrator/agent_connect/static/control-portal.js",
+    ROOT / "src/orchestrator/agent_connect/static/portal.html",
+}
 with (ROOT / "deploy/services.toml").open("rb") as stream:
     REGISTRY = tomllib.load(stream)["service"]
 SERVICES = tuple(unit for entry in REGISTRY for unit in entry["units"])
@@ -134,7 +140,7 @@ def test_vision_uses_the_isolated_environment():
         "optional": True,
         "venv": ".venv-vision",
         "groups": ["vision", "vision-gpu"],
-        "assets": ["vision-weights"],
+        "assets": ["vision-weights", "vision-wrist-weights"],
     }
 
 
@@ -216,7 +222,7 @@ def test_service_files_and_code_hold_no_host_values():
         if path in HOST_TOOLS:
             continue
         if path.suffix in suffixes or path.name == "labctl":
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             assert [value for value in HOST_VALUES if value in text] == [], path
 
 

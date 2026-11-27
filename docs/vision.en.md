@@ -56,6 +56,11 @@ Command-line options override environment settings. Empty environment values use
 | `MG400_VISION_CALIBRATION_RMS_MM` | None | `1`. Calibration acceptance limit, in mm RMS. Must be greater than 0 and at most 1 |
 | `MG400_VISION_CACHE_DIR` | None | `/var/lib/mg400/vision/yolo`. Used as the Ultralytics `YOLO_CONFIG_DIR` |
 
+The wrist camera has weights of its own: `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with a 1280x1280 model input.
+When a wrist camera is configured and this file is there, startup also loads it, and `detect` uses it for the wrist camera.
+Without the file, `detect` uses the main weights for all cameras. The `weights` field of a `detect` result shows the file that the service used.
+The file is the `vision-wrist-weights` asset. To install it, run `install.py --fetch-assets` (see [External assets](deploy.en.md#external-assets)).
+
 The nominal tag-to-tip distance is the nominal tag height plus `tool_dz_mm`.
 The service checks no token, `Host`, or `Origin`. The VPN is the access boundary.
 Invalid configuration exits with status 2, and systemd does not restart the service. A model load, camera or serving failure exits with status 1, and systemd restarts the service after 3 s.
@@ -105,7 +110,8 @@ Robot motion targets still require a validated calibration on the applicable pla
 
 Routes are relative to `--base-path` and use the [service contract](adr/0001-instrument-service-contract.en.md).
 Only 1 operation runs at a time, including detection, QR reading, marker reading, calibration, drift checks, and slot observations.
-An overlapping request returns 409. The service does not queue extra operations.
+A command that overlaps another command returns 409. The service does not queue extra commands.
+A read route waits for the running operation and does not make the service busy. A command that arrives during a read waits for the read.
 
 | Read route | Result |
 | --- | --- |
@@ -143,7 +149,7 @@ Calibration uses 3 leased commands:
 
 | Command | Parameters and result |
 | --- | --- |
-| `read_markers` | `camera`. Returns `markers` with `id`, `center_px`, and `corners_px`, plus `camera`, `calibrated=false`, `coordinate_system`, `image_size`, `camera_device`, `frame_sha256`, and `read_at`. `camera_device` is `null` when the camera has no stable port path. |
+| `read_markers` | `camera`. Returns `markers` with `id`, `center_px`, and `corners_px`, plus `camera`, `calibrated=false`, `coordinate_system`, `image_size`, `camera_device`, `frame_sha256`, and `read_at`. `camera_device` is `null` when the camera has no stable port path. For the wrist camera, the optional `flange_mm` (the flange pose `[x, y, z, r]`) and `touch_z_mm` add `robot_mm` to each marker: the arm x and y of the marker center, for markers on 1 level surface. `detect` accepts the same 2 parameters. The result then has `calibrated=true`. See [Wrist camera calibration](#wrist-camera-calibration). |
 | `calibrate_camera` | `camera`, `tag_points`, `tag_pixels`, `tray_points`, `tray_pixels`, `image_size`, `scan_r_deg`, and `tool_dz_mm`. Fits and stores the model through the owned lease. Returns `camera`, `calibrated=true`, and the stored model as `calibration`. |
 | `check_calibration` | `camera`, `flange_mm`, and optional `limit_px`. Returns the marker 4 check from the same frame. |
 
@@ -166,7 +172,7 @@ Invalid or oversized metadata fails with 503 and is not published.
 Failed or stopped commands have `output=null`.
 `last_result` holds `instance`, `job_id`, `camera`, `action`, `count`, and `finished_at` of the latest successful operation.
 A live service reports `connected=false` until its first successful frame operation.
-Each failed operation sets `fault`. The next successful operation clears it. Only a failure with 503 sets `connected` to `false`.
+Each failed command sets `fault`. The next successful command or read clears it. Only a command failure with 503 sets `connected` to `false`. A failed read returns its error and changes no state.
 While `fault` is set, the calibration skill and the drift check refuse to run. First complete 1 successful read, for example `GET api/detect`.
 
 ### Final events and result lookup
@@ -417,7 +423,7 @@ It uses these fields:
 | `camera` | Configured camera number. The camera must have a stable port path and an installed calibration model. |
 | `tray` | Validated tray-model document, not a host file path. |
 | `targets` | Requested slot IDs mapped to their exact taught robot XY pairs. A `null` value means that the slot has no taught station. Then only the chip is checked. |
-| `axis` | `long` or `short`, according to the explicit suction convention. |
+| `axis` | `long` or `short`, according to the explicit suction convention. Use `null` only when no target has a taught station (cup pick). Then each `angle_deg` is `null`, and a square chip is accepted. |
 
 The complete JSON command must fit within 16 KiB. A valid tray file does not guarantee that its command fits.
 Each observation uses 1 current frame and the camera-bound calibration model.
@@ -426,7 +432,8 @@ An empty result requires successful inference and valid tray, target, and calibr
 Missing data or ambiguous chip association does not establish an empty slot.
 The entire requested groove must be inside the detector region (the centered 4:3 crop). Either arm occlusion or a clipped chip mask prevents conclusive evidence.
 Chip evidence for a requested groove must not overlap another configured groove.
-An axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
+Chip association uses the groove width without `tolerance_mm`. Groove visibility and arm occlusion use the groove width plus `tolerance_mm`.
+With `axis` set to `long` or `short`, the axis is ambiguous when mask side lengths differ by at most 1% of the longer side.
 
 Output contains `camera`, `camera_device`, `calibrated`, `image_size`, `model_created_at`, `frame_sha256`, `read_at`, and `axis`.
 Each slot reports `state`, `center_xy_mm`, `angle_deg`, and `reason`. Position and angle can be null.
@@ -479,6 +486,8 @@ The arm marker ID `4` is not a tray corner.
 
 The function maps measured centers through the camera model and fits a similarity transform to the configured tray geometry.
 Localization fails when any corner residual exceeds `tolerance_mm`.
+It also fails when the fitted scale moves the corner farthest from the corner centroid by more than `tolerance_mm`. For the supplied TOML with 4 corners, the scale limit is about 1 ± 1.9%.
+A scale error means that the tray model or the calibrated tray height is wrong. Recalibrate the camera when a new tray moves the tray surface.
 It returns the transform, measured marker residuals, and `slots` in `robot_xy_mm` coordinates.
 Each slot contains `centerline_xy_mm` and `reference_xy_mm`, plus its transformed `width_mm`.
 The output supplies XY geometry only. It does not establish a physical Z or a safe robot path.
@@ -522,7 +531,75 @@ For those slots, the full XY distance must also meet the tolerance. Both positio
 Each slot reports `status` as `ok`, `incomplete`, or `failed`, with `missing` and `failures` details.
 The result's `ok` is true only when every slot passes.
 An incomplete or failed check raises `TrayCheckError`. Inspect `TrayCheckError.report` for the complete per-slot report.
+In `observe_slots`, the error message names each slot that did not pass, with its failures, missing evidence, and residuals.
 Do not treat incomplete evidence as permission for motion. Normal robot limits, clearance checks, leases, and zone rules still apply.
+
+## Wrist camera calibration
+
+The wrist camera (`camera5`) is on the wrist bracket of the arm. This link stays level and turns with J1 only. The tool rotation R does not move the camera.
+
+`config/cameras/wrist.json` stores the calibration for `3840x2160` frames:
+
+- The camera matrix and the 8 distortion coefficients of the OpenCV rational model.
+- The mount: the camera position in the wrist link frame, as x and y from the tool axis, and the rotation from the link frame to the camera frame. The calibration does not give the height of the camera above the flange.
+- `arm_radial_scale` and `calibration_radius_mm`: the board run gives the reported radial moves of the arm this scale factor about this radius. The factor is valid only near the run poses, from X -79 to 41 and from Y -316 to -236. The mapping functions do not use it.
+- `camera_above_tip_mm`: the height of the lens above the tip of the suction cup.
+- `arm`: along the reach, the arm reports a longer move than the real one between a look pose and a touch. In the link frame, the mapping multiplies the reach part of the vector from the flange to the point by `radial_scale`. It adds `radial_drift` times the flange radius of the look pose minus `radius_mm`. Sideways moves of the arm are true.
+- `tool`: `offset_xy_mm` is the place of the cup centre from the flange axis, in the flange frame.
+- `touch_fit`: the data counts and the errors of the touch fit.
+- The fit error in pixels.
+
+`vision.wrist_camera.load()` reads the file. The `read_markers` and `detect` commands of the vision service use it for the wrist camera.
+`surface_points()` gives the arm x and y of image points on a level surface. A move to the result puts the cup over the point. Keep the tool rotation R of the look pose for that move: the cup offset turns with R. `surface_pixels()` is the reverse of `surface_points()`.
+`locate()` gives the arm x and y and the touch Z of 1 point that 2 or more poses see. The touch Z is the flange Z at which the tip of the cup touches the surface.
+For `surface_points()`, use a pose with the lens 170 mm or more above the surface. A view from a shorter distance can be 2 mm off.
+Calibrate again after a change of the lens focus, the camera mount, or the capture size.
+
+### Calibrate with the printed board
+
+1. Write the board: `uv run python scripts/wrist_camera_calibrate.py board work/wrist-camera/board.pdf`. Print it on A4 at 100%.
+2. Measure the long side of the printed pattern, from edge to edge of the 11 squares. It is 264 mm at 100%.
+3. Attach the print to a stiff backing and put it on the tray table. The board must not move during the run. Do not move the stage during the run.
+4. Park the arm at X -39, Y -236, Z 163.8, within 5 mm. The board must be 160 to 190 mm below the camera. The script checks these 2 conditions and refuses to start if one is not met.
+5. Make sure that the space around the arm is clear. From the start pose, the arm moves from -40 to 80 mm in X, from 0 to -80 mm in Y, and from 0 to -38 mm in Z, at speed 15.
+6. Run `uv run python scripts/wrist_camera_calibrate.py run --board-mm 264` with the measured length. Monitor the arm. `sudo labctl robot stop` stops it.
+7. Commit the new `config/cameras/wrist.json`.
+
+The script takes control of the robot with the session `wrist-calibration`. It records 50 poses, moves the arm back to the start pose, and releases the robot.
+It stores the result only if the fit error is at most 1 pixel.
+It writes the recorded poses and board corners to `work/wrist-camera/run.json`.
+To repeat the fit without motion, run `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`.
+
+### Fit the cup offset and the arm scales with touches
+
+The board run does not see the tool. The touch fit compares the camera with the flange places at which the cup had a seal on a chip.
+
+1. Put 8 or more chips on a level surface. Find the touch Z of a chip top: the touch Z of the surface plus the chip thickness. Do not use the Z of the first seal with suction on. Suction lifts a thin chip to the cup before the cup touches it.
+2. Take looks of the chips from 8 or more poses.
+3. Pick each chip and put it down at a different place, with a turn of the tool of up to 60 degrees. Take a look from the same pose before and after each move. Make 12 or more moves.
+4. Write the records to a JSON file with `touch_z`, `looks` and `moves`. The docstring of `vision.wrist_camera.fit_touch()` gives the fields.
+5. Run `uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json`.
+6. Commit the new `config/cameras/wrist.json`.
+
+The command stores the result only if the error of the sealed places is at most 0.4 mm.
+A new board fit sets the arm scales to 1 and the cup offset to 0. Run the touch fit again after a board fit.
+
+### The camera height above the tool tip
+
+The touch fit gives `camera_above_tip_mm`. It takes the sideways moves of the arm as true distances, so the touch Z of the chip tops must be correct.
+Do not take the value from a height that `locate()` gives from moves along the reach. That height has the scale error of the arm.
+The same rule applies to the touch Z of `surface_points()`: for a chip, give the touch Z of the surface plus the chip thickness.
+The `run` and `fit` commands keep the stored value. Fit it again after a change of the camera mount or the cup.
+
+### Limits of the wrist calibration
+
+- The board points are in the middle of the image. The left edge and the area where the arm is in view have no points.
+- Each board corner is a free point, so the board does not have to be flat. The measured length gives the scale.
+- The fit uses the Z steps of the arm as true distances.
+- The arm terms are valid near the looks and the touches of the touch fit: look poses from X -79 to 41 and from Y -316 to -236, at Z 126 to 164, and touches near Z 23. There the result of `surface_points()` is within 0.5 mm of the place where the cup has a seal.
+- On the stage plate, the result is within 0.5 mm from a pose with the lens 200 mm or more above the surface.
+- The wrist camera weights know chips only on the tray plate. On the bare stage plate, `detect` does not find a chip.
+- The pad of the cup is 4 mm wide. A chip that is narrower than about 4 mm needs the cup within 0.2 mm of the middle of its width, so a pick routine must be able to touch again 0.5 mm to the side.
 
 ## Stop and shutdown
 
@@ -564,6 +641,7 @@ Evaluation rules:
 - The script sends each frame to `Localizer.predict`, as the vision service does. That function crops an image that is wider than 4:3 to its centered 4:3 region (1280x720 becomes 960x720). Then it stretches the region to 640x640. Detection coordinates stay in full original-image pixels.
 - The script reads only `.jpg`, `.jpeg`, and `.png` files in `images/`.
 - `--weights` defaults to `MG400_VISION_WEIGHTS`. `--device` defaults to `cpu`. To use the GPU, set `--device cuda`.
+- `--input-size` sets the model input and defaults to `640`. For the wrist camera weights, set `--input-size 1280`.
 - The script uses the default confidence threshold of `Localizer.predict`, `0.39`, as the service does. To evaluate a different threshold, set `--confidence`.
 - A detection box and a label box match when their IoU (intersection over union) is at least 0.5. The script matches in descending confidence. Each label matches at most 1 detection.
 - An unmatched detection is a false detection. An unmatched label is a missed label.
@@ -571,3 +649,22 @@ Evaluation rules:
 - The center error is the distance between the box centers of a match. `--px-per-mm` converts pixels to millimetres.
 
 The output is a Markdown report. It shows the counts per frame group, the Chip precision and recall, the center errors, and the frames with false or missed detections.
+
+### Labeled frames from the wrist camera
+
+`scripts/wrist_chip_dataset.py` makes a labeled set from wrist camera frames of the tray. No person marks a chip, and the script uses no trained detector.
+The outline of a chip does not change. The script takes the outline of each chip 1 time, from several views of 1 layout. For a later layout, the script moves and turns each stored outline until it agrees with the object in each frame.
+
+```bash
+python scripts/wrist_chip_dataset.py OUT LAYOUT [LAYOUT ...] --shapes SHAPES --sam SAM
+```
+
+- Each `LAYOUT` folder contains the `3840x2160` frames of 1 layout of the chips and `frames.json`. This file is a list of `{"image": "name.jpg", "pose": [x, y, z, r]}` with the flange pose of each frame. Do not move a chip between the frames of a layout.
+- `OUT` gets `images/` and `labels/`, which `scripts/vision_eval.py` can read. Each label is the stored outline of 1 chip at its place in that frame. It is a YOLO polygon of class `0` with 32 corners or fewer. The file name starts with the name of the `LAYOUT` folder.
+- `SHAPES` is a JSON file with the outline of each chip in mm. If the file does not exist, the script makes the outlines from `LAYOUT` number 1 and writes the file. The script does not change a file that exists.
+- `SAM` is a Segment Anything weights file of `ultralytics`, for example `sam2.1_l.pt`. You must run the script in an environment that has `ultralytics`, such as the vision environment.
+- The tray plate is plain grey. The script finds each object that differs from the tray around it, and Segment Anything gives the outline of that object.
+- The script finds the tray from its corner markers `0`, `1` and `2`. Each marker must be in 2 frames or more of a layout.
+- A chip is an object that is at the same place on the tray in 60% of the frames of a layout or more. Use 3 views or more from different sides. The top face of a chip is the area that 80% of the views have in common.
+- The script does not write a frame that has an object which is not a known chip. It also does not write a frame that has a chip in view without an object. It prints the counts and the place of each chip in each layout.
+- An object must be 3 mm or more from the edge of the tray and from the corner tiles. Its color must be different from the grey of the tray.

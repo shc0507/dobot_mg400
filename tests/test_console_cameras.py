@@ -131,7 +131,7 @@ def status(rig):
 
 def test_routes_need_no_token_and_cameras_load_from_the_proxy(rig):
     assert rig.client.get(BASE + "status").status_code == 200
-    # camera1 to camera4 are not relayed: the browser loads them from the proxy.
+    # camera1 to camera5 are not relayed: the browser loads them from the proxy.
     assert rig.client.get(BASE + "stream/camera1").status_code == 404
     assert rig.client.get(BASE + "snapshot/camera1").status_code == 404
     assert rig.client.get(BASE + "stream/camera9").status_code == 404
@@ -167,7 +167,7 @@ def test_cameras_are_configured_by_the_camera_devices(rig):
     assert sources.configured("camera2") is True and sources.configured("camera3") is False
 
 
-def test_fifth_shared_camera_by_id_preserves_the_four_console_views(rig):
+def test_fifth_shared_camera_by_id_preserves_existing_views_and_adds_wrist(rig):
     devices = [f"/dev/v4l/by-path/port-{number}-video-index0" for number in range(1, 5)]
     devices.append("/dev/v4l/by-id/usb-Wrist_Camera_1234-video-index0")
     rig.service.settings = {
@@ -177,11 +177,12 @@ def test_fifth_shared_camera_by_id_preserves_the_four_console_views(rig):
         "MG400_MICROSCOPE_SIDE_STREAM": "camera3",
     }
     source = cameras_module.HttpSources(rig.service)
-    assert all(source.configured(f"camera{number}") for number in range(1, 5))
+    assert all(source.configured(f"camera{number}") for number in range(1, 6))
     assert source.modes()["camera1"] == (3840, 2160, 30)
     assert source.modes()["camera3"] == (1280, 720, 30)
     assert source.modes()["camera4"] == (1280, 720, 30)
-    assert cameras_module.CAMERAS == ("camera1", "camera2", "camera3", "camera4")
+    assert source.modes()["camera5"] == (3840, 2160, 30)
+    assert cameras_module.CAMERAS == ("camera1", "camera2", "camera3", "camera4", "camera5")
 
 
 def test_thermal_frame_is_cached_trimmed_and_reports_its_age(rig):

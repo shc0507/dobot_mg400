@@ -15,6 +15,7 @@ from .tool import Pose, ToolOffset, fingertip_to_flange, finite, flange_to_finge
 
 DEFAULT_STATIONS = Path("/var/lib/mg400/robot/stations.toml")
 DEFAULT_TOOL = Path("/var/lib/mg400/robot/tool.toml")
+LOAD_LOCK_S = 5.0
 AXES = {"x_mm": "X", "y_mm": "Y", "z_mm": "Z", "r_deg": "R"}
 # Fixed fingertip workspace. X and Y cover the 440 mm MG400 reach. Z covers the
 # reachable flange heights with the 146 mm tool. The robot service still checks
@@ -259,7 +260,16 @@ class StationStore:
         import fcntl
 
         with _parent(self.path) as (parent, name):
-            fcntl.flock(parent, fcntl.LOCK_SH)
+            # Bounded: a stopped station save or retool must not hold a skill step.
+            deadline = time.monotonic() + LOAD_LOCK_S
+            while True:
+                try:
+                    fcntl.flock(parent, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Another process holds the station file lock.") from None
+                    time.sleep(0.05)
             return self._load(parent, name)
 
     def _update(self, change):

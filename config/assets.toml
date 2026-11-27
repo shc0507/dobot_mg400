@@ -8,6 +8,16 @@ service = "vision"
 source = "WuLabPrinceton/Visual-Localization@cc329b3 models/download_manifest.json"
 license = "AGPL-3.0"
 
+[vision-wrist-weights]
+url = "https://github.com/shc0507/dobot_mg400/releases/download/vision-wrist-model-v1/chip-wrist-yolo26s-seg-v1.pt"
+sha256 = "1683fca75712b6ae0675d23599dcff0e737a33b1a4ac3ba1c3918e71c2d9598b"
+bytes = 23501597
+install = "/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt"
+mode = "0640"
+service = "vision"
+source = "chip-arm-yolo26s-seg-v1.pt, trained further on wrist camera frames that scripts/wrist_chip_dataset.py labeled"
+license = "AGPL-3.0"
+
 [twin-model]
 url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-model-v2/twin.glb"
 sha256 = "1cf153e44ffe8d68d1f3edb60b896b7d8fcacf02f62f419b220bfc8d9d7028bc"
@@ -16,4 +26,14 @@ install = "/var/lib/mg400/twin/twin.glb"
 mode = "0640"
 service = "orch"
 source = "Bench twin authoring folder, build.py --console (Draco GLB)"
+license = "Project internal; MG400 links cut from Dobot's MG400 STEP model"
+
+[twin-collision]
+url = "https://github.com/shc0507/dobot_mg400/releases/download/twin-collision-v2/collision.json"
+sha256 = "5ce043aadb397e2da3237a026c540963a9082fe7f9f524c2034209e651dcc6ef"
+bytes = 3164921
+install = "/var/lib/mg400/twin/collision.json"
+mode = "0640"
+service = "orch"
+source = "Bench twin authoring folder, build.py --collision (convex hulls and joint tree)"
 license = "Project internal; MG400 links cut from Dobot's MG400 STEP model"

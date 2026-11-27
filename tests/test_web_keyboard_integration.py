@@ -212,7 +212,7 @@ def test_unconfirmed_speed_factor_becomes_a_verified_stop_that_disable_recovers(
         "SpeedFactor(25)",
         "ResetRobot()",
         "DisableRobot()",
-        "EnableRobot()",
+        "EnableRobot(0.117,-27,19,0)",
         "SpeedFactor(25)",
     ]
 
@@ -524,6 +524,9 @@ def test_stop_during_the_release_blow_stops_the_robot_and_turns_keys_off(rig):
     assert snapshot["locked"] and not snapshot["stop_unconfirmed"]
     assert not snapshot["keyboard_enabled"]
     assert rig.controller.motion() == ["ResetRobot()"]
-    # The stop ends the blow pulse and sends no DO2 command.
-    assert outputs(rig, mark) == ["DOExecute(2,0)", "DOExecute(1,1)", "DOExecute(1,0)"]
+    # The stop ends the blow pulse and sends no DO2 command. The interrupted release also
+    # sends the DO1 off command when its feedback sample still shows the blow output on.
+    sent = outputs(rig, mark)
+    assert sent[:3] == ["DOExecute(2,0)", "DOExecute(1,1)", "DOExecute(1,0)"]
+    assert set(sent[3:]) <= {"DOExecute(1,0)"}
     rig.wait(lambda s: s["vacuum"] == {"suck": False, "blow": False, "held": False})

@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` uses configured instrument services. Before a hardware run, complete the required operator checks and keep an operator at the emergency stop. Shell agents use the [agent CLI](agent-cli.en.md).
 
-`--runs-dir PATH` selects the record directory. Without `--runs-dir`, a rehearsal writes its records to a temporary directory, removes them at exit, and ignores `MG400_ORCH_RUNS_DIR`. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
+`--runs-dir PATH` selects the record directory. Without `--runs-dir`, a rehearsal writes its records to a temporary directory and removes them at exit. `--param NAME=JSON` overrides a declared recipe parameter. Quote string values as JSON strings:
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1
@@ -127,7 +127,7 @@ The recipe top level must contain exactly `name`, `version`, `params`, and `step
 | `microscope.record` | `chip_id`, `seconds`, optional `run_name`, `mode` | Microscope |
 | `sample.record` | `chip_id`, `note` | None |
 
-The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Named zone entry requires explicit configuration and checks the configured entry conditions.
+The example in `recipes/example-rehearsal.toml` enables the simulated robot, moves it, records a sample, and stops it. It is in the catalog, so `labctl do example-rehearsal` and `labctl run` move the real arm in 1 straight line. Use it only with `labctl rehearse`. It contains no gas or heating command. Custom skills receive a revocable context with service clients, run records, and the zone manager. Named zone entry requires explicit configuration and checks the configured entry conditions.
 
 ## Service settings
 
@@ -170,6 +170,8 @@ For local paths, the parent directory must belong to the caller and use mode `07
 Config and occupancy reads accept only regular files with mode `0600` or `0640` and the required owner.
 The store refuses unsafe parents and symbolic links in all path components. It atomically writes occupancy in the existing owned directory.
 All hardware runs controlling the same equipment must use the same configuration and occupancy paths.
+
+Recover every retained claim before you change the zone configuration. While a claim from the old configuration remains, every recipe start and every recovery refuses with `Zone configuration changed while durable occupancy remains.` To undo this, restore the previous configuration, recover the claims, and then change the configuration.
 
 Storage contention waits at most 2 seconds, within the remaining step deadline. Threads of one process queue for the storage, and a stop or revocation cancels the wait. Device stop commands are sent before any zone-storage write.
 Write, file-sync, and replacement failures before publication preserve the old claims.
@@ -335,7 +337,9 @@ A write or file-sync failure preserves the old file. A directory-sync failure af
 
 ### Change the tool offset
 
-After a tool change, write the new measured offset with `retool`. Do not edit `tool.toml` by hand while stations exist.
+Use `retool` to correct a measured offset of the same tool. Do not edit `tool.toml` by hand while stations exist.
+
+`retool` keeps every flange pose. After a physical tool change, the new tip is then off by the offset difference at each station. After a physical tool change, teach every contact station again.
 
 ```sh
 labctl station retool --offset DX DY DZ
@@ -348,6 +352,8 @@ Replace `DX`, `DY` and `DZ` with the measured values in millimetres. The command
 3. It writes the new `tool.toml`.
 
 If a converted station is outside the fingertip workspace, the command stops and changes no file. Change the workspace bounds or teach that station again. Run the command when no recipe runs. `--stations-file PATH` and `--tool-file PATH` override the paths. The command prints the old and new offsets, the backup paths and the converted stations.
+
+The command replaces the 2 files one after the other. If it stops between the 2 replacements, the files do not match. Then restore both `.bak-<UTC time>` files of the same time together.
 
 ## Station transfers
 
@@ -389,6 +395,7 @@ The operator must verify that every endpoint approach is reachable, clears its w
 Its guarded `vision.tray_transfer` step checks calibration, observes both slots, transfers the chip, and checks both slots again.
 It requires a chip at the source and an empty target before motion.
 After placement, it requires a chip at the target and an empty source.
+The check after placement runs with the arm at the target approach. Use a camera view in which the arm at that pose covers neither slot. If the arm box covers a requested slot, the check fails after the chip is placed.
 Missing or ambiguous evidence, a part that is not held, a drop, or failed calibration holds the run.
 
 The step needs measured inputs with no hardware defaults:
@@ -451,7 +458,7 @@ Replace both placeholders with exact taught slot IDs. Keep the operator at the e
 - Z, R, approach, zone and route come from 1 taught station named `tray`. Teach it with the cup tip on the top of a chip in the tray.
 - The step needs no slot stations and no `MG400_ORCH_CHIP_AXIS` or `MG400_ORCH_CHIP_R_*` settings. It needs `MG400_ORCH_TRAY_FILE` and `MG400_ORCH_TRAY_CAMERA`.
 
-Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
+Before the pick, the step does a calibration drift check and 1 slot observation. The slot must contain exactly 1 chip. Missing or ambiguous evidence holds the run before motion. The robot must start at 1 taught station or its approach, inside the calibrated grid. The step does not check the slot after the pick, because the arm hides it.
 
 ```sh
 uv run labctl run recipes/chip-pick.toml --param 'slot="groove_07"'

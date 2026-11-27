@@ -12,6 +12,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from labkit import ports  # noqa: E402
 from mg400.controller_ownership import ControllerOwnership  # noqa: E402
 from mg400.feedback import FeedbackConnection  # noqa: E402
+from mg400.pressure import PressureReader  # noqa: E402
 from mg400.robot_config import load_robot_host  # noqa: E402
 from mg400.web_control import RobotPanelState  # noqa: E402
 
@@ -185,9 +187,9 @@ class PanelServer(ThreadingHTTPServer):
         self.base_path = normalize_base_path(base_path)
         super().__init__(address, PanelHandler)
 
-    def report_error(self, text):
+    def handle_error(self, request, client_address):
         # A blocked stderr must not hold a connection or the state lock.
-        report(text, wait=0)
+        report(f"Request from {client_address} failed:\n{traceback.format_exc()}", wait=0)
 
 
 class PanelHandler(BaseHTTPRequestHandler):
@@ -322,7 +324,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             or (getattr(self, "_quiet", False) and str(args[1]) == "202")
         ):
             return
-        super().log_message(format, *args)
+        # A blocked stderr may delay this reply, for example to a stop, only briefly.
+        report(
+            f"{self.address_string()} - - [{self.log_date_time_string()}] {format % args}",
+            wait=0.05,
+        )
 
 
 def report(text, *, wait=None):
@@ -398,8 +404,15 @@ def main(argv=None):
     caps = {"max_speed_l": MAX_SPEED_L, "max_acc_l": MAX_ACC_L}
     host = args.robot_host
     if not host:
-        host = load_robot_host(ROOT / "config/robot.toml")
-    state = RobotPanelState(host, **caps) if args.mode == "robot" else ReadOnlyPanelState(host)
+        try:
+            host = load_robot_host(ROOT / "config/robot.toml")
+        except (OSError, ValueError) as error:
+            # Exit status 2 tells systemd not to restart a configuration error.
+            parser.error(str(error))
+    if args.mode == "robot":
+        state = RobotPanelState(host, pressure=PressureReader().start(), **caps)
+    else:
+        state = ReadOnlyPanelState(host)
     server = PanelServer((bind, port), state, args.base_path)
     print(
         f"MG400 panel: http://{bind}:{server.server_port}{args.base_path} ({args.mode})",

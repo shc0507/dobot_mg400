@@ -230,7 +230,12 @@ def test_command_output_is_omitted_and_message_is_bounded():
 
 def test_cached_sensor_fields_preserve_human_state_and_known_units():
     states = {
-        "robot": {"payload_kg": 0.25, "keyboard_speed_percent": 10, "actual": [1, 2, 3, 4]},
+        "robot": {
+            "payload_kg": 0.25,
+            "keyboard_speed_percent": 10,
+            "actual": [1, 2, 3, 4],
+            "pressure": {"abs_hpa": 985.5, "gauge_hpa": -25.3},
+        },
         "furnace": {
             "pv": 42,
             "sv": 100,
@@ -261,6 +266,8 @@ def test_cached_sensor_fields_preserve_human_state_and_known_units():
     assert rows["thermal"]["cached_state"]["units"] == {}
     assert rows["robot"]["cached_state"]["units"]["/actual/0"] == "mm"
     assert rows["robot"]["cached_state"]["units"]["/actual/3"] == "degree"
+    assert rows["robot"]["cached_state"]["units"]["/pressure/abs_hpa"] == "hPa"
+    assert rows["robot"]["cached_state"]["units"]["/pressure/gauge_hpa"] == "hPa"
     assert rows["stage"]["sampled_at"] is None
     assert rows["stage"]["cached_state"]["units"]["/sampled_at"] == "monotonic_s"
 

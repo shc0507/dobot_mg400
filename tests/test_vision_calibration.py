@@ -57,6 +57,9 @@ from vision.calibration import (
 from vision.frames import FrameError
 from vision.service import VisionService, create_app
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 DEVICE = "/dev/v4l/by-path/platform-offline-usb-0:1.0-video-index0"
 
 
@@ -364,6 +367,47 @@ def test_interrupted_solve_cannot_publish_or_revive_after_same_client_reacquisit
     assert receipt["id"] == response.json["command_id"] and receipt["result"] == "stopped"
     assert receipt["output"] is None
     assert service.calibrations.load(DEVICE) == original
+
+
+def test_stop_after_model_installation_reports_the_installed_model(calibrated_service, monkeypatch):
+    service, _ = calibrated_service
+    monkeypatch.setattr(
+        "vision.calibration.fit_calibration",
+        lambda *args, **kwargs: {**camera_model(), "tray_height_mm": 12},
+    )
+    replace = os.replace
+
+    def replace_then_stop(*args, **kwargs):
+        replace(*args, **kwargs)
+        service._active["cancel"].set()  # Stop arrives just after os.replace.
+
+    monkeypatch.setattr("vision.calibration.os.replace", replace_then_stop)
+    client = create_app(service).test_client()
+    headers = {"X-MG400-Client": "calibration"}
+    assert client.post("/api/heartbeat", headers=headers, json={}).status_code == 200
+    response = client.post(
+        "/api/command",
+        headers=headers,
+        json={
+            "action": "calibrate_camera",
+            "camera": 1,
+            "tag_points": [[0, 0, 0]] * 24,
+            "tag_pixels": [[100, 80]] * 24,
+            "tray_points": [[0, 0, 0]] * 3,
+            "tray_pixels": [[100, 80]] * 3,
+            "image_size": [200, 160],
+            "scan_r_deg": 0,
+            "tool_dz_mm": 146,
+        },
+    )
+    assert response.status_code == 202
+    deadline = time.monotonic() + 2
+    while service.snapshot()["busy"] and time.monotonic() < deadline:
+        threading.Event().wait(0.001)
+    receipt = service.snapshot()["last_command"]
+    assert receipt["result"] == "ok"
+    assert receipt["output"]["calibration"]["tray_height_mm"] == 12
+    assert service.calibrations.load(DEVICE)["tray_height_mm"] == 12
 
 
 @pytest.mark.parametrize("scan", ["missing", None, True, "0", 1_000_001])

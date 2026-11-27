@@ -110,6 +110,10 @@ It keeps the current focus height while aligning the target objective by its rec
 If an image check fails, the command stops before its next move. `last_command.message` gives the cause.
 The turret has a gap between objective `3` and objective `0`.
 `select_objective` can pass intermediate objectives without autofocus. It never turns across the gap.
+After each turn, the motor holds the turret while the side camera measures and corrects the position. The service then releases the turret and checks the position again.
+Each measurement waits until 2 consecutive side-camera frames agree on the marker position, for a maximum of 3 s.
+If the side camera loses the marker during a turn, the service stops and disables the turret motor. Cleanup releases focus and clears its temporary reference. Successful cleanup does not latch a fault.
+The service starts each turn from the number of steps that the same objective pair needed last time. A service restart clears these numbers.
 If a turret turn fails, `objective_id` is `null`.
 
 `objective_nudge` turns the turret `steps` full steps at the current focus position. It does not move to the clearance position first. The `steps` value is `-10`, `-1`, `1`, or `10`.
@@ -130,6 +134,8 @@ While the offset is `null`, the service refuses nudges. First select an objectiv
 
 Focus moves and autofocus use a fresh relative pulse reference. Only rough 5x positioning uses camera Y. It can make small automatic moves to measure direction and response before approaching the initial point.
 Autofocus uses microscope-image sharpness. Each objective has its own configurable search half-range in quarter-step pulses. Defaults are `5000` for 5x, 10x and 20x, and `3000` for 50x. Saved settings override these defaults. Neither the search range nor the cumulative travel budget proves a physical travel range.
+Autofocus fails when the focus scores are flat or the best score is at a window edge that is not a focus limit.
+During a recording, autofocus does not change stabilization.
 Snapshot creates a new PNG under the run root. It refuses an existing destination with HTTP 400 before dispatch.
 Its returned `captured_at` preserves the source clock. Real and demo main-camera frames use host wall time. Side-camera frames use monotonic receive time.
 These values do not measure sensor exposure time.
@@ -210,7 +216,9 @@ Preview reads do not acquire or renew control, and shutdown waits for accepted r
 
 Use the Furnace workspace to record from the camera that this service already owns.
 Recording commands require live ordinary control and an idle service. They do not acquire furnace control or start a furnace sequence.
-Keep the console open and hold control during capture and finalization.
+While a console page holds the microscope lease for an active recording, the console renews the lease itself and waits 120 seconds for a page heartbeat. A hidden tab, a laptop sleep, or a network loss shorter than 120 seconds does not end the recording.
+After 120 seconds without a heartbeat, the console stops the recording, keeps the lease until finalization ends, and then releases it. The page notice shows why the control ended. An armed sequence recording that has not started ends without a summary.
+The other devices that the page holds keep the 3-second heartbeat timeout. **Release**, **Release all**, and a page close end the recording without finalization.
 
 | Action | Parameters and result |
 | --- | --- |
@@ -226,7 +234,7 @@ An optional run name contains at most 80 printable characters. It does not selec
 The `time_lapse` defaults are a 30-second capture interval and 1 output frame per second.
 The `live` default is 30 output frames per second, with no capture interval.
 Explicit `capture_interval_seconds` values range from 0.1 to 3600. Explicit `output_fps` values range from 0.1 to 120.
-`live` refuses `capture_interval_seconds`. A `live` recording stops when free disk space falls below 2 GB. A recording fails after 128 segments.
+`live` refuses `capture_interval_seconds`. A `live` recording stops when free disk space falls below 2 GB. A recording fails after 1024 segments (about 170 hours).
 
 Read `recording`, `recording_sequence`, and `last_result` with the matching `last_command` receipt.
 Check the recording ID, command ID, action, client, and expected result before claiming success.
@@ -243,6 +251,7 @@ The columns in `video.timestamps.csv` remain unchanged.
 Demo mode uses generated frames without a furnace connection. Its metadata stays blank unless an embedding supplies fake readings.
 
 Unavailable furnace readings leave metadata fields blank and add a service event while capture continues.
+After 1 failed read, the service keeps the last healthy sample. After 2 consecutive failed reads, the fields are blank. The event includes the error text.
 A missing reply does not mean sequence completion. A changed sequence identity or an unhealthy sequence refuses normal completion.
 
 The service reserves recording IDs exclusively under `/var/lib/mg400/recordings/`.
@@ -253,7 +262,7 @@ Finalization requires recorded frames and valid media. It requires FFmpeg and ff
 If `ffmpeg` or `ffprobe` is missing, the recording fails, and its error names the missing program.
 The service log records the cause of each failed recording. Use `labctl logs microscope` to read it.
 Finalization keeps the recordings in `/var/lib/mg400/recordings`.
-Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 60-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
+Each recording is the directory `/var/lib/mg400/recordings/<recording_id>/`. It holds `run.json`, the 10-minute segments `video_0001.mp4`, `video_0002.mp4` and so on, `video.timestamps.csv`, and `<recording_id>_shortened_3_min.mp4`.
 When `MG400_FURNACE_ARCHIVE_DIR` is set, finalization copies the directory to `<archive>/<recording_id>/` and never replaces an existing copy.
 
 Stop, release, lease expiry, and shutdown revoke recording authority immediately. The service sends the motor stop commands without waiting for the encoder.
@@ -282,7 +291,6 @@ Use simulated objects for software tests.
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | Switch or align an objective using side-camera markers. |
 | `microscope.objective_calibration.ObjectiveCalibrator` | Calibrate objective motion against an image displacement map. |
 | `microscope.light_calibration.LightObjectiveCalibrator` | Align a known reference view with a short scan and autofocus. |
-| `microscope.side_capture.capture_objective_series` | Capture fresh side-camera images after objective moves. |
 | `microscope.motors.MotorController` | Manage explicit serial connections and command replies. |
 | `cameras.uvc.USBCamera` | Read side-camera frames from the local go2rtc owner. |
 | `cameras.usb.enumerate_usb_cameras` | List Linux camera metadata and stable device paths without opening capture. |
@@ -318,7 +326,7 @@ Do not substitute repository paths or shared public directories for the configur
 
 ## Side-camera stream
 
-The microscope side camera is the AC410 on fixed hub port `12.1.4`. It watches the objective turret.
+The microscope side camera is the AC410 on fixed hub port `6.1`. It watches the objective turret.
 Set `MG400_MICROSCOPE_SIDE_STREAM=camera3` for the current stream order.
 For the service and preview, go2rtc owns its V4L2 capture.
 During a camera-guided operation, `USBCamera` keeps 1 connection to `http://127.0.0.1:1984/api/stream.mjpeg` open.
@@ -463,6 +471,8 @@ Run calibration commands only under the supervision rules above:
 `--reference` selects the private calibration PNG for objective or light calibration. Its default is `objective_reference.png`.
 `--output` selects a file beneath `/var/lib/mg400/calibration/microscope`.
 Calibration can replace an existing owned private output file. Select another output name to retain the previous result.
+A failed or stopped run keeps the existing file and writes its log to `<name>.failed.csv`.
+A run that ends with an unstable result writes the file and exits with status `1`.
 Reference capture requires terminal and device ownership checks, but does not require motion measurements or a reference confirmation.
 It accepts camera dimensions in `[focus]` and still stops and disables motors during cleanup.
 
@@ -492,6 +502,8 @@ sudo labctl calibrate light --focus-start N
 Replace `N` with the measured starting focus coordinate.
 Before the first `CLEAR`, check focus at clearance and the objective in its working position.
 The tool then moves focus to `N` and runs local autofocus once with the `[focus]` settings.
+If `N` is nearer than `local_half_range` to a limit, focus moves inward until the local window fits inside the limits.
+Light calibration runs a second local autofocus at its coarse microstep. It converts the `[focus]` pulse values from `MICRO 4` to that microstep and moves the window inside the limits in the same way.
 
 Each turret move requires a current reference, measured limits, and stationary focus.
 The tool counts commanded turret displacement from the position at the first confirmation, in `1/16` full steps.

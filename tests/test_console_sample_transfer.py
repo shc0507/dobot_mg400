@@ -38,7 +38,7 @@ class Adapter:
     def __init__(self):
         self.control = True
         self.epoch = 1
-        self.values = {"top": 2.0, "bottom": 3.0, "insert": 0.0}
+        self.values = {"top": 2.0, "bottom": 3.0, "insert": 4.0}
         self.moves = []
         self.stops = 0
         self.last = None
@@ -148,7 +148,6 @@ def finish(manager):
 @pytest.mark.parametrize(("target", "position"), [("fully_out", 0), ("fully_in", 10)])
 def test_transfer_uses_live_limits_without_profile_and_moves_only_insert(rig, target, position):
     manager, adapter = rig
-    adapter.values["insert"] = 4.0
     manager.store.delete(manager.store.selection())
     for motor in ("top", "bottom"):
         adapter.overrides[motor] = {"positioning_ready": False, "encoder": "unavailable"}
@@ -298,10 +297,10 @@ def test_stage_record_is_draft_only_until_save_and_survives_restart(rig):
     saved_id = state["selected_profile"]
     restarted = SampleTransfer(TransferProfileStore(manager.store.root), adapter)
     assert restarted.state(PAGE)["active_profile"]["stage_positions"]["out_stage"] == capture
-    adapter.values.update(top=6, bottom=7)
+    adapter.values.update(top=6, bottom=7, insert=8)
     restarted.start_stage(PAGE, "out_stage")
     assert finish(restarted)["status"] == "completed"
-    assert adapter.values == {"top": 2, "bottom": 3, "insert": 0}
+    assert adapter.values == {"top": 2, "bottom": 3, "insert": 8}
     restarted.mutate(PAGE, "profile/load", {"id": saved_id})
     state = restarted.mutate(PAGE, "endpoint/delete", {"target": "out_stage"})
     assert state["draft"]["stage_positions"] == {}
@@ -737,7 +736,7 @@ def test_record_uses_current_encoders_and_profiles_persist(rig):
     assert state["draft"]["positions"]["Dock"]["position_rotations"] == {
         "x": 2,
         "y": 3,
-        "insert": 0,
+        "insert": 4,
     }
     state = manager.mutate(PAGE, "profile/save", {"name": "My positions"})
     saved = state["selected_profile"]
@@ -746,7 +745,7 @@ def test_record_uses_current_encoders_and_profiles_persist(rig):
     adapter.values["top"] = 7
     restarted.start_position(PAGE, "Dock")
     assert finish(restarted)["status"] == "completed"
-    assert adapter.values == {"top": 2, "bottom": 3, "insert": 0}
+    assert adapter.values == {"top": 2, "bottom": 3, "insert": 4}
 
 
 def test_record_requires_fresh_calibrated_readings_and_never_uses_camera(rig):
@@ -762,7 +761,7 @@ def test_passive_state_requires_no_control_and_never_moves(rig):
     manager, adapter = rig
     adapter.control = False
     state = manager.state(PAGE)
-    assert state["position"] == {"x": 2, "y": 3, "insert": 0}
+    assert state["position"] == {"x": 2, "y": 3, "insert": 4}
     assert not state["has_control"]
     assert adapter.moves == []
     with pytest.raises(ServiceError):
@@ -808,7 +807,7 @@ def test_jog_uses_fixed_small_rotations(rig):
     manager, adapter = rig
     manager.jog(PAGE, "insert", "ccw")
     assert finish(manager)["status"] == "completed"
-    assert adapter.values["insert"] == pytest.approx(0.1)
+    assert adapter.values["insert"] == pytest.approx(4.1)
     assert len(adapter.moves) == 1
 
 
@@ -911,7 +910,7 @@ def test_routes_reject_client_coordinates_and_accept_saved_target_ids(rig):
         == 202
     )
     assert finish(manager)["status"] == "completed"
-    assert adapter.values["insert"] == 0
+    assert adapter.values["insert"] == 4
     assert (
         client.post("/transfer/position/move", headers=headers, json={"name": "Pickup"}).status_code
         == 202
@@ -955,6 +954,22 @@ def test_motion_position_route_starts_coordinates_and_reports_status(motion_clie
     assert manager.operation["done"].wait(3)
     state = motion_client.get("/motion/state", headers={"X-MG400-Client": PAGE}).json
     assert state["stage_operation"]["status"] == "completed"
+
+
+def test_motion_position_refuses_a_target_chosen_before_a_stage_stop(motion_client, rig):
+    manager, adapter = rig
+    url, headers = "/motion/stage/position", {"X-MG400-Client": PAGE}
+    target = {"x": 6, "y": 5}
+    old = motion_client.post(
+        url, headers=headers, json={"target": target, "stop_epoch": adapter.epoch - 1}
+    )
+    assert old.status_code == 409 and "stopped after this target" in old.json["error"]
+    assert manager.operation is None and adapter.moves == []
+    current = motion_client.post(
+        url, headers=headers, json={"target": target, "stop_epoch": adapter.epoch}
+    )
+    assert current.status_code == 202
+    assert manager.operation["done"].wait(3)
 
 
 @pytest.mark.parametrize(
@@ -1074,3 +1089,16 @@ def test_live_cleanup_ownership_checks_the_device_and_same_console_session():
 
     item.adapter.state = changed_session
     assert not adapter.owns_current(PAGE)
+
+
+def test_drafts_are_kept_only_for_the_latest_pages(rig):
+    from orchestrator.web import sample_transfer as module
+
+    manager, _ = rig
+    first = manager._page("page-0")
+    for index in range(1, module.PAGE_DRAFTS + 5):
+        manager._page(f"page-{index}")
+    assert len(manager.pages) == module.PAGE_DRAFTS
+    assert "page-0" not in manager.pages and manager._page("page-0") is not first
+    latest = manager._page(f"page-{module.PAGE_DRAFTS + 4}")
+    assert manager._page(f"page-{module.PAGE_DRAFTS + 4}") is latest

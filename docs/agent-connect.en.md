@@ -56,7 +56,7 @@ Before calling the model, the portal captures `choices.stage_context`. It compar
 
 Before submitting these actions with `POST /commands`, the portal reads fresh choices and compares the original values. If context is missing, unavailable, malformed or changed, it rejects these actions and sends no command. It never replaces the original values with newer ones. The server checks them again before dispatch.
 
-This binding covers stage calibration references and the selected transfer profile. Draft contents and other profiles named by action parameters are outside this binding. It does not require unchanged sensor readings or add device process identity checks. Stage calibration, fault clearing, other device actions and Stop retain their existing paths.
+This binding covers stage calibration references and the selected transfer profile. Draft contents and other profiles named by action parameters are outside this binding. It does not require unchanged sensor readings. Stage calibration, fault clearing, other device actions and Stop retain their existing paths.
 
 After connection and an explicit operator grant, clear instructions execute immediately. Missing targets or units cause a clarification question. Each instruction can execute 1 catalog action, including an existing composite action. Stage positions use rotations. Robot X/Y/Z use millimetres; R uses degrees. The agent reports the Console result and retains the request ID when the outcome is unknown. It never resends movement automatically. **Cancel agent task** cancels pending interpretation and requests cancellation of its own command. Stop controls remain available across the portal tabs.
 

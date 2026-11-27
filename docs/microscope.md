@@ -110,6 +110,10 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 图像检查失败时，命令在下一次移动前停止。`last_command.message` 给出原因。
 物镜 `3` 和物镜 `0` 之间的转盘位置有空缺。
 `select_objective` 可以经过中间物镜，无须对焦。它不跨过该空缺。
+每次转动后，电机保持转盘位置，侧视相机测量并修正位置。随后服务释放转盘，再检查一次位置。
+每次测量都等待连续 2 帧侧视图像给出一致的标记位置，最多等待 3 s。
+转动过程中侧视相机丢失标记时，服务停止并禁用转盘电机。清理会释放调焦电机，并清除临时参考。清理成功时，不锁存故障。
+每次转动从同一对物镜上次所需的步数开始。服务重启后，这些步数清除。
 转盘转动失败后，`objective_id` 为 `null`。
 
 `objective_nudge` 在当前调焦位置把转盘转动 `steps` 整步，不先移到避让位置。`steps` 取 `-10`、`-1`、`1` 或 `10`。
@@ -130,6 +134,8 @@ POST 请求必须带 `Content-Type: application/json` 和 `X-MG400-Client`。
 
 调焦移动和自动调焦使用新的相对脉冲参考。只有 5x 粗定位使用相机 Y。接近初始点前，服务可以自动小幅移动，测量方向和响应。
 自动对焦使用显微镜图像清晰度。每个物镜有独立的可设置搜索半范围，单位为四分之一步脉冲。5x、10x、20x 默认使用 `5000`，50x 默认使用 `3000`。已保存的设置优先于默认值。搜索范围和累计行程预算都不能证明物理行程范围。
+对焦评分平坦，或最佳评分位于窗口边缘且该边缘不是对焦限位时，自动对焦失败。
+录像期间，自动对焦不改变防抖设置。
 快照在运行根目录内新建 PNG。目标已存在时，服务在派发前以 HTTP 400 拒绝。
 返回的 `captured_at` 保留源时钟。真实和演示主相机帧都使用主机墙上时间。侧视相机帧使用单调接收时间。
 这些值不代表传感器曝光时间。
@@ -210,7 +216,9 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 
 在 Furnace 工作区录制本服务已独占的相机。
 录像命令要求有效的普通控制权和空闲服务，不取得炉控控制权，也不启动炉控序列。
-采集和收尾期间，保持控制台打开并持有控制权。
+控制台页面为进行中的录像持有显微镜租约时，控制台自行续租，并等待页面心跳最多 120 秒。标签页隐藏、笔记本休眠或短于 120 秒的网络中断不会结束录像。
+超过 120 秒无心跳时，控制台停止录像，保持租约直到收尾结束，然后释放。页面通知显示控制结束的原因。尚未开始的预备序列录像直接结束，没有摘要。
+该页面持有的其他设备仍使用 3 秒心跳超时。**Release**、**Release all** 和页面关闭会结束录像，且不收尾。
 
 | 动作 | 参数与结果 |
 | --- | --- |
@@ -226,7 +234,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 `time_lapse` 默认每隔 30 秒采集一帧，输出帧率为每秒 1 帧。
 `live` 默认输出帧率为每秒 30 帧，没有采集间隔。
 显式 `capture_interval_seconds` 范围为 0.1 至 3600，显式 `output_fps` 范围为 0.1 至 120。
-`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 128 个分段时失败。
+`live` 拒绝 `capture_interval_seconds`。可用磁盘空间低于 2 GB 时，`live` 录像停止。录像超过 1024 个分段（约 170 小时）时失败。
 
 读取 `recording`、`recording_sequence`、`last_result` 和匹配的 `last_command` 回执。
 报告成功前，检查录像 ID、命令 ID、动作、客户端和预期结果。
@@ -243,6 +251,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 演示模式使用生成帧，不连接炉控。除非嵌入程序提供模拟读数，否则元数据留空。
 
 炉控读数不可用时，元数据字段留空，并添加服务事件，采集继续。
+读取失败 1 次后，服务保留上一个健康样本。连续失败 2 次后，字段留空。事件包含错误文本。
 缺少回复不代表序列结束。序列标识改变或序列不健康时，不正常完成录像。
 
 服务在 `/var/lib/mg400/recordings/` 内独占预留录像 ID。
@@ -253,7 +262,7 @@ go2rtc 读取 `/api/camera/microscope/mjpeg`，为控制台的显微镜画面编
 缺少 `ffmpeg` 或 `ffprobe` 时，录像失败，错误信息写明缺少的程序。
 服务日志记录每次录像失败的原因，用 `labctl logs microscope` 查看。
 收尾后，录像保存在 `/var/lib/mg400/recordings`。
-每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、60 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
+每个录像是目录 `/var/lib/mg400/recordings/<recording_id>/`，含 `run.json`、10 分钟分段 `video_0001.mp4`、`video_0002.mp4` 等、`video.timestamps.csv` 和 `<recording_id>_shortened_3_min.mp4`。
 设置 `MG400_FURNACE_ARCHIVE_DIR` 时，收尾把该目录复制到 `<archive>/<recording_id>/`，不替换已有副本。
 
 Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。电机停止指令不等待编码器。
@@ -282,7 +291,6 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 | `microscope.aruco_switch.ArucoObjectiveSwitcher` | 根据侧视相机标记切换或对准物镜。 |
 | `microscope.objective_calibration.ObjectiveCalibrator` | 根据图像位移图谱校准物镜运动。 |
 | `microscope.light_calibration.LightObjectiveCalibrator` | 通过短行程扫描和自动调焦对准已知参考视图。 |
-| `microscope.side_capture.capture_objective_series` | 物镜移动后，采集新的侧视图像。 |
 | `microscope.motors.MotorController` | 管理显式串口连接和命令回复。 |
 | `cameras.uvc.USBCamera` | 从本机 go2rtc 相机所有者读取侧视图像。 |
 | `cameras.usb.enumerate_usb_cameras` | 列出 Linux 相机元数据和稳定设备路径，不打开采集。 |
@@ -318,7 +326,7 @@ Stop、释放控制权、租约到期和关闭都会立即撤销录像权限。�
 
 ## 侧视相机流
 
-显微镜侧视相机为固定集线器端口 `12.1.4` 上的 AC410，拍摄物镜转盘。
+显微镜侧视相机为固定集线器端口 `6.1` 上的 AC410，拍摄物镜转盘。
 当前视频流顺序使用 `MG400_MICROSCOPE_SIDE_STREAM=camera3`。
 服务与预览通过 go2rtc 采集该 V4L2 设备。
 在相机引导操作期间，`USBCamera` 保持 1 条到 `http://127.0.0.1:1984/api/stream.mjpeg` 的连接。
@@ -463,6 +471,8 @@ sudo labctl calibrate --help
 `--reference` 为物镜或轻量物镜校准选择私有校准 PNG，默认为 `objective_reference.png`。
 `--output` 选择 `/var/lib/mg400/calibration/microscope` 内的文件。
 校准可以替换现有的自有私有输出文件。若要保留原结果，选择其他输出名称。
+运行失败或被停止时，工具保留现有文件，并把日志写入 `<name>.failed.csv`。
+运行结束但结果不稳定时，工具写入文件，并以状态 `1` 退出。
 参考图像采集必须通过终端和设备占用检查，但不要求运动测量值或零点确认。
 它接受 `[focus]` 中的相机尺寸，并在清理时停止和禁用电机。
 
@@ -492,6 +502,8 @@ sudo labctl calibrate light --focus-start N
 把 `N` 替换为实测调焦起点坐标。
 首次输入 `CLEAR` 前，检查调焦轴在避让位置，且物镜在工作位置。
 工具随后移动调焦轴到 `N`，并按 `[focus]` 配置执行一次局部自动调焦。
+若 `N` 到限位的距离小于 `local_half_range`，调焦轴向内移动，直到局部窗口位于限位内。
+光路校准在其粗扫细分下再执行 1 次局部自动调焦。它把 `[focus]` 的脉冲值从 `MICRO 4` 换算到该细分，并以同样方式把窗口移到限位内。
 
 每次转盘移动都必须具备当前零点、实测限位和静止的调焦轴。
 工具从首次确认时的转盘位置起累计指令位移，单位为 `1/16` 整步。

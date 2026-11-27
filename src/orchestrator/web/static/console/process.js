@@ -43,6 +43,8 @@
       "seq.confirm": "Start the {count}-step sequence? It heats the furnace.",
       "seq.state": "{phase}", "seq.stateRunning": "Step {n} · {phase}",
       "seq.holding": "Holding step {n}: {seconds} s left.", "seq.cooling": "End gas continues until the temperature is below {until} °C.",
+      "seq.stepSlow": "Step {n} has not reached {target} °C after {minutes} min. The run continues.",
+      "seq.endGasSlow": "The temperature is still above {until} °C after {hours} h of end gas. The run continues.",
       "seq.needEnd": "Enter an end-gas temperature when a step sets gas.", "seq.invalid": "Step {n}: enter a target, a ramp above 0 and a hold of 0 or more.",
       "seq.none": "Add at least 1 step.",
       "gas.title": "Gas", "gas.stopAll": "Stop all gas", "gas.flow": "Flow % for {gas}", "gas.send": "Send flow",
@@ -122,6 +124,8 @@
       "seq.confirm": "启动 {count} 步程序？炉子会加热。",
       "seq.state": "{phase}", "seq.stateRunning": "步骤 {n} · {phase}",
       "seq.holding": "步骤 {n} 保持中：剩余 {seconds} s。", "seq.cooling": "结束气体持续到温度低于 {until} °C。",
+      "seq.stepSlow": "步骤 {n} 在 {minutes} min 后仍未到达 {target} °C。程序继续运行。",
+      "seq.endGasSlow": "结束气体 {hours} h 后温度仍高于 {until} °C。程序继续运行。",
       "seq.needEnd": "步骤设置了气体时，填写结束气体温度。", "seq.invalid": "步骤 {n}：填写目标温度、大于 0 的速率和不小于 0 的保持时间。",
       "seq.none": "至少添加 1 个步骤。",
       "gas.title": "气体", "gas.stopAll": "停止全部气体", "gas.flow": "{gas} 流量 %", "gas.send": "发送流量",
@@ -250,10 +254,26 @@
     }));
   }
 
+  /** The editor form of a furnace sequence, to see when another client changed it. */
+  function sequenceKey(sequence) {
+    return JSON.stringify([editorRows(sequence), sequence?.end_gas_until_c ?? null, sequence?.end_gas ?? null]);
+  }
+
   function modeKey(furnace) {
     const mode = furnace?.control_mode || "DISCONNECTED";
     if (mode === "RUN" && furnace?.waiting_for_program_step_2) return "mode.RAMP";
     return i18n.en["mode." + mode] ? "mode." + mode : "mode.UNKNOWN";
+  }
+
+  /** The text of a sequence warning from the furnace service, or "". */
+  function seqWarning(warning) {
+    if (!warning || typeof warning !== "object") return "";
+    const t = view.api.t;
+    if (warning.code === "step_slow") {
+      return t("seq.stepSlow", { n: (warning.step_index ?? 0) + 1, target: fmt(warning.target_c, 0), minutes: warning.minutes });
+    }
+    if (warning.code === "end_gas_slow") return t("seq.endGasSlow", { until: fmt(warning.end_gas_until_c, 0), hours: warning.hours });
+    return typeof warning.message === "string" ? warning.message : "";
   }
 
   function recordingId(cryptoObject) {
@@ -356,47 +376,52 @@
   }
 
   async function poll() {
-    const afEpoch = view.afSettingsEpoch, afPollSequence = ++view.afPollSequence;
-    const currentSettingsRead = () => afEpoch === view.afSettingsEpoch && afPollSequence >= view.afAcceptedSequence;
-    const acceptSettings = settings => {
-      if (currentSettingsRead()) { view.afSettings = settings; view.afAcceptedSequence = afPollSequence; }
-    };
-    try { view.status = await view.api.request("status"); }
-    catch { view.status = null; }
-    const travel = view.status?.microscope?.focus_travel_limit_pulses;
-    if (Number.isSafeInteger(travel) && travel > 0) {
-      view.focusTravelSaved = travel;
-      if (!view.focusTravelDirty) view.focusTravel = String(travel);
-    } else if (!view.focusTravelRead) {
-      view.focusTravelRead = true;
-      try {
-        const result = await view.api.request("microscope/focus-travel-limit");
-        if (Number.isSafeInteger(result?.focus_travel_limit_pulses)) {
-          view.focusTravelSaved = result.focus_travel_limit_pulses;
-          if (!view.focusTravelDirty) view.focusTravel = String(view.focusTravelSaved);
-        }
-      } catch { view.focusTravelRead = false; }
-    }
-    if (currentSettingsRead()) {
-      const settings = view.status?.microscope?.autofocus_settings;
-      const matchesSaved = AF_LENSES.every(({ field }) => settings?.[field] === view.afSettings?.[field]);
-      if (view.afSettingsPending && !matchesSaved) {
-        // A Console cache can lag a successful save. Read the settings endpoint until it catches up.
+    // Keep status and settings reads in one poll so older replies cannot replace them.
+    if (view.polling) return;
+    view.polling = true;
+    try {
+      const afEpoch = view.afSettingsEpoch, afPollSequence = ++view.afPollSequence;
+      const currentSettingsRead = () => afEpoch === view.afSettingsEpoch && afPollSequence >= view.afAcceptedSequence;
+      const acceptSettings = settings => {
+        if (currentSettingsRead()) { view.afSettings = settings; view.afAcceptedSequence = afPollSequence; }
+      };
+      try { view.status = await view.api.request("status"); }
+      catch { view.status = null; }
+      const travel = view.status?.microscope?.focus_travel_limit_pulses;
+      if (Number.isSafeInteger(travel) && travel > 0) {
+        view.focusTravelSaved = travel;
+        if (!view.focusTravelDirty) view.focusTravel = String(travel);
+      } else if (!view.focusTravelRead) {
+        view.focusTravelRead = true;
         try {
-          const fresh = await view.api.request("microscope/autofocus-settings");
-          acceptSettings(fresh);
-        } catch { /* Keep the last confirmed settings while the direct read is unavailable. */ }
-      } else if (Number.isSafeInteger(settings?.five_x_half_range_pulses)) {
-        acceptSettings(settings); view.afSettingsPending = false;
-      } else if (!view.afSettingsRead) {
-        view.afSettingsRead = true;
-        try {
-          const fresh = await view.api.request("microscope/autofocus-settings");
-          acceptSettings(fresh);
-        } catch { view.afSettingsRead = false; }
+          const result = await view.api.request("microscope/focus-travel-limit");
+          if (Number.isSafeInteger(result?.focus_travel_limit_pulses)) {
+            view.focusTravelSaved = result.focus_travel_limit_pulses;
+            if (!view.focusTravelDirty) view.focusTravel = String(view.focusTravelSaved);
+          }
+        } catch { view.focusTravelRead = false; }
       }
-    }
-    syncAutofocusDrafts();
+      if (currentSettingsRead()) {
+        const settings = view.status?.microscope?.autofocus_settings;
+        const matchesSaved = AF_LENSES.every(({ field }) => settings?.[field] === view.afSettings?.[field]);
+        if (view.afSettingsPending && !matchesSaved) {
+          // A Console cache can lag a successful save. Read the settings endpoint until it catches up.
+          try {
+            const fresh = await view.api.request("microscope/autofocus-settings");
+            acceptSettings(fresh);
+          } catch { /* Keep the last confirmed settings while the direct read is unavailable. */ }
+        } else if (Number.isSafeInteger(settings?.five_x_half_range_pulses)) {
+          acceptSettings(settings); view.afSettingsPending = false;
+        } else if (!view.afSettingsRead) {
+          view.afSettingsRead = true;
+          try {
+            const fresh = await view.api.request("microscope/autofocus-settings");
+            acceptSettings(fresh);
+          } catch { view.afSettingsRead = false; }
+        }
+      }
+      syncAutofocusDrafts();
+    } finally { view.polling = false; }
     // Read each description once; retry a missing one at most every DESCRIBE_RETRY_MS.
     const at = Date.now();
     for (const device of ["furnace", "microscope"]) {
@@ -406,11 +431,13 @@
     }
     const names = gasNames().join("|");
     if (view.gasKey !== names) { view.gasKey = names; build(); }
-    if (!view.rows || (!view.dirty && !view.loaded && view.status?.furnace?.sequence)) {
-      view.rows = editorRows(view.status?.furnace?.sequence);
-      if (view.status?.furnace?.sequence) {
-        view.loaded = true;
-        const seq = view.status.furnace.sequence;
+    // An unedited editor follows the furnace sequence, also when another client replaces it.
+    const furnaceSeq = view.status?.furnace?.sequence;
+    if (!view.rows || (!view.dirty && furnaceSeq && sequenceKey(furnaceSeq) !== view.loaded)) {
+      view.rows = editorRows(furnaceSeq);
+      if (furnaceSeq) {
+        view.loaded = sequenceKey(furnaceSeq);
+        const seq = furnaceSeq;
         if (seq.end_gas_until_c !== null && seq.end_gas_until_c !== undefined) view.endUntil = String(seq.end_gas_until_c);
         for (const channel of [0, 1, 2]) view.endGas[channel] = String(seq.end_gas?.[channel] ?? seq.end_gas?.[String(channel)] ?? 0);
       }
@@ -557,7 +584,7 @@
     n.chart = chartNode();
     n.connect = button(t("furnace.connect"), () => send("furnace", "connect", {}), { "data-role": "connect" });
     n.connectFlow = button(t("furnace.connectFlow"), () => send("furnace", "connect_flow", {}), { "data-role": "connect-flow" });
-    n.apply = button(t("set.apply"), () => ask("apply"), { class: "lc-button pr-primary", "data-role": "apply" });
+    n.apply = button(t("set.apply"), () => { view.applyValues = { target: view.target, ramp: view.ramp }; ask("apply"); }, { class: "lc-button pr-primary", "data-role": "apply" });
     const target = input({ type: "number", min: "0", step: "1", max: furnaceCaps.max ?? undefined, class: "pr-input", "data-role": "target" }, view.target, value => { view.target = value; });
     const ramp = input({ type: "number", min: "0.1", step: "0.1", max: furnaceCaps.ramp ?? undefined, class: "pr-input", "data-role": "ramp" }, view.ramp, value => { view.ramp = value; });
     const setpoint = el("div", { class: "pr-row pr-end" },
@@ -565,10 +592,13 @@
       el("label", { class: "pr-field" }, capped(t("set.target"), furnaceCaps.max), target),
       el("label", { class: "pr-field" }, capped(t("set.ramp"), furnaceCaps.ramp), ramp),
       n.apply);
-    const applyConfirm = confirmBox("apply", t("set.confirm", { target: view.target, ramp: view.ramp }), applySetpoint);
+    // Confirm sends the values that the confirmation shows, not values typed after it opened.
+    const shown = view.applyValues || { target: view.target, ramp: view.ramp };
+    const applyConfirm = confirmBox("apply", t("set.confirm", shown), () => applySetpoint(shown));
 
     n.seqState = el("span", { class: "pr-summary-state", "data-role": "seq-state" });
     n.seqProgress = el("p", { class: "lc-muted" });
+    n.seqWarning = el("p", { class: "pr-warn", "data-role": "seq-warning", hidden: true });
     n.add = button(t("seq.add"), () => { view.rows.push(editorRows(null)[0]); view.dirty = true; buildSequence(); update(); }, { "data-role": "add-step" });
     n.save = button(t("seq.save"), () => sendSequence("set_sequence"), { "data-role": "save-sequence" });
     n.start = button(t("seq.start"), () => ask("start"), { class: "lc-button pr-strong", "data-role": "start-sequence" });
@@ -598,6 +628,7 @@
         el("div", { class: "pr-row" }, ...controlButtons("furnace"))),
       el("button", { type: "button", class: "lc-stop pr-stop-wide", "data-role": "stop-furnace", text: t("furnace.stop"), onclick: stopFurnace }),
       n.furnaceNote,
+      n.seqWarning,
       n.ack = button(t("fault.ack"), () => ask("ack"), { class: "lc-danger pr-danger", "data-role": "acknowledge", hidden: true }),
       confirmBox("ack", t("fault.confirm"), () => send("furnace", "acknowledge", {})),
       n.connectRow = el("div", { class: "pr-row" }, n.connect),
@@ -875,7 +906,12 @@
     setText(n.seqProgress, seq.phase === "holding" && finite(seq.hold_remaining_seconds) !== null
       ? t("seq.holding", { n: (seq.current_index ?? 0) + 1, seconds: Math.ceil(seq.hold_remaining_seconds) })
       : seq.phase === "cooling" ? t("seq.cooling", { until: fmt(seq.end_gas_until_c, 0) }) : "");
-    Array.from(n.sequenceBody.children || []).forEach((row, index) => { row.className = seq.running && index === seq.current_index ? "pr-current" : ""; });
+    const warning = seqWarning(seq.warning);
+    n.seqWarning.hidden = !warning;
+    setText(n.seqWarning, warning);
+    // Mark the running step only when the editor shows the running sequence.
+    const shownSeq = seq.running === true && JSON.stringify(view.rows) === JSON.stringify(editorRows(seq));
+    Array.from(n.sequenceBody.children || []).forEach((row, index) => { row.className = shownSeq && index === seq.current_index ? "pr-current" : ""; });
 
     const channels = furnace?.flow?.gas_channels || [];
     n.gasRows.forEach((row, channel) => {
@@ -1034,11 +1070,11 @@
     });
   }
 
-  function applySetpoint() {
-    const temperature = Number(view.target);
-    const rate = Number(view.ramp);
+  function applySetpoint({ target, ramp }) {
+    const temperature = Number(target);
+    const rate = Number(ramp);
     const limit = caps(view.describe.furnace);
-    if (String(view.target).trim() === "" || !Number.isFinite(temperature) || temperature < 0 || (limit.max !== null && temperature > limit.max)
+    if (String(target).trim() === "" || !Number.isFinite(temperature) || temperature < 0 || (limit.max !== null && temperature > limit.max)
       || !Number.isFinite(rate) || rate <= 0 || (limit.ramp !== null && rate > limit.ramp)) {
       view.api.notify(view.api.t("refused", { error: view.api.t("furnace.caps", { max: fmt(limit.max, 0), ramp: fmt(limit.ramp, 0) }) }), "error");
       return undefined;
@@ -1101,7 +1137,14 @@
   function saveSnapshot() {
     const params = snapshotParams(view.snapPath);
     if (!params) { view.api.notify(view.api.t("rec.pathInvalid"), "error"); return undefined; }
-    return send("microscope", "snapshot", params);
+    return send("microscope", "snapshot", params).then(result => {
+      // The service refuses a path that exists, so a saved path is cleared for the next snapshot.
+      if (result?.outcome === "accepted" && params.path && view.snapPath.trim() === params.path) {
+        view.snapPath = "";
+        if (view.nodes.snapPath) view.nodes.snapPath.value = "";
+      }
+      return result;
+    });
   }
 
   /** The recording fields, or null after a notice. */
@@ -1137,13 +1180,14 @@
     });
   }
 
+  /** Send every Stop press, also while an earlier Stop is pending; stops are never blocked. */
   async function stopDevice(device) {
-    return act("stop-" + device, async () => {
+    try {
       const result = await view.api.stop(device);
       const outcome = result?.outcome || "unknown";
       view.api.notify(view.api.t("stop.result", { device: view.api.deviceName(device), outcome: view.api.t("outcome." + outcome) }), outcome === "confirmed" ? "info" : "warn");
       return result;
-    });
+    } catch (error) { view.api.notify(error?.message || String(error), "error"); return undefined; }
   }
 
   /** Stop heat and gas holds the run like the Overview button. The stop result band shows the outcome. */

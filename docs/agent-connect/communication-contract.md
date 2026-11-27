@@ -79,8 +79,9 @@ semantics, not live readings. Check its digest before caching it or decoding sta
 [canonical_bytes()](../../src/orchestrator/agent_connect/contract.py):
 
 ```python
-encoded = json.dumps(bundle, ensure_ascii=False, sort_keys=True,
-                     separators=(",", ":")).encode("utf-8")
+encoded = json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+    "utf-8"
+)
 contract_id = "sha256:" + hashlib.sha256(encoded).hexdigest()
 ```
 

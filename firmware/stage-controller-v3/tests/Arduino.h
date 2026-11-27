@@ -18,6 +18,8 @@ constexpr uint8_t A0=14, A1=15, A2=16, A4=18;
 #define PIN_WIRE_SCL 19
 struct __FlashStringHelper {};
 #define F(text) reinterpret_cast<const __FlashStringHelper *>(text)
+#define PSTR(text) (text)
+#define strcmp_P strcmp
 template <typename T> T constrain(T value, T low, T high) { return max(low, min(value, high)); }
 unsigned long millis();
 unsigned long micros();
@@ -27,6 +29,7 @@ void pinMode(uint8_t pin, uint8_t mode);
 void digitalWrite(uint8_t pin, uint8_t level);
 int digitalRead(uint8_t pin);
 int analogRead(uint8_t pin);
+extern uint8_t ADCSRA; // Only the ADC prescaler bits are modeled.
 class Print {
 public:
   virtual ~Print() {}

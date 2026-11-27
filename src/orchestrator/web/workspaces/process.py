@@ -1,8 +1,8 @@
-"""Console workspace: Furnace + microscope.
+"""Console workspace: Furnace.
 
 ``GET status`` returns the furnace and microscope fields that the page shows,
-the thermal ``crucible`` region reading, a 60-minute PV and SV history and the
-cutoff setting. Every described device command goes through the console relay.
+the thermal ``crucible`` region reading and a 60-minute PV and SV history.
+Every described device command goes through the console relay.
 
 ``POST gas-stop`` ``{"channel_index": 0|1|2}`` closes 1 furnace gas channel
 with the furnace ``api/stop`` ``{"gas_channel": N}``. Like a stop, it needs no control, it is sent
@@ -56,6 +56,7 @@ SEQUENCE_KEYS = (
     "hold_remaining_seconds",
     "end_gas",
     "end_gas_until_c",
+    "warning",
 )
 CHANNEL_KEYS = ("channel_index", "gas_name", "target_percent", "actual_percent", "available")
 VALVE_KEYS = ("channel_index", "open", "verified")

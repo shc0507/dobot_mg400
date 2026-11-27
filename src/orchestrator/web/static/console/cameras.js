@@ -1,6 +1,6 @@
 /* Lab Console Cameras workspace and the shared camera tile (window.LabCameras).
- * camera1 to camera4 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
- * They fall back to MJPEG at /camera/<view>.mjpeg. camera1 to camera4 take snapshots at
+ * camera1 to camera5 and the microscope play H.265 or H.264 from the proxy at /camera/<view>.mp4.
+ * They fall back to MJPEG at /camera/<view>.mjpeg. camera1 to camera5 take snapshots at
  * /camera/<view>.full.jpg, the microscope at /camera/microscope.png. The console relays the thermal frame. */
 (function (root, factory) {
   const api = factory(root);
@@ -12,12 +12,15 @@
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
   "use strict";
 
-  const VIEWS = ["camera1", "camera2", "camera3", "camera4", "thermal", "microscope"];
-  const MJPEG = new Set(["camera1", "camera2", "camera3", "camera4", "microscope"]);
+  const VIEWS = ["camera1", "camera2", "camera3", "camera4", "camera5", "thermal", "microscope"];
+  const MJPEG = new Set(["camera1", "camera2", "camera3", "camera4", "camera5", "microscope"]);
   const STATUS_MS = 1000;
   const THERMAL_MS = 40;
   const DETECT_MS = 1000;
   const STALE_S = 2;
+  // An MJPEG stream that ends keeps its last frame and fires no error. A sender rate of 0
+  // for this long shows the end, and the tile reconnects.
+  const MJPEG_QUIET_MS = 3000;
   const W = 160, H = 120;
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
   const PREFIX = "/api/console/ws/cameras/";
@@ -38,9 +41,9 @@
 
   const i18n = {
     en: {
-      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
+      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4", "title.camera5": "camera5",
       "title.thermal": "Thermal", "title.microscope": "Microscope",
-      "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray",
+      "role.camera1": "Stage", "role.camera2": "Insert rail", "role.camera3": "Microscope side", "role.camera4": "Tray", "role.camera5": "Wrist",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "LIVE", "badge.stale": "STALE", "badge.offline": "OFFLINE", "badge.frozen": "FROZEN",
       "age": "{age} s",
@@ -72,9 +75,9 @@
       "probe": "Pixel {x}, {y}: {value}", "probe.pinned": "Pinned pixel {x}, {y}: {value}",
     },
     zh: {
-      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4",
+      "title.camera1": "camera1", "title.camera2": "camera2", "title.camera3": "camera3", "title.camera4": "camera4", "title.camera5": "camera5",
       "title.thermal": "热像仪", "title.microscope": "显微镜",
-      "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘",
+      "role.camera1": "位移台", "role.camera2": "插入导轨", "role.camera3": "显微镜侧视", "role.camera4": "托盘", "role.camera5": "腕部",
       "role.thermal": "P1", "role.microscope": "Toupcam",
       "badge.live": "实时", "badge.stale": "过期", "badge.offline": "离线", "badge.frozen": "已冻结",
       "age": "{age} 秒",
@@ -237,7 +240,7 @@
     return { x: (boxW - w * scale) / 2, y: (boxH - h * scale) / 2, scale };
   }
 
-  const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4"]);
+  const CAMERAS = new Set(["camera1", "camera2", "camera3", "camera4", "camera5"]);
 
   /** The stream URL: a large microscope tile gets the source rate, others TILE_FPS. USB views get USB_LARGE_FPS or USB_TILE_FPS. */
   function streamUrl(view, large) {
@@ -245,7 +248,7 @@
     return `/camera/${view}.mjpeg?fps=${large ? LARGE_FPS : TILE_FPS}`;
   }
 
-  /** The video preview URL of camera1 to camera4 and the microscope, or null for the thermal view. */
+  /** The video preview URL of camera1 to camera5 and the microscope, or null for the thermal view. */
   function videoUrl(view, hevc = false) {
     if (!CAMERAS.has(view) && view !== "microscope") return null;
     return `/camera/${view}.mp4${hevc ? "?codec=h265" : ""}`;
@@ -283,7 +286,7 @@
     return [mode, rate, ...extra].filter(Boolean).join(" · ");
   }
 
-  /** The snapshot URL: a full-resolution JPEG for camera1 to camera4, a full-size PNG for the microscope. */
+  /** The snapshot URL: a full-resolution JPEG for camera1 to camera5, a full-size PNG for the microscope. */
   function snapshotUrl(view) {
     return CAMERAS.has(view) ? `/camera/${view}.full.jpg` : `/camera/${view}.png`;
   }
@@ -319,12 +322,11 @@
   }
 
   /** What a view that failed plays next: "h264" or "mjpeg" at once, or null for the same format after
-   * the backoff. H.265 turns into H.264 only when the browser or the host cannot play it (unplayable),
-   * not when the host does not answer, for example while go2rtc restarts. */
+   * the backoff. H.265 turns into H.264, and H.264 into MJPEG, only when the browser or the host cannot
+   * play it (unplayable), not when the host does not answer, for example while go2rtc restarts. */
   function fallbackFor(video, played, hevc, unplayable) {
-    if (!video || played) return null;
-    if (hevc) return unplayable ? "h264" : null;
-    return "mjpeg";
+    if (!video || played || !unplayable) return null;
+    return hevc ? "h264" : "mjpeg";
   }
 
   /** Play 1 fragmented MP4 stream in a video element. onFail(unplayable) runs at most once, but not
@@ -487,6 +489,8 @@
   }
 
   async function pollThermal() {
+    // A call during a read must not start a second timer chain; the running one goes on.
+    if (engine.thermalBusy) return;
     engine.thermalTimer = null;
     if (!running("thermal")) return;
     if (!engine.settings.frozen && !engine.thermalBusy) {
@@ -511,6 +515,7 @@
   }
 
   async function pollDetections() {
+    if (engine.detectBusy) return;
     engine.detectTimer = null;
     if (!running("camera4") || !engine.settings.detections) { engine.detections = null; return; }
     if (!engine.detectBusy) {
@@ -536,7 +541,7 @@
       return { ...(engine.status.get("thermal") || {}), ...thermalRow(engine.thermal, engine.thermalAt, nowMs(), engine.thermalFailed) };
     }
     const row = engine.status.get(view) || null;
-    // The browser loads camera1 to camera4 and the microscope itself: a loaded tile is live.
+    // The browser loads camera1 to camera5 and the microscope itself: a loaded tile is live.
     const own = [...engine.tiles].filter(tile => tile.view === view);
     if (row) {
       const live = own.some(tile => tile.live);
@@ -562,6 +567,7 @@
       if (show && !tile.running) tile.start();
       else if (!show && tile.running) tile.stop();
       tile.refresh();
+      tile.checkQuiet(nowMs());
     }
     pollStatus();
     if (running("thermal") && engine.thermalTimer === null) pollThermal();
@@ -718,6 +724,18 @@
         this.retry = null;
         if (this.running && generation === this.generation) { this.running = false; this.start(); }
       }, fallback ? 0 : backoff(this.failures));
+    }
+
+    /** Reconnect a live MJPEG stream whose sender rate stays 0 for MJPEG_QUIET_MS. */
+    checkQuiet(now) {
+      const mjpeg = this.running && this.live && !this.stopVideo && this.img && this.img.src !== BLANK;
+      if (!mjpeg) { this.quietSince = null; return; }
+      // Without a fresh status, the rate is not known.
+      if (now - engine.statusAt >= 3000) return;
+      const fps = engine.status.get(this.view)?.fps;
+      if (typeof fps === "number" && fps > 0) { this.quietSince = null; return; }
+      if (this.quietSince === null || this.quietSince === undefined) this.quietSince = now;
+      else if (now - this.quietSince >= MJPEG_QUIET_MS) { this.quietSince = null; this.failed(); }
     }
 
     async snapshot() {
@@ -920,7 +938,7 @@
     }
   }
 
-  /** A live camera tile for any workspace. view: camera1–camera4, thermal or microscope.
+  /** A live camera tile for any workspace. view: camera1–camera5, thermal or microscope.
    * options: {api, large, onSelect(view), onExpand(view), buttons}. The tile streams only while it is visible. */
   function tile(view, options = {}) {
     if (!VIEWS.includes(view)) throw new Error("Unknown camera view: " + view);
@@ -939,7 +957,7 @@
 
   // Workspace -------------------------------------------------------------------
 
-  /** The Cameras workspace: all 6 views as a wall, or 1 large view with a rail of the others.
+  /** The Cameras workspace: all 7 views as a wall, or 1 large view with a rail of the others.
    * Each tile carries its own tools. The thermal settings open on demand in a card on the thermal tile. */
   function workspace(rootNode, api) {
     engine.api = api;
@@ -1192,6 +1210,7 @@
     let timer = null;
     function refresh() {
       timer = null;
+      if (!ui.describe) describeThermal();
       updateToolbar();
       const active = doc().activeElement;
       const typing = active && card.contains(active) && ["INPUT", "SELECT"].includes(active.tagName);
@@ -1200,7 +1219,15 @@
     const soon = () => { if (!timer) timer = setTimeout(refresh, 1000); };
     engine.listeners.add(soon);
     api.onState(soon);
-    api.describe("thermal").then(value => { ui.describe = value; renderCard(); renderDrawbar(); }, () => { ui.describe = null; });
+    // A failed read hides Connect and the shutter: read again at most every 10 s.
+    let describeAt = -Infinity;
+    function describeThermal() {
+      if (ui.describing || nowMs() - describeAt < 10000) return;
+      ui.describing = true; describeAt = nowMs();
+      api.describe("thermal").then(value => { ui.describe = value; renderCard(); renderDrawbar(); }, () => { ui.describe = null; })
+        .finally(() => { ui.describing = false; });
+    }
+    describeThermal();
     api.onLanguage(() => { renderToolbar(); renderCard(); renderDrawbar(); for (const { node } of ui.cells.values()) node.labCameras.refresh(); });
     renderToolbar();
     arrange();
@@ -1218,7 +1245,7 @@
   }
 
   return {
-    tile, install, VIEWS, i18n, engine,
+    tile, install, VIEWS, i18n, engine, Tile,
     logic: { translate, badge, thermalRow, paletteTable, convert, toCelsius, formatTemp, scaleRange, thermalPixels, thermalTemperatures, thermalCsv, probeReading, regionFrom, containRect, backoff, stamp, streamUrl, snapshotUrl, videoUrl, fallbackFor, chase, frameRate, meter, measure, current, modeLine, rowFor },
   };
 });

@@ -14,6 +14,9 @@ from orchestrator.app import DemoResources, OrchestratorService, create_app
 from orchestrator.web import console as console_module
 from orchestrator.web.workspaces import discover, motion
 
+# The MG400 simulator arrives at once; a short rest window keeps the checks.
+pytestmark = pytest.mark.usefixtures("short_rest")
+
 PRIVATE = "private-robot-service-token-0123456789"
 
 
@@ -212,7 +215,12 @@ def test_stage_operator_uses_the_described_relay_and_keeps_control(contract_rig,
     assert post(contract_rig, "command/stage", body, page="other-page").status_code == 409
     response = post(contract_rig, "command/stage", body)
     assert response.status_code == 202
-    assert response.json == {"outcome": "accepted", "command_id": "c-1"}
+    assert response.json == {
+        "outcome": "accepted",
+        "command_id": "c-1",
+        "instance": None,
+        "client": stage.holder,
+    }
     writes = [call for call in stage.calls if call[0] in {"command", "request"}]
     assert writes == [("command", stage.holder, action, params)]
 

@@ -64,6 +64,7 @@ _SUFFIX_UNITS = {
     "_pct": "percent",
     "_percent": "percent",
     "_kg": "kg",
+    "_hpa": "hPa",
     "_ms": "ms",
     "_s": "s",
     "_seconds": "s",

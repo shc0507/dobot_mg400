@@ -8,16 +8,16 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 - 代码检出：`uv run labctl <group> ...`，访问同一组回环服务。
 - 演示：先启动 `uv run python -m orchestrator serve --demo --port 18772 --base-path /lab/`，再在每次调用中加 `--url http://127.0.0.1:18772/lab/`。
 
-命令行不增加限制和检查。各服务保留测试台保护：停止、每台设备 1 个控制者、高温炉上限、机器人速度上限和报警阻止、显微镜对焦限位和物镜转换间隙位、电动台软限位。
+各服务保留停止和每台设备 1 个控制者。它们还保留高温炉上限、机器人速度和报警检查、显微镜相对调焦范围、位移台软限位。操作者必须为物镜选择提供物理净空。`robot move` 还检查台面孪生。见[碰撞检查](#碰撞检查)。
 
 ## 会话和控制权
 
 - `--session NAME` 选择智能体会话。默认值为 `main`。控制台页面为 `agent-NAME`，Overview **Control** 卡片上的持有者为 `agent-NAME-<12 hex>`。
 - 每个智能体使用 1 个会话。同一会话的调用共享控制权。
 - `labctl <device> take` 通过 Lab Console 获取控制权。控制台在两次调用之间持有租约，每 1 秒续租。
-- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。
+- 会话 10 分钟内没有调用时，控制台释放该会话的设备。释放机器人前，先将机械臂下使能。释放位移台前，先停止位移台。
 - `labctl <device> release` 释放 1 台设备。`labctl all release` 释放该会话的所有设备。
-- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。
+- 所有者用 Overview 上的 **Release all** 或 `sudo labctl all release --session NAME` 收回控制权。两者都跳过借给运行的设备。先停止或终止该运行。
 
 ## 命令
 
@@ -25,7 +25,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | --- | --- |
 | `labctl all state` | 所有设备的状态、控制持有者和当前运行 |
 | `labctl all session` | 本会话的设备和剩余空闲时间（`idle_left_s`） |
-| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
+| `labctl all events [--since ID] [--device D]` | 已保存的事件，最新在前。`ID` 是事件的 `id`。使用 `--since` 时，结果为 `ID` 之后最早的 500 条事件。要读取全部新事件，用最大的 `id` 重复查询，直到结果为空。`fields` 是事件详情，例如 `action`、`params`、`client` 和 `result` |
 | `labctl all history [--device D] [--from T] [--to T]` | 已保存的设备状态记录，最新在前。`T` 是 Unix 时间 |
 | `labctl <device> state` | 1 台设备的完整状态、持有者和 `mine` |
 | `labctl <device> describe` | 服务列出的命令及其 JSON Schema |
@@ -44,17 +44,17 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | 快捷命令 | 发送 |
 | --- | --- |
 | `robot enable`, `robot disable`, `robot home`, `robot clear-alarm` | `enable`、`disable`、`home`、`clear_alarm` |
-| `robot move X Y Z R [--speed N] [--relative]` | 带法兰 `targets` 的 `execute`。`--relative` 把数值加到当前 `actual` 位姿上 |
+| `robot move X Y Z R [--speed N] [--relative] [--no-collision-check]` | 带法兰 `targets` 的 `execute`。`--relative` 把数值加到当前 `actual` 位姿上。发送命令前，命令行先做[碰撞检查](#碰撞检查) |
 | `robot vacuum suck\|release\|off` | `vacuum` |
 | `stage move MOTOR ROTATIONS [--speed N]` | 相对 `move`。ROTATIONS 为正时使用 `ccw`，为负时使用 `cw`。默认速度为 0.25 圈/秒 |
 | `stage goto MOTOR POSITION [--speed N]` | `move_to_position`，目标为绝对圈数坐标。默认速度为 0.25 圈/秒 |
 | `stage calibrate MOTOR [--speed N]` | `calibrate`。默认速度为 0.25 圈/秒 |
 | `stage reset-position MOTOR`, `stage set-limit MOTOR` | `reset_position`、`set_limit` |
 | `stage clear-upper-limit MOTOR`, `stage clear-lower-limit MOTOR`, `stage clear-fault MOTOR` | `clear_upper_limit`、`clear_lower_limit`、`clear_fault` |
-| `stage connect [PORT]` | 连接电动台串口。不给 PORT 时列出串口 |
+| `stage connect [PORT]` | 连接位移台串口。不给 PORT 时列出串口 |
 | `furnace setpoint C --ramp C_PER_MIN` | `apply_setpoint` |
 | `furnace sequence FILE [--start]` | 从 JSON 文件发送 `set_sequence` 或 `start_sequence` |
-| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve` |
+| `furnace gas CHANNEL PERCENT`, `furnace valve CHANNEL open\|close` | `set_gas_flow`、`set_gas_valve`。`CHANNEL` 为 0、1 或 2，对应 Gas 1 到 3 |
 | `furnace acknowledge` | 确认高温炉报警 |
 | `microscope objective ID`, `microscope nudge STEPS`, `microscope focus STEPS` | `select_objective`、`objective_nudge`、`focus_move` |
 | `microscope autofocus full\|local` | `autofocus` |
@@ -63,6 +63,7 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `microscope record start [--mode time_lapse\|live] [--name RUN_NAME]` | 带新 `recording_id` 的 `start_recording` |
 | `microscope record stop ID` | `stop_recording` |
 | `vision detect\|markers\|labels CAMERA` | `detect`、`read_markers`、`read_labels`。结果在 `state.last_command.output` 中 |
+| `vision locate markers\|chips CAMERA TOUCH_Z` | 对腕部相机发送 `read_markers` 或 `detect`，带当前法兰位姿和 `touch_z_mm`。每个标记或检测结果得到 `robot_mm`。`TOUCH_Z` 是工具尖端接触它们下方表面时的法兰 Z。对芯片，再加上芯片厚度。保持观察时的工具旋转，移动到 `robot_mm`，吸盘就在该点上方。机械臂须保持静止 |
 
 显微镜运动前，人工操作员必须在控制台创建并选中完整配置。参见[显微镜校准](microscope.md#引导式转盘校准)。
 人工释放两个电机后，记录各物镜的 X 对齐位置，再单独记录 1 张已对焦的 5x 初始图像。只有 5x 的 Y 坐标用于粗调高度。
@@ -82,12 +83,16 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 | `labctl do RECIPE [NAME=VALUE ...] [--timeout S]` | 用本会话持有的设备运行 1 个目录配方 |
 | `labctl chip locate SLOT` | 对 1 个槽位运行 `slot-state`。输出 `state`、`center_xy_mm` 和 `angle_deg` |
 
+Agent Connect 不提供配方派发。
+
 - 先获取配方用到的每台设备。否则调用失败，`hint` 列出要运行的 `take` 命令。
 - 运行借用本会话的设备。租约仍由控制台持有，因此机械臂保持上使能。显微镜在每次运动操作前重新读取相机参考，并在该操作后释放对焦轴。运行期间，本会话不能向这些设备发命令。停止仍然有效。
 - 运行期间，命令行持有编排器租约。失败步骤后保持的运行会被终止。运行结束后，设备归还本会话。
+- 运行完成时不发送停止。设备按最后一步结束时的状态归还本会话，包括机械臂的使能状态。运行失败、保持或中止时，会停止该运行使用的每台设备。显微镜停止会禁用电机，并清除临时调焦参考。下次显微镜运动前，检查所选完整配置和物理净空。服务在该操作中使用新图像和相对脉冲范围。
 - 每个会话一次只运行 1 个 `do`。运行期间，同一会话的 `do` 和 `chip locate` 以 `busy` 失败。该运行继续。
-- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。在 Overview 上终止该运行。
+- 运行期间命令行退出时，编排器租约过期。运行保持，运动停止。用 `POST /lab/api/runs/<run_id>/abort` 终止该运行。HTTP 路由见 [配方编排器](orchestrator.md)。
 - 默认 `--timeout` 为 1800 秒。超时后，命令行终止运行。
+- `microscope-record` 在采集后需要时间完成收尾。`seconds` 最多设为 3000，`--timeout` 至少设为 `seconds` 加 600。
 - 输出包含 `run_id`、`status`（`completed` 或 `aborted`）、`steps`（含 `skill`、`status`、`result` 和 `error`）以及 `devices`。
 - 单步目录配方：`slot-state`、`station-transfer`、`crucible-load`、`crucible-unload`、`microscope-record`、`check-calibration`。目录中还有 `chip-pick` 和 `tray-transfer`。
 
@@ -99,14 +104,48 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 
 | 命令 | 作用 |
 | --- | --- |
-| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、电动台和显微镜的停止 |
+| `labctl all stop` | STOP ALL MOTION：控制台停止（同时保持运行）以及机器人、位移台和显微镜的停止 |
 | `labctl <device> stop` | 停止 1 台设备 |
 | `labctl furnace stop` | 关闭加热和气体 |
 | `labctl furnace gas-off [CHANNEL]` | 停止 1 路气体，或全部 3 路 |
 
 使用默认 `--url` 时，每次停止还直接发到回环上的服务，因此控制台停机时也有效。使用其他 `--url` 时，停止只经过该控制台。
 
-没有同步客户端的机器人服务无法确认停止。它报告 `unconfirmed` 并锁定。用 `labctl robot take` 和 `labctl robot disable`，或控制台中的 **Recover** 恢复。
+`/etc/mg400/mg400.env` 缺失或无效时，`sudo labctl` 的停止命令仍会执行。
+
+对只写流量控制器，炉控无法读回流量。停止这类气路时，炉控发送零流量并关闭阀门，但结果仍为 `unconfirmed`。用 `labctl furnace state` 检查该气路。
+
+没有同步客户端的机器人服务无法确认停止。它发送 `ResetRobot()` 并报告 `unconfirmed`，但不锁定。之后的 `labctl robot take` 重新读取机械臂状态。
+
+## 碰撞检查
+
+机器人服务检查关节范围、速度和报警，不检查障碍物。因此 `robot move` 在发送命令前，先用台面孪生检查这次移动。
+
+- 移动是法兰从当前 `actual` 位姿到目标的直线。检查每隔 2 mm 取 1 个点。
+- 检查使用资源 `twin-collision`，位于 `/var/lib/mg400/twin/collision.json`（见[外部资源](deploy.md#外部资源)）。位移台取实时台面工作区报告的位置。位置未知时，取模型中的位移台位置。
+- 孪生显示接触或间隙小于 10 mm 时，命令行拒绝移动，`error.code` 为 `collision`。不发送任何命令。`collision` 对象给出 `obstacle`、`group`、`arm_part`、`clearance_mm`、`along_mm`（沿直线的距离）、`pose`（该点的法兰位姿）和 `start_clearance_mm`。
+- 起点处距离小于 10 mm 的障碍物是近处障碍物。移动不得更靠近它。此时 `start_clearance_mm` 是数值。允许远离它的移动。
+- 起点处已与某个障碍物接触时，不对该障碍物做检查。孪生不给出重叠深度。
+- 检查无法运行时，命令行同样拒绝移动：资源缺失，或直线上有 1 个点没有关节解。
+- `--no-collision-check` 不做检查，直接发送移动。只用于有人监视的示教移动。以接触结束的移动（例如取样）需要它。
+- 只有 `robot move` 做检查。`robot home`、`robot call execute`、配方、键盘点动和网页面板不做检查。停止从不做检查。
+
+拒绝：
+
+```json
+{"ok": false, "device": "robot", "collision": {"obstacle": "pole tube 1", "group": "fixtures", "arm_part": "link4_3_0", "clearance_mm": 0.0, "along_mm": 48.8, "pose": [-117.8, -243.0, 163.7, -31.3], "start_clearance_mm": null}, "outcome": "refused", "error": {"code": "collision", "status": null, "message": "The bench twin shows contact of the arm (link4_3_0) with 'pole tube 1' (fixtures) 48.8 mm along the line, at flange (-117.8, -243, 163.7). No command was sent. For a taught, supervised move, add --no-collision-check."}}
+```
+
+孪生没有显示台面上的全部物体：
+
+- 线缆、软管和零散物品不在碰撞模型中。
+- 机械臂带吸盘工具和腕部相机。腕部相机的尺寸是估计值。其他工具或携带的样品不在碰撞模型中。
+- 托盘台在碰撞模型中是 1 块空的平板。支腿、板厚和四角标记块是估计值。
+- 每个形状是凸包。凸包填满零件的凹处，因此检查可能拒绝台面上实际畅通的移动。
+- 显微镜的调焦和转盘保持在模型位置。
+- 对编码器位移台，实时台面工作区不给出位移台位置。此时检查把位移台保持在模型位置。回退使用的位移台几何位置未经校准。
+
+规划移动时，使用仓库外孪生建模目录的碰撞工具：`tools/pyc tools/collide.py line X0 Y0 Z0 R0 X1 Y1 Z1 R1`、`descend X Y R --top Z`（首次接触时的法兰 Z）和 `pose X Y Z R`。
 
 ## 输出和退出码
 
@@ -123,9 +162,10 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ```
 
 - `outcome`：`ok`、`accepted`、`failed`、`rejected`、`stopped`、`refused`、`unknown`、`interrupted`。
-- `error.code`：`usage`、`invalid`、`not_controlled`、`held_by_other`、`locked`、`busy`、`refused`、`failed`、`rejected`、`stopped`、`unknown`、`timeout`、`unreachable`、`interrupted`。
+- `error.code`：`usage`、`invalid`、`not_controlled`、`held_by_other`、`locked`、`busy`、`collision`、`refused`、`failed`、`rejected`、`stopped`、`unknown`、`timeout`、`unreachable`、`interrupted`。
 - `hint`：适用时给出下一条要运行的命令。
 - 停止输出 `results`，每台设备为 `confirmed`、`pending`、`unconfirmed`、`unreachable` 或 `not-configured`。
+- 命令的回复丢失时，命令行最多读取 3 s 设备状态。服务记录了本会话的该命令时，命令行报告记录的结果。机器人命令仍为 `unknown`。
 
 | 退出码 | 含义 | 下一步 |
 | --- | --- | --- |
@@ -138,6 +178,6 @@ Olares 上的智能体用 `labctl` 设备命令组操作实验室设备。每次
 ## 限制
 
 - 没有保持运行的操作员提示：`do` 终止该运行。
-- 不支持键盘点动和电动台按住运动。它们需要每 100 毫秒和 500 毫秒刷新。
+- 不支持键盘点动和位移台按住运动。它们分别需要在 0.4 秒（键盘点动）和 1 秒（位移台按住）内刷新。
 - 命令行退出前已开始的运动按命令继续。
-- 未给 `--out` 时，图像文件保存到 `/tmp/labctl/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。
+- 未给 `--out` 时，图像文件保存到 `/tmp/labctl-<UID>/`。已安装的命令行以 UID 1000 运行，不能写入 `/home/olares`。

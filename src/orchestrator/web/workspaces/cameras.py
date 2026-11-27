@@ -1,6 +1,6 @@
 """Console workspace: Cameras.
 
-The browser loads camera1 to camera4 and the microscope from the proxy at
+The browser loads camera1 to camera5 and the microscope from the proxy at
 ``/camera/<view>.mp4``, ``.mjpeg`` and the still URLs. The console relays only data:
 
 - thermal: the thermal frame API through the thermal service client;
@@ -27,7 +27,7 @@ from labkit.errors import ServiceError
 
 from . import Workspace
 
-CAMERAS = ("camera1", "camera2", "camera3", "camera4")
+CAMERAS = ("camera1", "camera2", "camera3", "camera4", "camera5")
 VIEWS = (*CAMERAS, "thermal", "microscope")
 # The browser loads these views from the camera preview behind the proxy.
 PROXIED = (*CAMERAS, "microscope")

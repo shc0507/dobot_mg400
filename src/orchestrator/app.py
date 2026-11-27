@@ -132,7 +132,12 @@ class Catalog:
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", name):
             raise ValueError("Select a recipe ID from the catalog.")
         with self._directory() as parent:
-            fd = os.open(name + ".toml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            try:
+                fd = os.open(
+                    name + ".toml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+                )
+            except FileNotFoundError:
+                raise ValueError(f"Unknown recipe ID: {name}.") from None
             with os.fdopen(fd, "rb") as stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_size > 262144:

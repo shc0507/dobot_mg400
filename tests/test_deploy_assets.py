@@ -56,6 +56,9 @@ def test_pinned_manifest(module):
     )
     assert str(asset.install) == "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
     assert asset.mode == 0o640 and asset.service == "vision" and asset.license == "AGPL-3.0"
+    wrist = module.load_manifest(ROOT / "config/assets.toml")["vision-wrist-weights"]
+    assert wrist.bytes == 23501597 and wrist.service == "vision" and wrist.mode == 0o640
+    assert str(wrist.install) == "/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt"
 
 
 @pytest.mark.parametrize(
@@ -74,6 +77,11 @@ def test_pinned_manifest(module):
         ("install", '"/"'),
         ("install", '"/etc/model.pt"'),
         ("install", '"/var/lib/mg400"'),
+        ("install", '"/var/lib/mg400/model.pt"'),
+        ("install", '"/var/lib/mg400/locks/model.pt"'),
+        ("install", '"/var/lib/mg400/camera/model.pt"'),
+        ("install", '"/var/lib/mg400/stage/model.pt"'),
+        ("install", '"/var/lib/mg400/calibration/cameras/model.pt"'),
         ("install", '"/var/lib/other/model.pt"'),
         ("mode", '"0666"'),
         ("mode", '"0644"'),

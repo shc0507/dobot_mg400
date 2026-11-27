@@ -437,6 +437,25 @@ def test_failed_hold_or_inspection_keeps_stop_pending_and_admission_closed(rig, 
         repaired.set()
 
 
+def test_a_second_stop_all_during_the_drain_sends_a_new_round_of_stops(rig):
+    runner = HeldRunner()
+    rig.service.current = runner
+    names = ("robot", "stage", "microscope")
+    try:
+        identity = post(rig, "motion").json["operation_id"]
+        assert runner.held.wait(1)
+        wait_for(lambda: all(rig.devices[name].stop_count == 1 for name in names))
+        # The same operation keeps its one coordinator, but the devices stop again now.
+        assert post(rig, "motion").json["operation_id"] == identity
+        wait_for(lambda: all(rig.devices[name].stop_count == 2 for name in names))
+        assert not operation(rig, identity)["done"]
+        runner.drained.set()
+        wait_for(lambda: operation(rig, identity)["done"])
+        assert all(rig.devices[name].stop_count == 3 for name in names)
+    finally:
+        runner.drained.set()
+
+
 @pytest.mark.parametrize("delay", [1, 4])
 def test_cached_lease_display_ages_from_observation_not_response_time(rig, monkeypatch, delay):
     clock = SimpleNamespace(now=100.0)

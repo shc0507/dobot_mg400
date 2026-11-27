@@ -22,7 +22,6 @@ select = select_tests.select
         "pyproject.toml",
         "uv.lock",
         ".github/workflows/ci.yml",
-        "scripts/select_tests.py",
         "unknown/file.txt",
     ],
 )
@@ -99,4 +98,38 @@ def test_main_reads_paths_from_arguments(capsys):
     assert capsys.readouterr().out.split() == [
         "tests/test_doc_pairs.py",
         "tests/test_repo_files.py",
+    ]
+
+
+def test_selector_change_runs_its_own_tests():
+    assert select(["scripts/select_tests.py"]) == [
+        "tests/test_doc_pairs.py",
+        "tests/test_repo_files.py",
+        "tests/test_select_tests.py",
+    ]
+
+
+def test_stage_firmware_change_runs_no_host_tests():
+    # The stage-firmware CI job runs the native checks.
+    assert select(["firmware/stage-controller-v3/MotorControl.cpp"]) == [
+        "tests/test_doc_pairs.py",
+        "tests/test_repo_files.py",
+    ]
+
+
+def test_pressure_sensor_firmware_change_runs_no_host_tests():
+    assert select(["firmware/pressure-sensor/pressure-sensor.ino"]) == [
+        "tests/test_doc_pairs.py",
+        "tests/test_repo_files.py",
+    ]
+
+
+def test_static_file_under_a_package_does_not_select_importers(tmp_path):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_direct.py").write_text("import orchestrator\n")
+    changed = ["src/orchestrator/web/static/console/app.js"]
+    assert select(changed, root=tmp_path) == []
+    assert select([*changed, "src/orchestrator/devices.py"], root=tmp_path) == [
+        "tests/test_direct.py"
     ]

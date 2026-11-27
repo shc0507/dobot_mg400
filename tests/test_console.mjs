@@ -264,6 +264,53 @@ test("relay sends one request with the page identity and reports an unknown outc
   assert.match(view.nodes.get("lc-notice").textContent, /unknown/);
 });
 
+test("relay reports a server error or an unreadable reply as unknown, and a refusal as refused", async () => {
+  for (const [reply, outcome] of [[{ status: 500, body: null }, "unknown"], [{ status: 200, body: null }, "unknown"],
+    [{ status: 503, body: { error: "Down." } }, "unknown"], [{ status: 400, body: { error: "Bad params." } }, "refused"]]) {
+    const { LabConsole } = load({ responses: [reply] });
+    const view = page();
+    Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+    assert.equal((await LabConsole._internal.relay("stage", "move", {})).outcome, outcome, JSON.stringify(reply));
+  }
+});
+
+test("the page's own Release does not report control as lost, also when a heartbeat lands first", async () => {
+  let finish;
+  const { LabConsole } = load();
+  const view = page();
+  Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+  LabConsole.shell.snapshot = { control: [] };
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "held" }]);
+  globalThis.fetch = async url => {
+    if (url.endsWith("/release")) await new Promise(resolve => { finish = resolve; });
+    return { status: 200, ok: true, json: async () => ({ control: [], services: [], cameras: [], result: "released" }) };
+  };
+  const releasing = LabConsole._internal.release("robot");
+  // A heartbeat reply that still lists the robot, then one without it.
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "releasing" }]);
+  LabConsole._internal.applyControl([]);
+  finish(); await releasing;
+  assert.doesNotMatch(view.nodes.get("lc-notice")?.textContent || "", /ended/);
+  // A later loss is reported again.
+  LabConsole._internal.applyControl([{ device: "robot", mine: true, state: "held" }]);
+  LabConsole._internal.applyControl([]);
+  assert.match(view.nodes.get("lc-notice").textContent, /lease ended/);
+});
+
+test("a lost control shows the server's end message", () => {
+  const { LabConsole } = load();
+  const view = page();
+  Object.assign(LabConsole.shell, { doc: view.doc, base: "/lab", page: "console-page-test" });
+  LabConsole.shell.snapshot = { control: [] };
+  LabConsole._internal.applyControl([{ device: "microscope", mine: true, state: "held" }]);
+  // The console still finalizes the recording: the control is not lost yet.
+  LabConsole._internal.applyControl([{ device: "microscope", mine: true, state: "finalizing" }]);
+  assert.doesNotMatch(view.nodes.get("lc-notice")?.textContent || "", /ended/);
+  const message = "No browser heartbeat for 120 s. The recording was stopped and finalized.";
+  LabConsole._internal.applyControl([], { microscope: message });
+  assert.match(view.nodes.get("lc-notice").textContent, /stopped and finalized/);
+});
+
 test("a heartbeat is sent only while this page holds control", async () => {
   const { LabConsole, calls } = load({ responses: [{ status: 200, body: { control: [{ device: "stage", mine: true, state: "held" }] } }] });
   const view = page();
@@ -289,6 +336,17 @@ test("page close releases this page's leases with a keepalive request", async ()
   listeners.get("pagehide")();
   assert.equal(calls[0].url, "/lab/api/console/release-page");
   assert.equal(calls[0].init.keepalive, true);
+});
+
+test("the header STOP ALL button sends the motion stop", async () => {
+  const { LabConsole, calls } = load();
+  const view = page();
+  LabConsole.start(view.doc);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  calls.length = 0;
+  view.nodes.get("lc-stop-all").click();
+  assert.equal(calls[0].url, "/lab/api/dashboard/motion");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {});
 });
 
 class FakeSocket {

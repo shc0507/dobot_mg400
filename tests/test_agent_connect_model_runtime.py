@@ -230,9 +230,24 @@ def test_stream_keeps_final_usage_without_including_it_in_decision():
     }
 
 
+def tcp_socket_pair():
+    """Use TCP sockets so HTTPConnection can set TCP_NODELAY on every platform."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(2)
+        client = socket.create_connection(listener.getsockname(), timeout=2)
+        try:
+            server, _ = listener.accept()
+        except BaseException:
+            client.close()
+            raise
+    return client, server
+
+
 @pytest.mark.parametrize("phase", ["headers", "body", "stream"])
 def test_cancel_shuts_down_stalled_http_socket(monkeypatch, phase):
-    client, server = socket.socketpair()
+    client, server = tcp_socket_pair()
     cancelled, sent, peer_closed = threading.Event(), threading.Event(), threading.Event()
     reports, errors, results = [], [], []
 
@@ -303,7 +318,7 @@ def test_deadline_bounds_an_uninterruptible_transport():
 
 
 def test_cancel_shuts_down_a_stalled_tls_handshake(monkeypatch):
-    client, server = socket.socketpair()
+    client, server = tcp_socket_pair()
     cancelled, errors = threading.Event(), []
     monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: client)
     control = RequestControl(cancelled, 2)

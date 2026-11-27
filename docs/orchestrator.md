@@ -16,7 +16,7 @@ uv run labctl runs RUN_ID --runs-dir ./rehearsal-runs
 
 `labctl run RECIPE` 使用配置的仪器服务。真机运行前，必须完成操作员检查。操作员必须守在急停旁。Shell 智能体使用[智能体命令行](agent-cli.md)。
 
-`--runs-dir PATH` 指定记录目录。演练未指定 `--runs-dir` 时，把记录写入临时目录，结束后删除，并忽略 `MG400_ORCH_RUNS_DIR`。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
+`--runs-dir PATH` 指定记录目录。演练未指定 `--runs-dir` 时，把记录写入临时目录，结束后删除。`--param NAME=JSON` 覆盖配方声明的参数。字符串值必须使用 JSON 字符串引号：
 
 ```sh
 uv run labctl rehearse recipes/example-rehearsal.toml --runs-dir ./rehearsal-runs --param 'chip_id="demo-chip-2"' --time-scale 0.1
@@ -122,12 +122,12 @@ on_fail = "hold"
 | `vision.slot_state` | `slot` | 机器人、视觉 |
 | `vision.pick_chip` | `slot`，可选 `speed` | 机器人、视觉 |
 | `vision.tray_transfer` | `from_slot`、`to_slot`，可选 `speed` | 机器人、视觉 |
-| `crucible.load` | `from_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉 |
-| `crucible.unload` | `to_slot`，可选限制见下文和 `speed` | 机器人、电动台、高温炉、热成像 |
+| `crucible.load` | `from_slot`，可选限制见下文和 `speed` | 机器人、位移台、高温炉 |
+| `crucible.unload` | `to_slot`，可选限制见下文和 `speed` | 机器人、位移台、高温炉、热成像 |
 | `microscope.record` | `chip_id`、`seconds`，可选 `run_name`、`mode` | 显微镜 |
 | `sample.record` | `chip_id`、`note` | 无 |
 
-`recipes/example-rehearsal.toml` 示例使能模拟机器人，移动后记录样本，再停止机器人。它不含供气或加热命令。自定义操作单元接收可撤销的上下文，其中包含服务客户端、运行记录和区域管理器。进入命名区域必须有明确配置，并检查配置的进入条件。
+`recipes/example-rehearsal.toml` 示例使能模拟机器人，移动后记录样本，再停止机器人。该示例在目录中，因此 `labctl do example-rehearsal` 和 `labctl run` 会让真实机械臂走 1 条直线。只用 `labctl rehearse` 运行它。它不含供气或加热命令。自定义操作单元接收可撤销的上下文，其中包含服务客户端、运行记录和区域管理器。进入命名区域必须有明确配置，并检查配置的进入条件。
 
 ## 服务配置
 
@@ -170,6 +170,8 @@ on_fail = "hold"
 配置和占用记录只接受具有规定属主的常规文件，权限为 `0600` 或 `0640`。
 存储拒绝不安全的父目录和任何路径分量中的符号链接，在已有的所属目录中原子写入占用记录。
 控制同一设备的所有硬件运行必须使用相同的配置和占用路径。
+
+修改区域配置前，先恢复所有保留的占用。旧配置的占用仍存在时，每次启动配方和每次恢复都以 `Zone configuration changed while durable occupancy remains.` 拒绝。要解除此状态，恢复原配置，恢复占用，再修改配置。
 
 存储争用最多等待 2 秒，且不能超过步骤剩余时限。同一进程内的线程排队等待，停止或撤销会取消等待。设备停止命令先于区域存储写入发送。
 发布前发生写入、文件同步或替换失败时，保留旧占用记录。
@@ -334,7 +336,9 @@ labctl station rm tray-pick
 
 ### 更换工具偏移
 
-更换工具后，用 `retool` 写入新的实测偏移。已有工位时，不得手动编辑 `tool.toml`。
+用 `retool` 修正同一工具的实测偏移。已有工位时，不得手动编辑 `tool.toml`。
+
+`retool` 保持每个法兰位姿不变。实际更换工具后，新工具尖端在每个工位会偏差两次偏移之差。实际更换工具后，重新示教每个接触工位。
 
 ```sh
 labctl station retool --offset DX DY DZ
@@ -347,6 +351,8 @@ labctl station retool --offset DX DY DZ
 3. 写入新的 `tool.toml`。
 
 换算后的工位超出指尖工作空间时，命令停止，不修改任何文件。修改工作空间边界，或重新示教该工位。在没有配方运行时执行此命令。`--stations-file PATH` 和 `--tool-file PATH` 覆盖路径。命令输出新旧偏移、备份路径和换算后的工位。
+
+命令依次替换 2 个文件。如果命令在 2 次替换之间中断，2 个文件不再对应。此时同时恢复同一时间的 2 个 `.bak-<UTC time>` 文件。
 
 ## 工位转移
 
@@ -388,6 +394,7 @@ on_fail = "hold"
 受保护的 `vision.tray_transfer` 步骤检查校准、观察两个槽位、转移芯片，再检查两个槽位。
 运动前，源槽位必须有芯片，目标槽位必须为空。
 放置后，目标槽位必须有芯片，源槽位必须为空。
+放置后的检查在机械臂位于目标接近位时执行。所用相机视野中，该姿态下的机械臂不得遮挡任一槽位。机械臂框遮挡所需槽位时，芯片放置后检查失败。
 证据缺失或含糊、未吸住、掉落或校准失败时，运行暂停。
 
 该步骤需要没有硬件默认值的实测输入：
@@ -485,7 +492,7 @@ Insert 或机器人接收命令前，先检查两条完整路径和所有工具�
 机器人按示教路线高度移动，保留实测到位检查，以及 `contact`、`arrived` 和 `dropped` 检查。
 操作单元不会自动归零、初始化、使能、解锁或重试设备。
 
-电动台每轴必须有当前细分模式下的新鲜归零参考和软限位。
+位移台每轴必须有当前细分模式下的新鲜归零参考和软限位。
 只读字段 `automation.at_poses` 将每个已配置位姿与实测位置比较：
 
 ```json
@@ -503,7 +510,7 @@ Insert 或机器人接收命令前，先检查两条完整路径和所有工具�
 Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成功不表示已离开该区域。
 
 卸载先占用 `furnace-tube`，只移动 Insert 到 `load`，实测命名位置到位后才释放区域。
-发送命令前，通过读取等待电动台现有冷却间隔结束。运动命令被拒绝后，不会重试。
+发送命令前，通过读取等待位移台现有冷却间隔结束。运动命令被拒绝后，不会重试。
 随后请求明确的保持通电时长，并只读取命名热区 `crucible`。
 读数最大值必须严格低于 `unload_max_c`。不得改用整帧温度。
 操作单元固定采用 `api/describe` 提供的整数像素边界。每次读数必须匹配该矩形，且位于原生 160 乘 120 传感器内。
@@ -519,7 +526,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 同一运行的后续卸载可以复用已知的管内占用。
 独立卸载满足全部实测前提后，可以占用尚无声明的区域。
 其他运行、未知或已终止运行保留的占用必须通过现有明确物理清空恢复。新运行不会自动接管。
-软件检查不能证明物理间隙足够。操作者必须验证示教路径、电动台标定、温度限制和接近高度。
+软件检查不能证明物理间隙足够。操作者必须验证示教路径、位移台标定、温度限制和接近高度。
 
 ## 演练与安装后的命令
 
@@ -534,7 +541,7 @@ Insert 留在管内时，运行保留 `furnace-tube` 的已知占用。装载成
 
 坩埚演练保留上述明确的安全输入。它从 `MG400_ORCH_CRUCIBLE_ROIS_FILE` 读取自有热成像演示的命名热区数据。
 没有该数据时，不定义热区。它不会选择真实摄像头、生产高温炉或设备路径。
-演示电动台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
+演示位移台启动时没有归零参考。离线测试明确让自有模拟器归零，并提供接触反馈。
 高温炉演示持有自己的串口模拟器和临时状态。坩埚操作单元不发送加热或供气命令。
 
 安装后，`labctl` 分派所有命令。配方命令必须精确匹配 `run`、`rehearse` 或 `runs`。工位命令必须精确匹配 `station save`、`station list`、`station show`、`station rm` 或 `station retool`。[智能体命令行](agent-cli.md)命令组为 `robot`、`stage`、`furnace`、`microscope`、`vision`、`thermal`、`camera` 和 `all`。管理命令仍要求 root。

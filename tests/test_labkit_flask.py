@@ -261,6 +261,19 @@ def test_event_cursor_and_read_access_do_not_acquire_lease():
         assert_error(client.get("/api/events", query_string={"since": since}), 400)
 
 
+def test_event_replay_reports_process_and_restarts():
+    app, service, _ = make_app()
+    for number in range(3):
+        service.events.add("info", "sample", number=number)
+    client = app.test_client()
+    same = client.get(f"/api/events?since=2&instance={service.events.instance}").json
+    assert [row["seq"] for row in same["events"]] == [3]
+    assert not same["restarted"]
+    changed = client.get("/api/events?since=2&instance=old-process").json
+    assert changed["restarted"] and changed["gap_reason"] == "instance_changed"
+    assert [row["seq"] for row in changed["events"]] == [1, 2, 3]
+
+
 def test_stop_survives_failed_expiry_and_does_not_trigger_a_pending_expiry():
     service = DemoService()
 

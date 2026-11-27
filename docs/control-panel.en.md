@@ -14,10 +14,10 @@ The recipe runner, command-line tools, and the `labkit` client use the same inte
 The service uses real-robot control mode by default.
 Starting the service does not connect to the robot or send motion commands.
 The service connects to the robot only after a client takes the control lease (`api/heartbeat`).
-Before use, close the interactive terminal and other control programs.
+Before use, close other control programs.
 Connections can interrupt each other when multiple programs query the controller.
 
-The robot service and interactive terminal use a file lock to limit real-robot connections to one program per robot.
+The robot service and the mode-switch tool use a file lock to limit real-robot connections to one program per robot.
 Read-only mode also uses this lock.
 See [Panel connection lock](deploy.en.md#panel-connection-lock) for the lock directory and permission requirements.
 This lock coordinates only this project's programs. It cannot prevent DobotStudio or another host from connecting.
@@ -39,19 +39,14 @@ On the robot card of the Motion workspace, use this sequence:
 
 Each jog adds 1 step on one axis to the measured pose. The step unit is mm for X/Y/Z and degrees for R.
 Coordinates use the base frame and flange origin (`User=0,Tool=0`).
-The console checks that the fingertip target is in the workspace. Then it sends 1 `execute` command and does not retry.
-See [Lab Console](dashboard.en.md) for the workspace bounds and tool offset.
-The service then checks the target with the controller's inverse kinematics and the existing joint range checks.
+The console sends 1 `execute` command with no bounds check and does not retry.
+The service checks the target with the controller's inverse kinematics and the existing joint range checks.
 
 Clients can supply an integer `speed` with the `execute` command. The console speed input sets this value.
 The speed cap is fixed at `20`. The service rejects values above the cap with 400.
 The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
 The acceleration cap is fixed at `20`.
-Without `speed`, the command remains `SpeedL=1,AccL=1`, even with higher caps.
-
-Both settings default to 1 and accept integers from 1–100. Empty settings also use 1.
-Set them in `/etc/mg400/mg400.env`. Restart the service after a change.
-Invalid settings prevent startup.
+Without `speed`, the command remains `SpeedL=1,AccL=1`.
 
 The `home` command moves J1–J4 to 0° with `SpeedJ=5,AccJ=5`.
 The speed caps do not change `home` or the global `SpeedFactor`.
@@ -71,7 +66,7 @@ Stop and disable end the blow. They keep the suck output.
 
 ## Stop and recover
 
-`STOP ALL MOTION` at the top of the console sends a stop to all devices. It does not need control.
+`STOP ALL MOTION` at the top of the console sends a stop to the robot, the stage and the microscope. It does not need control. It does not stop the furnace heat or gas.
 It requests a controlled stop. It is not a physical emergency stop.
 If a stop or command result cannot be confirmed, use the physical emergency stop on site.
 
@@ -86,7 +81,7 @@ If the feedback connection fails, the service records an unconfirmed stop and ke
 The service connects again every 1 second. `Recover` and `Clear alarm` both need fresh feedback.
 When fresh feedback returns, check the robot state, then click `Recover`.
 
-When a client that connects directly to the service releases the lease, such as a `labkit` client or the interactive terminal, the service does not disable the robot.
+When a client that connects directly to the service releases the lease, such as a `labkit` client, the service does not disable the robot.
 If the robot is enabled, `api/release` stops it and releases control, but keeps feedback connected and control locked.
 The client can take the lease again to cancel the pending disconnect. Then it sends `disable`, then releases the lease.
 If the robot is already disabled, `api/release` confirms disable, then disconnects.
@@ -135,7 +130,8 @@ The robot card shows the button only when the service accepts it:
 Both buttons send `clear_alarm`.
 `clear_alarm` sends only `ClearError()`. It does not send `Continue()`.
 Motion paused before the alarm does not resume.
-After the alarm clears, the service disables the robot through a new control instance and confirms that it is stationary.
+After the alarm clears, the service sends `ResetRobot()` to clear the motion queue. Then it disables the robot through a new control instance and confirms that it is stationary.
+`Recover` does the same steps.
 Control unlocks only after both are confirmed.
 
 If the cause remains, the alarm immediately returns and control stays locked.
@@ -161,7 +157,7 @@ After you connect, the first coordinate query `GetPose(0,0)` fails. The service 
 The controller also rejects the stop and disable commands.
 A `-1` reply does not confirm a stop. Control stays locked.
 
-When the controller returns `-1`, the service reads the feedback.
+When the controller returns `-1` to the newest stop or disable, the service reads the feedback.
 If the robot is disabled and stationary without an alarm, the service message tells you that the controller is probably not in TCP/IP mode.
 In all other conditions, the service message shows the original error.
 In that case, use the physical emergency stop as described in [Stop and recover](#stop-and-recover).

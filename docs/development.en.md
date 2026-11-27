@@ -34,7 +34,7 @@ uv run ruff format --check .
 By default, `uv sync` installs the dependency groups in `default-groups` in `pyproject.toml`: `dev`, `stage`, `vision`, `thermal`, `furnace`, `camera`, `orchestrator`, and `microscope`.
 `vision-gpu` and `notebook` are not default groups.
 The `stage` group contains Flask, waitress, pySerial, NumPy, and OpenCV for the stage service.
-The robot service and interactive terminal use only the standard library and do not require the `stage` group.
+The robot service uses only the standard library and do not require the `stage` group.
 
 Tests do not connect to a robot or Arduino.
 For pull requests and pushes to `main`, GitHub Actions (`.github/workflows/ci.yml`) runs these checks on Python 3.12.
@@ -45,7 +45,7 @@ Offline checks cannot replace physical robot verification.
 Shared test fixtures are in `tests/conftest.py`.
 The stage test fixtures `stage_rig`, `stage_ports`, and `stage_usb` are also in this file. Tests use them by name.
 Test doubles are objects that replace real devices in tests.
-Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_ws.py`.
+Controller, connection, and web service doubles are in `tests/helpers.py`, `tests/sim_mg400.py`, and `tests/panel_http.py`.
 Shared checks for the service contract tests are in `tests/contract_helpers.py`.
 Stage clock, serial port, and serial port list doubles are in `tests/stage_helpers.py`.
 Reuse these modules in new tests. Do not duplicate them in test files.
@@ -211,14 +211,14 @@ The command body is `{"action": "<action>", ...}`. It must contain no fields bey
 
 | Command | Additional fields | Behavior |
 | --- | --- | --- |
-| `enable` | None | Enable the robot |
+| `enable` | None | Enable the robot and set the payload |
 | `disable` | None | Disable the robot. Any client can send this command |
 | `stop` | None | Stop the robot. Any client can send this command |
 | `home` | None | Move J1–J4 to 0° |
 | `execute` | `targets` (with `x`, `y`, `z`, `r`), optional `speed` | Move linearly to the flange coordinates |
 | `vacuum` | `operation`: `suck`, `release` or `off` | Control the vacuum suction cup. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `keyboard` | `enabled`, `seq`, plus `speed` to enable or `reason` to disable | Enable or disable keyboard control |
-| `clear_alarm` | None | Send `ClearError()`, then disable the robot and confirm that it is stationary after the alarm clears |
+| `clear_alarm` | None | Send `ClearError()`. After the alarm clears, send `ResetRobot()`, disable the robot and confirm that it is stationary |
 | `keys` | `seq`, `held` | Send 1 held-key set. `command_id` is `null`. See [Keys](#keys) |
 
 For `keyboard`, `speed` is an integer from 1–100.
@@ -230,12 +230,12 @@ The movement uses `SpeedL=<speed>,AccL=<min(speed, acceleration cap)>`.
 The acceleration cap is `20`.
 Both caps are fixed in `apps/control_panel/server.py`.
 
-Without `speed`, the wire command remains `SpeedL=1,AccL=1`, even with higher caps.
-These settings do not change `home`, `SpeedFactor`, or keyboard jogging.
+Without `speed`, the wire command remains `SpeedL=1,AccL=1`.
+The caps do not change `home`, `SpeedFactor`, or keyboard jogging.
 An operator must validate speeds above 1 on hardware before unattended transfers use them.
 `clear_alarm` is available when the controller has an alarm and feedback is fresh.
 It is also available when `recoverable` is `true`: a stop or disable is unconfirmed, the controller reports no alarm, and feedback is fresh.
-In this case, the service does not send `ClearError()`. It only disables the robot, confirms that it is stationary, and clears the warning.
+In this case, the service does not send `ClearError()`. It only sends `ResetRobot()`, disables the robot, confirms that it is stationary, and clears the warning.
 The state object's `alarms` field lists current alarms. It is `null` when there are no alarms.
 Each item contains `id`, `source` (`controller` or `J1`–`J4`), `description`, and `solution`.
 The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
@@ -258,7 +258,7 @@ The values for `reason` are `user`, `focus`, `edit`, `speed`, and `modifier`.
 | `busy`, `locked`, `stop_unconfirmed`, `recoverable` | Operation in progress, control locked, stop unconfirmed, recovery available |
 | `alarms` | Current alarm list, described above |
 | `message`, `last_command` | Service message and latest command result |
-| `vacuum`, `payload_kg` | Measured suction state and payload. See [Vacuum suction cup](#vacuum-suction-cup) |
+| `vacuum`, `payload_kg`, `pressure` | Measured suction state, payload and suction line pressure. See [Vacuum suction cup](#vacuum-suction-cup) |
 | `controller_id` | Client ID that holds control, or `null` without a holder |
 | `keyboard_enabled`, `keyboard_arming` | Keyboard jog is on, or is turning on |
 | `keyboard_active_key`, `keyboard_speed_percent`, `keyboard_disarm_reason` | Active key, keyboard speed, and close reason |
@@ -468,10 +468,12 @@ A disabled robot with no alarm also does not prove that its current pose permits
 
 Without `speed`, `execute` uses `MovL` with `SpeedL=1,AccL=1`.
 Controller inverse kinematics validates the target joint limits. The controller plans the straight path.
+The service checks only the start and the target. The controller checks the path and raises an alarm, for example 23 or 72, if the path leaves the range.
 Reset uses `JointMovJ` with `SpeedJ=5,AccJ=5`.
 `execute` and reset do not change global speed or tool configuration.
 
 When keyboard jog turns on, the service sends `SpeedFactor(<speed>)`. This sets the global speed.
+The controller keeps this value after keyboard jog turns off. The real speed of `execute` and reset is the command speed × the global `SpeedFactor` × the controller playback setting. Read `speed_factor` in the state before you validate a speed.
 While a key is held, the service sends the continuous jog command `MoveJog`:
 
 | Key | Command |
@@ -512,7 +514,8 @@ The `operation` of the `vacuum` command is one of these values:
 - The service sends each command once. Then it waits up to 1 second for the measured DO bit in the 30004 feedback to change.
 - After the motion stop command, stop and disable send `DOExecute(1,0)` once if a blow is in progress or feedback shows DO1 high. They do not wait for the blow to end and send no DO2 command. If that command fails, the result of `JointControl.stop()` contains `blow_error`; the stop itself does not fail because of it. The robot service does not report `blow_error`, and disable does not record the error.
 - The `vacuum` field of the state object contains `suck`, `blow` and `held`. `suck` and `blow` are the measured levels of DO2 and DO1, or `null` without feedback. `held` is the measured level of DI8 (`GRIP_DI`), or `null` when `GRIP_DI` is `None` or without feedback.
-- The `payload_kg` field of the state object is the payload that the controller reports, in kg.
+- The `payload_kg` field of the state object is the payload that the controller reports, in kg. At each enable, the service sends `PAYLOAD_KG` and `PAYLOAD_CENTER_MM` with the `EnableRobot` command. The 2 constants are in `src/mg400/joint_control.py`. `PAYLOAD_KG` is the total mass of the end tool, the wrist camera, and the camera mount. `PAYLOAD_CENTER_MM` is the position of the centre of that mass from the J4 axis, with J4 at 0°.
+- The `pressure` field of the state object is `{"abs_hpa": ..., "gauge_hpa": ...}` from the pressure sensor board, or `null` without a reading in the last 1 s. `gauge_hpa` is relative to the zero that the board measures when the service opens the port. Opening the port resets the board, so start the service with the cup open to room air. `src/mg400/pressure.py` reads the port `PORT` in a background thread and opens it again after 5 s without a sample.
 - The constants are in `src/mg400/suction.py`: `PRESSURE_DO`, `VACUUM_DO`, `BLOW_SECONDS` and `GRIP_DI`.
 - The offline simulator answers `DOExecute` and reports the DO bits in its feedback frames. While DO2 is high, the simulator also sets DI8.
 - For the wiring and the feedback fields, see [Vacuum suction cup](hardware.en.md#vacuum-suction-cup).

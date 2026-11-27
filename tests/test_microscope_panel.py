@@ -1024,6 +1024,35 @@ def test_metadata_provider_preserves_columns_blanks_failure_and_bounds_events():
     assert not provider.snapshot()["available"]
 
 
+def test_metadata_provider_keeps_a_fresh_sample_through_one_failed_read():
+    from furnace.service import FRAME_METADATA_FIELDS
+    from microscope.service import FurnaceReadings
+
+    state, now, failures = furnace_reading_state(), [0.0], []
+
+    def read():
+        if failures:
+            raise TimeoutError(failures.pop())
+        return state
+
+    events = EventLog()
+    provider = FurnaceReadings(SimpleNamespace(state=read), events, clock=lambda: now[0])
+    provider.poll_once()
+    now[0] += 1
+    failures.append("timed out")
+    provider.poll_once()
+    assert provider.snapshot()["metadata"]["temperature_c"] == 22.5
+    assert len(events.since()["events"]) == 1
+    now[0] += 1
+    failures.append("timed out again")
+    provider.poll_once()
+    assert provider.snapshot()["metadata"] == dict.fromkeys(FRAME_METADATA_FIELDS)
+    warning = events.since()["events"][-1]
+    assert warning["level"] == "warning" and "timed out again" in str(warning)
+    provider.poll_once()
+    assert provider.snapshot()["available"]
+
+
 @pytest.mark.parametrize(
     "key,value",
     [

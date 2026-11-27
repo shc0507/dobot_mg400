@@ -15,6 +15,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "deploy/install.py"
+UDEV_TRIGGER = [
+    "udevadm",
+    "trigger",
+    "--action=change",
+    "--subsystem-match=usb",
+    "--subsystem-match=tty",
+    "--subsystem-match=video4linux",
+]
 DEVICES = [
     f"/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.{port}:1.0-video-index0" for port in (2, 3, 4)
 ]
@@ -36,9 +44,13 @@ def host(module, monkeypatch, tmp_path, tmp_path_factory):
     (code / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / "deploy/mg400.env.example", code / "deploy")
     shutil.copy(ROOT / "deploy/services.toml", code / "deploy")
-    # The tests write their own asset manifests, so the copy leaves out the console model asset.
+    # The tests write their own asset manifests, so the copy leaves out the bench twin assets
+    # and the wrist camera weights.
     registry = code / "deploy/services.toml"
-    registry.write_text(registry.read_text().replace('assets = ["twin-model"]', "assets = []"))
+    twin = 'assets = ["twin-model", "twin-collision"]'
+    wrist = ', "vision-wrist-weights"]'
+    assert twin in registry.read_text() and wrist in registry.read_text()
+    registry.write_text(registry.read_text().replace(twin, "assets = []").replace(wrist, "]"))
     shutil.copytree(ROOT / "config/systemd", code / "config/systemd")
     shutil.copytree(ROOT / "config/proxy", code / "config/proxy")
     commands = []
@@ -1052,7 +1064,7 @@ def test_only_enabled_udev_rules_are_rendered_with_root_permissions(host, option
     assert mode(target) == 0o644 and host.owner(target) == (0, 0)
     assert [command for command, _ in host.commands if command[0] == "udevadm"] == [
         ["udevadm", "control", "--reload-rules"],
-        ["udevadm", "trigger", "--subsystem-match=usb"],
+        UDEV_TRIGGER,
     ]
 
 
@@ -1061,7 +1073,7 @@ def test_optional_udev_dry_run_only_lists_actions(host, optional_udev):
     assert not host.settings.exists() and not (host.root / "etc/udev").exists()
     assert not [command for command, _ in host.commands if command[0] == "udevadm"]
     assert "Would run: udevadm control --reload-rules" in host.out.getvalue()
-    assert "Would run: udevadm trigger --subsystem-match=usb" in host.out.getvalue()
+    assert "Would run: " + " ".join(UDEV_TRIGGER) in host.out.getvalue()
 
 
 @pytest.mark.parametrize("where", ["source", "destination", "ancestor"])
@@ -1088,7 +1100,8 @@ def test_default_dry_run_lists_every_step(host):
     binary.write_bytes(b"offline Caddy fixture; never execute")
     assert host.install("--dry-run", "--caddy", str(binary)) == 0
     assert host.out.getvalue().replace(str(host.root), "<host>").splitlines() == [
-        "The Toupcam library is not installed. Pass it with --toupcam PATH.",
+        "The Toupcam library is not installed. The microscope service does not start "
+        "without it. Pass it with --toupcam PATH.",
         "Would ensure <host>/etc/mg400 (0755, 0:0)",
         "Would create <host>/etc/mg400/mg400.env",
         "Would ensure <host>/var/lib/mg400 (0750, 0:1000)",
@@ -1492,7 +1505,7 @@ def inventory_udev(module, host, monkeypatch):
 
 def test_inventory_udev_install_selects_only_registered_enabled_services(host, inventory_udev):
     assert host.install() == 0
-    expected = {"camera", "stage", "furnace", "microscope"}
+    expected = {"camera", "stage", "furnace", "microscope", "web"}
     rules = host.root / "etc/udev/rules.d"
     assert {p.name for p in rules.iterdir()} == {f"70-mg400-{name}.rules" for name in expected}
     for name in expected:
@@ -1502,7 +1515,7 @@ def test_inventory_udev_install_selects_only_registered_enabled_services(host, i
         assert mode(target) == 0o644 and host.owner(target) == (0, 0)
     assert [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"] == [
         ["udevadm", "control", "--reload-rules"],
-        ["udevadm", "trigger", "--subsystem-match=usb"],
+        UDEV_TRIGGER,
     ]
 
 
@@ -1512,11 +1525,11 @@ def test_inventory_udev_dry_run_writes_nothing_and_executes_no_udev(host, invent
     assert not (host.root / "etc/udev").exists()
     assert not [cmd for cmd, _ in host.commands if cmd[0] == "udevadm"]
     output = host.out.getvalue()
-    for name in ("camera", "stage", "furnace", "microscope"):
+    for name in ("camera", "stage", "furnace", "microscope", "web"):
         assert f"70-mg400-{name}.rules" in output
     assert "70-mg400-thermal.rules" not in output
     assert "Would run: udevadm control --reload-rules" in output
-    assert "Would run: udevadm trigger --subsystem-match=usb" in output
+    assert "Would run: " + " ".join(UDEV_TRIGGER) in output
 
 
 @pytest.mark.parametrize(
@@ -1630,7 +1643,7 @@ def test_nvenc_previews_keep_fast_start_and_use_3_mbit(module):
     assert "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n" in rendered
 
 
-def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
+def test_nvenc_adds_h265_previews_without_sei_at_2_mbit(module):
     modes = [(1280, 720, 30), (640, 480, 30), (1280, 720, 30)]
     rendered = module.render_go2rtc(DEVICES, modes=modes, nvenc=True)
     h265 = next(line for line in rendered.splitlines() if line.startswith("  h265: "))
@@ -1639,10 +1652,10 @@ def test_nvenc_adds_h265_previews_without_sei_at_2_5_mbit(module):
     assert "-forced-idr 1" in h265 and "-force_key_frames expr:gte(t,n_forced)" in h265
     # go2rtc 1.9.14 breaks an RTP aggregation packet of SEI and a small frame.
     assert h265.endswith('-bsf:v filter_units=remove_types=39|40"')
-    assert "  camera1_h265: ffmpeg:camera1#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera1_h265: ffmpeg:camera1#video=h265#bitrate=2M\n" in rendered
     assert "  camera2_h265: ffmpeg:camera2#video=h265#bitrate=2M\n" in rendered
-    assert "  camera3_h265: ffmpeg:camera3#video=h265#bitrate=2500k\n" in rendered
-    assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n" in rendered
+    assert "  camera3_h265: ffmpeg:camera3#video=h265#bitrate=2M\n" in rendered
+    assert "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2M\n" in rendered
     assert "_h265" not in module.render_go2rtc(DEVICES, modes=modes)
     assert "hevc_nvenc" not in module.render_go2rtc(DEVICES, modes=modes)
 
@@ -1653,7 +1666,7 @@ def test_nvenc_gives_a_large_camera_an_h265_preview_with_arrival_timestamps(modu
     # RTP cannot carry a 3840 pixel wide JPEG: the encoder reads the MJPEG stream over HTTP.
     assert (
         "  camera1_h265: ffmpeg:http://127.0.0.1:1984/api/stream.mjpeg?src=camera1"
-        "#input=mjpeg#video=h265#bitrate=6M\n"
+        "#input=mjpeg#video=h265#bitrate=3M\n"
     ) in rendered
     assert "camera1_h264" not in rendered and "camera1: video\n" not in rendered
     # The microscope side stream runs only during an objective switch.
@@ -1790,6 +1803,23 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
     )
 
 
+def test_fifth_camera_is_the_wrist_camera_by_its_serial(module):
+    wrist = "/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0"
+    devices = [*DEVICES, "/dev/v4l/by-path/offline-tray-video-index0", wrist]
+    configured = module.camera_configuration({"MG400_CAMERA_DEVICES": ",".join(devices)})
+    assert configured.streams[-1] == "camera5" and "camera5" in configured.preloaded
+    assert configured.still_mode(4) == (4000, 3000, 15)
+    assert configured.still_mode(5) == (3840, 2160, 30)
+    rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=True)
+    assert (
+        f"  camera5: v4l2:device?video={wrist}&input_format=mjpeg&video_size=1280x720" in rendered
+    )
+    assert "  camera5_h265: ffmpeg:camera5#video=h265#bitrate=2M\n" in rendered
+    assert "  camera5: video\n" in rendered
+    with pytest.raises(ValueError, match="Invalid camera device path"):
+        module.camera_devices("/dev/v4l/by-id/usb camera-video-index0")
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -1806,6 +1836,26 @@ def test_four_camera_modes_preserve_side_and_tray_without_preloading_large_strea
 def test_camera_devices_require_distinct_complete_stable_paths(module, value):
     with pytest.raises(ValueError):
         module.camera_devices(value)
+
+
+def test_go2rtc_holds_the_wrist_camera_open_at_a_large_mode(module):
+    wrist = "/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0"
+    devices = [DEVICES[0], DEVICES[1], wrist]
+    configured = module.camera_configuration(
+        {
+            "MG400_CAMERA_DEVICES": ",".join(devices),
+            "MG400_CAMERA_MODES": "3840x2160@30,1280x720@30,3840x2160@30",
+        }
+    )
+    assert configured.preloaded == ("camera2",) and configured.held == ("camera2", "camera3")
+    rendered = module.render_go2rtc(devices, modes=configured.modes, nvenc=True)
+    assert "preload:\n  camera2: video\n  camera3: video\nstreams:\n" in rendered
+    assert f"  camera3: v4l2:device?video={wrist}&input_format=mjpeg&video_size=3840" in rendered
+    # The wrist preview shows what the arm sees and keeps 6 Mbit/s. Other large previews get
+    # 3 Mbit/s, so that all previews fit the VPN link.
+    assert "api/stream.mjpeg?src=camera1#input=mjpeg#video=h265#bitrate=3M\n" in rendered
+    assert "api/stream.mjpeg?src=camera3#input=mjpeg#video=h265#bitrate=6M\n" in rendered
+    assert "camera3_h264" not in rendered
 
 
 def test_enabled_thermal_installs_private_roi_directory_group_and_usb_rule(

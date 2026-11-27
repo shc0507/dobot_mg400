@@ -19,6 +19,8 @@ SERVICES = ("robot", "stage", "thermal", "vision", "furnace", "microscope")
 
 # Seconds for one HTTP request to a lab service.
 TIMEOUT_S = 2
+# Seconds for a connect command. It stays below the labctl request timeout (15 s).
+CONNECT_TIMEOUT_S = 10
 # Fixed loopback addresses of the lab services. The host environment cannot change them.
 SERVICE_URLS = {f"MG400_ORCH_{name.upper()}_URL": ports.url(name) for name in SERVICES}
 
@@ -69,7 +71,17 @@ class ServiceAdapter:
     def healthy(self, state):
         return state.get("connected") is True
 
+    def _slow(self, timeout):
+        """A client with a longer timeout; the lease heartbeat keeps its own deadline."""
+        client = self._client_type(self._http.base_url, self.identity, timeout=timeout)
+        client._opener = self._http._opener
+        client._version_checked = self._http._version_checked
+        return client
+
     def command(self, action, **params):
+        if action == "connect":
+            # Opening the stage port resets the Arduino; the service waits for its boot.
+            return self._slow(CONNECT_TIMEOUT_S).command(action, **params)
         return self._http.command(action, **params)
 
     def request(self, path, data=None):
@@ -84,12 +96,7 @@ class ServiceAdapter:
         if path in calibration_timeouts:
             # Camera feedback can outlast a normal state read. Give this request
             # its own transport so Stop and lease renewal keep their deadlines.
-            capture = self._client_type(
-                self._http.base_url, self.identity, timeout=calibration_timeouts[path]
-            )
-            capture._opener = self._http._opener
-            capture._version_checked = self._http._version_checked
-            return capture._call(path, data)
+            return self._slow(calibration_timeouts[path])._call(path, data)
         return self._http._call(path, data)
 
     def events(self, since=0, *, instance=None):
@@ -408,6 +415,14 @@ class Clients:
             except Exception as exc:
                 self._failed(exc)
                 return
+
+    @property
+    def borrowed(self):
+        """True when the console lent every acquired service to this run."""
+        with self._lock:
+            return bool(self.acquired) and all(
+                isinstance(self.services[name], Borrowed) for name in self.acquired
+            )
 
     def stop_all(self, round_id=None):
         return self._stop_all(round_id)

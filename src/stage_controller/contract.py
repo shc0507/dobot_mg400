@@ -4,7 +4,6 @@ Lease authorization precedes the device lock. A stop epoch cancels delayed
 sequence commands without allowing another process to own the serial stream.
 """
 
-import math
 import time
 import uuid
 
@@ -15,6 +14,7 @@ from labkit.events import EventLog
 from .lease import StageLease
 from .protocol import (
     ENCODER_COUNTS_PER_ROTATION,
+    ENCODER_NOISE_COUNTS,
     MAX_ROTATIONS,
     MAX_SPEED,
     MICROSTEP_MODES,
@@ -25,7 +25,13 @@ from .protocol import (
     ControllerError,
     LinkError,
     has_calibrated_range,
+    position_reached,
+    target_counts,
 )
+
+
+def _counts(rotations):
+    return round(rotations * ENCODER_COUNTS_PER_ROTATION)
 
 
 class StageContract:
@@ -146,7 +152,7 @@ class StageContract:
             ),
             "keepalive": spec(dict(motor=motor, hold_id=hold_id)),
             "release_hold": spec(dict(motor=motor, hold_id=hold_id)),
-            "stop_all": spec({}, any_client=True),
+            "stop_all": spec({}, any_client=True, recovery=True),
             "set_microstep": spec(stepping),
             "set_microstep_guarded": spec({**stepping, "stop_epoch": epoch}),
         }
@@ -223,11 +229,8 @@ class StageContract:
             reached = healthy and (
                 state.calibration == "done"
                 if entry["action"] == "calibrate"
-                else math.isclose(
-                    state.position,
-                    entry["target"],
-                    rel_tol=0,
-                    abs_tol=max(state.tolerance, 1 / ENCODER_COUNTS_PER_ROTATION),
+                else position_reached(
+                    state.position, entry["target_counts"], state.tolerance, entry["slack_counts"]
                 )
             )
             self._finish_command(
@@ -335,11 +338,21 @@ class StageContract:
                 self._command_reference = None
             if operation in ("move", "move_to_position", "calibrate"):
                 state = self._motors[args["motor"]]
-                target = args.get("position", state.position + state.remaining)
+                # Compare whole counts with the target that the firmware computes:
+                # it rounds the request to the nearest count. A relative move
+                # starts from the firmware's own encoder sample, which can differ
+                # from the host's last reading by the encoder noise.
+                if operation == "move_to_position":
+                    target, slack = target_counts(args["position"]), 0
+                else:
+                    step = target_counts(abs(state.remaining))
+                    target = _counts(state.position) + (step if state.remaining >= 0 else -step)
+                    slack = ENCODER_NOISE_COUNTS
                 self._pending_commands[entry["id"]] = {
                     **entry,
                     "motor": args["motor"],
-                    "target": target,
+                    "target_counts": target,
+                    "slack_counts": slack,
                 }
                 self._last_command = {
                     **entry,
@@ -358,6 +371,7 @@ class StageContract:
         deadline = time.monotonic() + wait_s
         with self._lock:
             self._stop_epoch += 1
+            self._stopped_at = self.clock()
             if self._transport is None:
                 if any(self._motor_busy(motor) for motor in self._motors.values()):
                     self._lock_unconfirmed_stop()

@@ -481,6 +481,7 @@ class TurretProfileStore:
                 try:
                     profile = self.load(path.stem)
                 except (OSError, ValueError) as error:
+                    # One unreadable file must not hide the other profiles.
                     _LOG.warning("Skipping turret profile %s: %s", path.name, error)
                     continue
                 summaries.append(

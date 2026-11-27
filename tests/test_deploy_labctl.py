@@ -115,7 +115,7 @@ def systemd_units(ctl, missing=(), running=()):
 )
 def test_service_actions_map_short_names_to_units(ctl, argv, expected):
     assert ctl.call(*argv) == 0
-    assert systemctl(ctl) == [["systemctl", argv[0], *expected]]
+    assert mutations(ctl) == [["systemctl", argv[0], *expected]]
     notice = "60 seconds" in ctl.out.getvalue()
     assert notice is (argv[0] != "start" and ("web" in argv or "all" in argv))
 
@@ -728,12 +728,15 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
         "work/request.json": b'{"outcome":"unknown"}',
         "work/locks/persistent.json": b"do not omit nested lock directories",
         "locks/process.lock": b"exclude only this process-lock tree",
+        "twin-test/deployment-manifest.json": b"{}",
     }
     for name, content in files.items():
         path = ctl.host.data / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         path.chmod(0o600 if name.endswith(("key", ".json")) else 0o640)
+    # The stage test backend procedure keeps a runtime link in the test deploy state.
+    (ctl.host.data / "twin-test/stage-runtime").symlink_to("deployment-manifest.json")
     old_umask = os.umask(0)
     try:
         assert ctl.call("backup", str(ctl.archive)) == 0
@@ -756,12 +759,13 @@ def test_backup_preserves_host_data_owners_modes_and_persistent_command_locks(ba
             assert member.mode == stat.S_IMODE(info.st_mode)
             assert not member.uname and not member.gname
         for name, content in files.items():
-            if name.startswith("locks/"):
+            if name.startswith(("locks/", "twin-test/")):
                 assert f"var/lib/mg400/{name}" not in names
             else:
                 assert archive.extractfile(f"var/lib/mg400/{name}").read() == content
             assert (ctl.host.data / name).read_bytes() == content
         assert "var/lib/mg400/locks" not in names
+        assert "var/lib/mg400/twin-test" not in names
     assert list(ctl.archive.parent.iterdir()) == [ctl.archive]
     assert SETTINGS not in ctl.out.getvalue()
     ctl.run.assert_not_called()
@@ -1036,15 +1040,26 @@ def test_stop_all_skips_uninstalled_units_and_their_furnace_check(ctl):
 
 @pytest.mark.parametrize(
     ("missing", "running"),
-    [((), ()), (("mg400-furnace.service",), ("mg400-furnace.service",))],
-    ids=["installed-and-disabled", "unit-file-removed-while-running"],
+    [((), ("mg400-furnace.service",)), (("mg400-furnace.service",), ("mg400-furnace.service",))],
+    ids=["installed-and-running", "unit-file-removed-while-running"],
 )
-def test_stop_all_keeps_the_furnace_check_while_its_unit_exists_or_runs(ctl, missing, running):
+def test_stop_all_keeps_the_furnace_check_while_its_unit_runs(ctl, missing, running):
     systemd_units(ctl, missing=missing, running=running)
     ctl.state.side_effect = OSError("offline")
     assert ctl.call("stop", "all") == 1
     assert ctl.state.call_count == 1
     assert mutations(ctl) == []
+
+
+@pytest.mark.parametrize("command", ["stop", "restart"])
+def test_an_inactive_installed_furnace_unit_skips_the_furnace_check(ctl, command):
+    systemd_units(ctl)
+    ctl.state.side_effect = OSError("offline")
+    assert ctl.call(command, "all") == 0
+    ctl.state.assert_not_called()
+    (change,) = mutations(ctl)
+    assert change[:2] == ["systemctl", command]
+    assert "mg400-furnace.service" in change
 
 
 @pytest.mark.parametrize("returncode", [1, 0], ids=["systemd-error", "no-answer"])
@@ -1443,3 +1458,26 @@ def test_agent_groups_dispatch_without_a_pty(ctl, monkeypatch, group):
         group,
         "state",
     ]
+
+
+@pytest.mark.parametrize("problem", ["missing", "invalid"])
+@pytest.mark.parametrize(
+    "argv", [("all", "stop"), ("furnace", "stop"), ("furnace", "gas-off", "0")]
+)
+def test_stops_run_without_valid_settings(ctl, capsys, problem, argv):
+    if problem == "missing":
+        ctl.host.settings.unlink()
+    else:
+        ctl.host.settings.write_text('MG400_FURNACE_GAS_MAP={"0": "Ar"}\n')
+    assert ctl.call(*argv) == 0
+    program, command, environment = ctl.execvpe.call_args.args
+    assert command[-len(argv) :] == list(argv)
+    assert not any(key.startswith("MG400_") for key in environment)
+    assert "Settings ignored for the stop" in capsys.readouterr().err
+
+
+def test_other_agent_commands_still_need_valid_settings(ctl, capsys):
+    ctl.host.settings.write_text("MG400_ROBOT_HOST robot.test\n")
+    assert ctl.call("robot", "state") == 1
+    assert "Cannot start recipe command" in capsys.readouterr().err
+    ctl.execvpe.assert_not_called()

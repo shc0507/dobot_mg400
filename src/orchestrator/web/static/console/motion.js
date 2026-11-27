@@ -228,6 +228,14 @@
     return { state, held: typeof vacuum?.held === "boolean" ? vacuum.held : null };
   }
 
+  /** Gauge pressure of the suction line in hPa with 1 decimal and a sign, or null without a fresh reading. */
+  function pressureText(pressure) {
+    const value = pressure?.gauge_hpa;
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    const text = Math.abs(value).toFixed(1);
+    return (value < 0 && Number(text) !== 0 ? "−" : "") + text;
+  }
+
   /** The controller alarms as {id, text}: the description, the source and the solution. */
   function alarmRows(robot) {
     return (Array.isArray(robot?.alarms) ? robot.alarms : []).filter(item => item && typeof item === "object").map(item => {
@@ -313,7 +321,7 @@
       "pose.xy": "X/Y position", "pose.current": "Current", "pose.last": "Last known", "pose.unknown": "No position",
       "vac.title": "Suction", "vac.suck": "Suck", "vac.release": "Drop",
       "vac.state.suck": "Sucking", "vac.state.blow": "Blowing", "vac.state.off": "Off",
-      "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}",
+      "vac.held": "Held", "vac.notHeld": "Not held", "vac.label": "Suction: {action}", "vac.pressure": "Line pressure",
       "last": "Last: {action} · {result}", "last.message": "Last: {action} · {result} · {message}",
       "confirm": "Confirm", "cancel": "Cancel",
       "stage.stop": "Stop stage", "stage.connected": "Connected", "stage.disconnected": "Arduino not connected",
@@ -376,7 +384,7 @@
       "axis.clearFault": "Clear fault",
       "axis.calibrate": "Auto calibrate",
       "axis.goto": "Move to target",
-      "axis.calibrationHelp": "Auto calibrate moves to lower, upper, then center. Reset position clears both limits. Set limit records a positive upper or negative lower position.",
+      "axis.calibrationHelp": "Auto calibrate clears both limits and moves to lower, upper, then center. Reset position clears both limits. Set limit records a positive upper or negative lower position.",
       "axis.limits": "Limits {lower} → {upper} rot · {calibration}",
       "axis.live": "Live · {age} ms",
       "axis.stale": "Feedback stale",
@@ -444,7 +452,7 @@
       "pose.xy": "X/Y 位置", "pose.current": "当前位置", "pose.last": "最后位置", "pose.unknown": "无位置",
       "vac.title": "吸盘", "vac.suck": "吸取", "vac.release": "放下",
       "vac.state.suck": "吸取中", "vac.state.blow": "吹气中", "vac.state.off": "已关闭",
-      "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}",
+      "vac.held": "已吸住", "vac.notHeld": "未吸住", "vac.label": "吸盘：{action}", "vac.pressure": "管路压力",
       "last": "上一条：{action} · {result}", "last.message": "上一条：{action} · {result} · {message}",
       "confirm": "确认", "cancel": "取消",
       "stage.stop": "停止位移台", "stage.connected": "已连接", "stage.disconnected": "Arduino 未连接",
@@ -507,7 +515,7 @@
       "axis.clearFault": "清除故障",
       "axis.calibrate": "自动标定",
       "axis.goto": "移到目标",
-      "axis.calibrationHelp": "自动标定依次移到下限、上限和中心。位置归零会清除全部限位。正位置可设为上限，负位置可设为下限。",
+      "axis.calibrationHelp": "自动标定清除全部限位，依次移到下限、上限和中心。位置归零会清除全部限位。正位置可设为上限，负位置可设为下限。",
       "axis.limits": "限位 {lower} → {upper} 圈 · {calibration}",
       "axis.live": "实时 · {age} 毫秒",
       "axis.stale": "反馈过期",
@@ -541,7 +549,7 @@
     },
   };
 
-  Object.assign(logic, { vacuumView, alarmRows });
+  Object.assign(logic, { vacuumView, pressureText, alarmRows });
 
   function workspace() {
     let api = null, rootNode = null, timer = null, eventsTimer = null, shown = false, refreshing = false;
@@ -554,7 +562,7 @@
     const model = {
       step: 2, speed: null, pose: { x: "", y: "", z: "", r: "" }, views: { arm: STATION_VIEWS.arm[0], stage: STATION_VIEWS.stage[0] },
       axis: {}, local: [], confirm: null, inflight: new Set(), describing: false,
-      port: "", refView: {}, stageTarget: null,
+      port: "", refView: {}, stageTarget: null, stopPresses: { robot: 0, stage: 0 },
     };
     let refs = {};
 
@@ -589,8 +597,11 @@
       clearStageTarget();
       model.inflight.add(device + ":" + key);
       update();
+      const presses = model.stopPresses[device];
       try {
         const result = path ? await checked(path, params) : await api.relay(device, action, params);
+        const motion = key === "move" || key.startsWith("move-") || action === "calibrate";
+        if (motion && result?.outcome !== "refused") stopAgain(device, presses);
         const vars = { device: api.deviceName(device), action: actionName(device, action), error: result?.error || "" };
         if (result?.outcome === "accepted") note(device, "info", t("out.accepted", vars));
         else if (result?.outcome === "refused") note(device, "warning", t("out.refused", vars));
@@ -602,9 +613,19 @@
       }
     }
 
+    /** A command can reach the console after a Stop that was pressed while it was in flight.
+     * Then it can start after the Stop: stop the device once more. */
+    function stopAgain(device, presses) {
+      if (presses === undefined || model.stopPresses[device] === presses) return;
+      api.stop(device).catch(() => {});
+    }
+
     async function stopDevice(device) {
+      if (device in model.stopPresses) model.stopPresses[device] += 1;
       clearStageTarget();
       if (device === "stage") holdEnd();
+      // Stop arm also turns the service keyboard off; the switch follows at once.
+      if (device === "robot" && kb.on) { kb.on = kb.seen = false; releaseKeys(); update(); }
       const result = await api.stop(device);
       const outcome = ["confirmed", "pending", "unconfirmed"].includes(result?.outcome) ? result.outcome : "unknown";
       note(device, outcome === "confirmed" ? "info" : "warning", t("out.stop", { device: api.deviceName(device), outcome: t("res." + outcome) }));
@@ -766,6 +787,7 @@
       refs.vacState = el("span", { class: "mo-vac-state" });
       // The grip switch is not installed yet. Held shows when the robot service reports it.
       refs.vacHeld = el("span", { class: "mo-vac-held", hidden: true });
+      refs.vacPressure = el("b", { class: "mo-num-small" });
       refs.vac = Object.fromEntries(["suck", "release"].map(operation => [operation,
         el("button", { type: "button", class: "mo-btn", text: t("vac." + operation), "aria-label": t("vac.label", { action: t("vac." + operation) }),
           onclick: () => send("robot", "vacuum", { operation }, "vacuum") })]));
@@ -777,7 +799,9 @@
           el("div", { class: "mo-pose mo-zr-readings" }, poseReading("z", 2), poseReading("r", 3))),
         el("div", { class: "mo-joints", role: "group", "aria-label": t("pose.joints") },
           ...refs.joints.map((node, i) => el("div", { class: "mo-reading" }, el("span", { text: "J" + (i + 1) }), node))),
-        el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld),
+        el("div", { class: "mo-vac" }, el("span", { class: "mo-label", text: t("vac.title") }), refs.vacState, refs.vacHeld,
+          el("span", { class: "mo-vac-pressure", title: t("vac.pressure"), "aria-label": t("vac.pressure") },
+            refs.vacPressure, el("span", { class: "mo-unit", text: "hPa" }))),
         el("div", { class: "mo-grid2" }, refs.vac.suck, refs.vac.release));
 
       // Jog buttons: rarely used, so folded.
@@ -862,6 +886,8 @@
       releaseKeys();
       kb.on = true;
       kb.seen = false;
+      // A new disarm reason after this arm means the service turned keys off before the page saw them on.
+      kb.reasonAtArm = data.robot?.keyboard_disarm_reason ?? null;
       const result = await send("robot", "keyboard", { enabled: true, seq: ++kb.seq, speed: clampSpeed(kb.speed, data.kbCap) }, "keyboard");
       if (result?.outcome !== "accepted" && kb.on) { kb.on = false; releaseKeys(); update(); }
     }
@@ -944,7 +970,8 @@
       if (kb.on && !api.owns("robot")) { kb.on = kb.seen = false; releaseKeys(); }
       if (kb.on && robot && (robot.keyboard_enabled || robot.keyboard_arming)) kb.seen = true;
       // The service turned keys off (Stop, a button command, an alarm): follow it.
-      else if (kb.on && kb.seen && robot && !model.inflight.has("robot:keyboard")) { kb.on = kb.seen = false; releaseKeys(); }
+      else if (kb.on && robot && !model.inflight.has("robot:keyboard")
+        && (kb.seen || (typeof robot.keyboard_disarm_reason === "string" && robot.keyboard_disarm_reason !== kb.reasonAtArm))) { kb.on = kb.seen = false; releaseKeys(); }
       refs.kbSwitch.setAttribute("aria-checked", kb.on ? "true" : "false");
       refs.kbSwitch.className = "mo-switch" + (kb.on ? " mo-on" : "");
       refs.kbSwitch.disabled = !kb.on && !(ready && robot.enabled === true && !robot.busy && data.kbCap && !model.inflight.has("robot:keyboard-off"));
@@ -1322,13 +1349,17 @@
       item.status = "sending";
       model.inflight.add("stage:point");
       renderStageTarget();
+      const presses = model.stopPresses.stage;
       try {
-        const result = await api.request("stage/position", { target: item.target }, { timeout: 8000 });
+        // The console refuses the target when the stage stopped after it was chosen.
+        const result = await api.request("stage/position", { target: item.target, stop_epoch: item.stopEpoch ?? null }, { timeout: 8000 });
+        stopAgain("stage", presses);
         if (model.stageTarget !== item) return;
         if (!result.operation) throw new Error(result.error || t("target.failed"));
         data.stageOperation = result.operation;
         applyTargetOperation(item, result.operation);
       } catch (error) {
+        if (error.status === 0) stopAgain("stage", presses);
         if (model.stageTarget !== item) return;
         if (item.operationId) return;
         if (error.status === 0) {
@@ -1594,6 +1625,7 @@
       refs.vacHeld.hidden = vac.held === null;
       refs.vacHeld.textContent = vac.held === null ? "" : t(vac.held ? "vac.held" : "vac.notHeld");
       refs.vacHeld.className = "mo-vac-held" + (vac.held ? " mo-ok" : "");
+      refs.vacPressure.textContent = pressureText(robot?.pressure) ?? "—";
       const vacReady = ready && vac.state !== null && !robot.busy && !busy("robot");
       for (const [operation, node] of Object.entries(refs.vac)) {
         node.disabled = !vacReady;
@@ -1738,7 +1770,7 @@
         root.document?.removeEventListener?.("click", onGlobalStop, true);
         rootNode = null;
       },
-      _test: { data, model, kb, sh, refs: () => refs, refresh, update },
+      _test: { data, model, kb, sh, refs: () => refs, refresh, update, send },
     };
   }
 

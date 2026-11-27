@@ -40,11 +40,11 @@ body:has(#ws-cameras:not([hidden])) { background: var(--lc-ground); }
 #ws-cameras .lcam-chip.lcam-on::before { opacity: 1; }
 #ws-cameras .lcam-snapall { background: var(--cm-card); box-shadow: var(--cm-shadow); }
 
-/* The wall: 6 views in 3 columns and 2 rows, sized to the window. */
+/* The wall: 7 views in 4 columns and 2 rows, sized to the window. */
 #ws-cameras .lcam-wall { display: grid; gap: 14px; height: calc(100vh - var(--lc-top, 113px) - 104px); min-height: 480px; }
-#ws-cameras .lcam-mode-wall { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
-/* The large view: 1 view large on the left and a rail of the other 5 on the right. */
-#ws-cameras .lcam-mode-large { grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: repeat(5, minmax(0, 1fr)); gap: 10px 14px; }
+#ws-cameras .lcam-mode-wall { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+/* The large view: 1 view large on the left and a rail of the other 6 on the right. */
+#ws-cameras .lcam-mode-large { grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: repeat(6, minmax(0, 1fr)); gap: 10px 14px; }
 #ws-cameras .lcam-mode-large .lcam-big { grid-column: 1; grid-row: 1 / -1; }
 #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) { grid-column: 2; }
 #ws-cameras .lcam-cell { position: relative; min-width: 0; min-height: 0; }
@@ -115,7 +115,7 @@ body:has(#ws-cameras:not([hidden])) { background: var(--lc-ground); }
   #ws-cameras .lcam-wall { height: auto; min-height: 0; }
   #ws-cameras .lcam-mode-wall { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; }
   #ws-cameras .lcam-mode-wall .lcam-cell { aspect-ratio: 4 / 3; }
-  #ws-cameras .lcam-mode-large { grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: auto auto; }
+  #ws-cameras .lcam-mode-large { grid-template-columns: repeat(6, minmax(0, 1fr)); grid-template-rows: auto auto; }
   #ws-cameras .lcam-mode-large .lcam-big { grid-column: 1 / -1; grid-row: 1; aspect-ratio: 16 / 10; }
   #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) { grid-column: auto; grid-row: 2; aspect-ratio: 4 / 3; }
   #ws-cameras .lcam-mode-large .lcam-cell:not(.lcam-big) .lcam-card { right: 0; bottom: calc(100% + 8px); }

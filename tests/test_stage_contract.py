@@ -1,15 +1,21 @@
 """Console lease, STOP and measured-rotation command boundaries; no hardware."""
 
+import math
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from contract_helpers import check_contract
 
 from labkit.errors import ServiceError
+from stage_controller import protocol
 from stage_controller.app import create_app
 from stage_controller.protocol import ControllerError, DemoTransport, LinkError
+
+FIRMWARE = Path(__file__).resolve().parents[1] / "firmware" / "stage-controller-v3"
 
 CLIENT = {"X-MG400-Client": "automation-a"}
 HOLD_ID = "automation-hold-0001"
@@ -156,6 +162,78 @@ def test_guarded_absolute_target_is_sent_directly_to_firmware(contract):
     assert controller.snapshot()["motors"][0]["positioning_ready"]
 
 
+def end_short(transport, motor, counts):
+    """Make the demo move end `counts` encoder counts before its target."""
+    started, duration, start, delta = transport.moves[motor]
+    transport.moves[motor] = (started, duration, start, delta - math.copysign(counts, delta) / 4096)
+
+
+def test_absolute_completion_uses_the_rounded_firmware_target(contract):
+    controller, transport, clock, web, _ = contract
+    calibrate(controller, clock)
+    acquire(web)
+    result = post(
+        web,
+        "command",
+        dict(action="move_to_position", motor="bottom", position=0.7501, speed=0.25),
+    )
+    assert result.status_code == 202
+    # The firmware targets floor(0.7501 * 4096 + 0.5) = 3072 counts and is done
+    # 4 counts (its tolerance) away: 4.4 counts from the unrounded request.
+    end_short(transport, "bottom", 4)
+    clock.advance(1)
+    controller.poll()
+    state = controller.snapshot()
+    assert state["motors"][0]["position_rotations"] * 4096 == pytest.approx(3068)
+    assert state["last_command"]["result"] == "ok"
+
+
+def test_host_completion_constants_match_the_firmware():
+    config = (FIRMWARE / "EncoderConfig.h").read_text()
+    motor = (FIRMWARE / "MotorControl.cpp").read_text()
+    noise = re.search(r"EncoderNoiseCounts = ([\d.]+)f;", config)
+    microstep = re.search(r"microstepDivisor = (\d+);", motor)
+    assert float(noise[1]) == protocol.ENCODER_NOISE_COUNTS
+    assert int(microstep[1]) == protocol.REQUIRED_MICROSTEP
+    # The demo reports the tolerance by the firmware formula.
+    assert (
+        "ceilf(0.5f * countsPerRotation / pulsesPerRotation(m) + EncoderConfig::EncoderNoiseCounts)"
+        in motor
+    )
+    assert DemoTransport().motors["bottom"].tolerance * 4096 == 4
+
+
+@pytest.mark.parametrize(("error", "reached"), [(3, True), (4, True), (5, False)])
+def test_absolute_completion_accepts_the_firmware_tolerance(contract, error, reached):
+    controller, transport, clock, web, _ = contract
+    calibrate(controller, clock)
+    acquire(web)
+    result = post(
+        web,
+        "command",
+        dict(action="move_to_position", motor="bottom", position=0.75, speed=0.25),
+    )
+    assert result.status_code == 202
+    end_short(transport, "bottom", error)
+    clock.advance(1)
+    controller.poll()
+    last = controller.snapshot()["last_command"]
+    assert last["result"] == ("ok" if reached else "failed")
+
+
+@pytest.mark.parametrize(("short", "result"), [(-4, "ok"), (6, "ok"), (9, "failed")])
+def test_relative_completion_allows_the_firmware_start_sample(contract, short, result):
+    controller, transport, clock, web, _ = contract
+    acquire(web)
+    assert move(web, speed=0.25, rotations=0.0085).status_code == 202
+    # 0.0085 rotations is 35 counts after rounding. The firmware samples its own start,
+    # which can differ from the host reading by the encoder noise (2 counts).
+    end_short(transport, "bottom", short + (0.0085 * 4096 - 35))
+    clock.advance(1)
+    controller.poll()
+    assert controller.snapshot()["last_command"]["result"] == result
+
+
 def test_any_client_can_stop_and_expiry_stops_without_http(contract):
     controller, transport, clock, web, _ = contract
     acquire(web)
@@ -222,7 +300,7 @@ def test_snapshot_uses_encoder_rotations_and_unset_bounds_are_absent(contract):
     state = controller.snapshot()
     assert state["coordinate_unit"] == "rotations" and not state["legacy_geometry_active"]
     motor = state["motors"][0]
-    assert motor["steps_per_revolution"] == 200 and motor["max_speed"] == 0.5
+    assert motor["steps_per_revolution"] == 200 and motor["max_speed"] == 0.6
     assert motor["lower_limit_rotations"] is motor["upper_limit_rotations"] is None
     transport.motors["bottom"].position = 1.234
     controller.poll()
@@ -410,3 +488,14 @@ def test_disconnect_during_stop_cannot_hide_motion_or_replace_the_board(
     assert recovered.json["state"]["locked"] is True
     assert move(web, motor="top").status_code == 409
     assert "motor top" not in transport.commands
+
+
+def test_stop_all_command_works_while_the_service_is_locked(contract):
+    controller, transport, _, web, _ = contract
+    controller._lock_unconfirmed_stop()
+    assert controller.snapshot()["locked"] is True
+    transport.commands.clear()
+    response = post(web, "command", {"action": "stop_all"}, client={"X-MG400-Client": "other"})
+    assert response.status_code == 202
+    assert transport.commands == ["stop all"]
+    assert move(web).status_code == 409

@@ -24,6 +24,7 @@ from labkit.errors import ServiceError
 from labkit.events import EventLog
 from labkit.flask import contract_blueprint
 from labkit.lease import Lease
+from vision import wrist_camera
 from vision.calibration import (
     DEFAULT_DIRECTORY,
     DRIFT_LIMIT_PX,
@@ -40,10 +41,13 @@ from vision.calibration import (
 from vision.frames import DemoSource, FrameError, Go2RTCSource, validate_camera
 from vision.localizer import Detection, Localizer, draw_detections
 from vision.qr import DetectionCancelled, detect_qr_codes
-from vision.tray import cross_check_slots, locate_tray, validate_tray
+from vision.tray import TrayCheckError, cross_check_slots, locate_tray, validate_tray
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/vision"
 DEFAULT_WEIGHTS = "/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt"
+# The wrist camera sees small chips from above: it has weights of its own and a larger input.
+WRIST_WEIGHTS = "/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt"
+WRIST_INPUT_SIZE = 1280
 MAX_RESULT_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 16 * 1024
 MAX_RETAINED_RESULTS = 100
@@ -55,10 +59,12 @@ def _slot_arguments(args):
     """Validate bounded data, never a server-side tray filename."""
     if set(args) != {"camera", "tray", "targets", "axis"}:
         raise ValueError("Slot observation needs camera, tray, targets and axis.")
-    if args["axis"] not in ("long", "short"):
-        raise ValueError("Chip axis must be explicitly long or short.")
+    if args["axis"] not in ("long", "short", None):
+        raise ValueError("Chip axis must be explicitly long, short or null.")
     tray = validate_tray(args["tray"])
     targets = args["targets"]
+    if args["axis"] is None and isinstance(targets, dict) and any(targets.values()):
+        raise ValueError("A null chip axis is only for slots without a taught station.")
     ids = {slot["id"] for slot in tray["slots"]}
     if not isinstance(targets, dict) or not 1 <= len(targets) <= 128:
         raise ValueError("Slot observation requires explicit taught XY targets.")
@@ -84,6 +90,23 @@ def _slot_arguments(args):
     ):
         raise ValueError("Slot command exceeds the complete 16 KiB request limit.")
     return tray
+
+
+def _tray_check_message(report):
+    """Name each slot that did not pass, with its failures, missing items and residuals."""
+    parts = []
+    for ident, item in report["slots"].items():
+        if item["status"] == "ok":
+            continue
+        reasons = item["failures"] + [f"missing {name}" for name in item["missing"]]
+        for key, label in (("station_residual_mm", "station"), ("chip_residual_mm", "chip")):
+            if item[key] is not None:
+                reasons.append(f"{label} {item[key]:.2f} mm")
+        parts.append(f"{ident}: {', '.join(reasons)}")
+    return (
+        f"Tray slot check did not pass (tolerance {report['tolerance_mm']:g} mm): "
+        + "; ".join(parts)
+    )[:1000]
 
 
 def _slot_observations(image, model, location, detections, axis, requested=None):
@@ -119,19 +142,24 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         vector = segment[1] - segment[0]
         unit = vector / np.linalg.norm(vector)
         normal = np.array([-unit[1], unit[0]])
-        margin = geometry["width_mm"] / 2 + location["tolerance_mm"]
-        start, end = segment[0] - unit * margin, segment[1] + unit * margin
-        polygon = np.array(
-            [
-                start + normal * margin,
-                end + normal * margin,
-                end - normal * margin,
-                start - normal * margin,
-            ]
-        )
-        slots[ident] = cv2.convexHull(polygon.astype(np.float32))
+
+        def outline(margin):
+            start, end = segment[0] - unit * margin, segment[1] + unit * margin
+            return np.array(
+                [
+                    start + normal * margin,
+                    end + normal * margin,
+                    end - normal * margin,
+                    start - normal * margin,
+                ]
+            )
+
+        # Chips associate with the groove itself; the tolerance would overlap neighbours.
+        slots[ident] = cv2.convexHull(outline(geometry["width_mm"] / 2).astype(np.float32))
         if ident not in requested:
             continue
+        # Visibility and arm occlusion use the groove plus the tolerance.
+        polygon = outline(geometry["width_mm"] / 2 + location["tolerance_mm"])
         xyz = np.column_stack((polygon, np.full(4, model["tray_height_mm"])))
         rotation = np.asarray(model["rotation"], np.float64)
         translation = np.asarray(model["translation"], np.float64)
@@ -207,16 +235,20 @@ def _slot_observations(image, model, location, detections, axis, requested=None)
         if not matches:
             continue
         center, size, angle = cv2.minAreaRect(mapped)
-        if min(size) <= 1e-6 or abs(size[0] - size[1]) <= max(size) * 0.01:
-            raise ValueError("Chip axis is ambiguous.")
-        # OpenCV's width axis is mapped into the calibrated robot plane first.
-        if (size[1] > size[0]) == (axis == "long"):
-            angle += 90
+        if axis is None:
+            angle = None  # A cup pick uses no chip axis.
+        else:
+            if min(size) <= 1e-6 or abs(size[0] - size[1]) <= max(size) * 0.01:
+                raise ValueError("Chip axis is ambiguous.")
+            # OpenCV's width axis is mapped into the calibrated robot plane first.
+            if (size[1] > size[0]) == (axis == "long"):
+                angle += 90
+            angle %= 180
         found[matches[0]].append(
             {
                 "state": "present",
                 "center_xy_mm": list(center),
-                "angle_deg": angle % 180,
+                "angle_deg": angle,
                 "reason": None,
             }
         )
@@ -271,6 +303,7 @@ class VisionService:
         demo=False,
         frames=None,
         weights=DEFAULT_WEIGHTS,
+        wrist_weights=WRIST_WEIGHTS,
         device=None,
         gpu_fraction=0.15,
         fixture_dir=FIXTURES,
@@ -278,6 +311,7 @@ class VisionService:
         torch_loader=None,
         qr_detector=detect_qr_codes,
         marker_detector=detect_markers,
+        wrist_model=wrist_camera.load,
         calibration_directory=DEFAULT_DIRECTORY,
         calibration_options=None,
         clock=time.monotonic,
@@ -299,14 +333,16 @@ class VisionService:
             frames if frames is not None else (DemoSource(fixture_dir) if demo else Go2RTCSource())
         )
         self.camera_count = getattr(self.frames, "camera_count", 4)
-        if type(self.camera_count) is not int or not 0 <= self.camera_count <= 4:
-            raise ValueError("Frame source camera_count must be an integer from 0 through 4.")
+        if type(self.camera_count) is not int or not 0 <= self.camera_count <= 5:
+            raise ValueError("Frame source camera_count must be an integer from 0 through 5.")
         self.weights, self.device, self.gpu_fraction = weights, device, gpu_fraction
+        self.wrist_weights = wrist_weights
         self.fixture_dir = Path(fixture_dir)
         self._factory = localizer_factory
         self._torch_loader = torch_loader or (lambda: importlib.import_module("torch"))
         self._qr = qr_detector
         self._markers = marker_detector
+        self._wrist_model = wrist_model
         self.calibrations = CalibrationStore(calibration_directory)
         self._calibration_options = calibration_settings(calibration_options)
         devices = getattr(getattr(self.frames, "configuration", None), "devices", ())
@@ -322,12 +358,13 @@ class VisionService:
         self._startup_done = threading.Event()
         self._startup_done.set()
         self._poller = self._worker = None
-        self._model = None
+        self._model = self._wrist_detector = None
         self._started = self._starting = self._closed = False
         self._connected = False
         self._active = None
         self._next = self._seq = self.expiry_count = 0
         self._fault = self._last_command = self._summary = None
+        self._failure_message = None
         self._results = OrderedDict()
         self._result_bytes = 0
         self.events = EventLog(clock=wall_clock, instance=self.instance)
@@ -406,6 +443,17 @@ class VisionService:
             "default": DRIFT_LIMIT_PX,
             "description": "Maximum distance from the detected to the expected marker 4 center.",
         }
+        wrist = copy.deepcopy(params)
+        wrist["properties"].update(
+            flange_mm=copy.deepcopy(drift["properties"]["flange_mm"]),
+            touch_z_mm={
+                "type": "number",
+                "minimum": -1_000_000,
+                "maximum": 1_000_000,
+                "description": "Wrist camera only, with flange_mm: the flange Z at which the "
+                "tool tip touches the surface. Adds robot_mm to each marker or detection.",
+            },
+        )
         slots = copy.deepcopy(params)
         slots["properties"].update(
             tray={"type": "object", "description": "Bounded tray model data, never a file path."},
@@ -415,7 +463,11 @@ class VisionService:
                 "maxProperties": 128,
                 "description": "Slot ID to taught robot XY, or null for no taught station.",
             },
-            axis={"type": "string", "enum": ["long", "short"]},
+            axis={
+                "type": ["string", "null"],
+                "enum": ["long", "short", None],
+                "description": "null only for slots without a taught station (cup pick).",
+            },
         )
         slots["required"] += ["tray", "targets", "axis"]
         return describe(
@@ -426,9 +478,9 @@ class VisionService:
             on_lease_expiry="cancel the controlling client's inference and discard late results",
             commands=(
                 {
-                    "detect": command(params),
+                    "detect": command(wrist),
                     "read_labels": command(labels),
-                    "read_markers": command(params),
+                    "read_markers": command(wrist),
                     "calibrate_camera": command(calibration),
                     "check_calibration": command(drift),
                     "observe_slots": command(slots),
@@ -474,6 +526,7 @@ class VisionService:
             self._quit.clear()
             self._startup_cancel.clear()
             self._startup_done.clear()
+        wrist = None
         try:
             with self._inference:
                 self._check_startup()
@@ -490,8 +543,15 @@ class VisionService:
                         torch.cuda.set_per_process_memory_fraction(self.gpu_fraction, device=index)
                     self.device = selected
                     model = (self._factory or Localizer)(self.weights, device=selected)
+                    cameras = range(1, len(self._devices) + 1)
+                    if any(map(self._is_wrist, cameras)) and Path(self.wrist_weights).is_file():
+                        wrist = (self._factory or Localizer)(
+                            self.wrist_weights, device=selected, input_size=WRIST_INPUT_SIZE
+                        )
                 self._check_startup()
                 model.predict(Image.new("RGB", (640, 640)))
+                if wrist is not None:
+                    wrist.predict(Image.new("RGB", (WRIST_INPUT_SIZE, WRIST_INPUT_SIZE)))
             self._check_startup()
             poller = threading.Thread(target=self._poll, name="vision-lease", daemon=True)
             # Publish only after start succeeds. close() never joins an
@@ -500,7 +560,7 @@ class VisionService:
             with self._lock:
                 self._poller = poller
                 self._check_startup()
-                self._model = model
+                self._model, self._wrist_detector = model, wrist
                 self._started = True
                 self._connected = self.demo
                 self._fault = None
@@ -526,6 +586,24 @@ class VisionService:
             with self._lock:
                 self._expire_results()
 
+    def _is_wrist(self, camera):
+        """Only the wrist camera has a by-id device name."""
+        return camera <= len(self._devices) and self._devices[camera - 1].startswith(
+            "/dev/v4l/by-id/"
+        )
+
+    def _wrist_points(self, image, items, args):
+        """Add robot_mm, the arm x and y of each center, for items on 1 level surface."""
+        model = self._wrist_model()
+        if list(image.size) != model["image_size"]:
+            raise ValueError("Live image size differs from the wrist camera calibration.")
+        if not items:
+            return
+        centers = [item.get("center_px", item.get("center_xy")) for item in items]
+        points = wrist_camera.surface_points(model, centers, args["flange_mm"], args["touch_z_mm"])
+        for item, (x, y) in zip(items, points):
+            item["robot_mm"] = {"x": float(x), "y": float(y)}
+
     def _nominal_distance(self, tool_dz_mm):
         """The tag sits above the flange and the tip below it: D = tag height + tool dz."""
         if type(tool_dz_mm) not in (int, float) or not math.isfinite(tool_dz_mm):
@@ -549,6 +627,8 @@ class VisionService:
             }
         if action == "check_calibration":
             allowed |= {"flange_mm", "limit_px"}
+        if action in {"read_markers", "detect"}:
+            allowed |= {"flange_mm", "touch_z_mm"}
         if action == "observe_slots":
             allowed |= {"tray", "targets", "axis"}
         if (
@@ -614,6 +694,18 @@ class VisionService:
                     "Drift checking requires a configured stable camera port identity."
                 )
             camera_device(self._devices[camera - 1])
+        if {"flange_mm", "touch_z_mm"} & set(args) and action != "check_calibration":
+            flange, touch = args.get("flange_mm"), args.get("touch_z_mm")
+            if (
+                not isinstance(flange, list)
+                or len(flange) != 4
+                or any(
+                    type(v) not in (int, float) or not math.isfinite(v) for v in [*flange, touch]
+                )
+            ):
+                raise ValueError("Arm coordinates need flange_mm [x, y, z, r] and touch_z_mm.")
+            if not self._is_wrist(camera):
+                raise ValueError("Arm coordinates need the wrist camera.")
         region = args.get("region")
         if "region" in args and (
             not isinstance(region, (list, tuple))
@@ -679,16 +771,49 @@ class VisionService:
         return job["id"]
 
     def read(self, action, camera, *, annotated=False):
+        """Answer a preview read. It takes no job slot, so it never makes a command busy.
+
+        A leased command that arrives meanwhile waits for the inference lock. A
+        failed read leaves fault and connected unchanged; a successful read sets
+        connected and clears fault, as a successful command does.
+        """
         self.lease.poll()
-        job = self._reserve(action, {"camera": camera}, None)
-        self._execute(job)
-        if job["error"] is not None:
-            raise job["error"]
+        camera, region = self._arguments(action, {"camera": camera})
+        with self._lock:
+            if not self._started or self._starting or self._closed:
+                raise ServiceError(503, "Vision is not started.")
+        job = {
+            "id": None,
+            "action": action,
+            "camera": camera,
+            "region": region,
+            "args": {"camera": camera},
+            "client": None,
+            "cancel": threading.Event(),
+        }
+        result, image, outcome, error = self._infer(job)
+        with self._lock:
+            # A detection preview polls every second, so only a new failure cause is an event.
+            if outcome == "failed" and error.message != self._failure_message:
+                self.events.add(
+                    "error",
+                    "vision inference failed",
+                    action=action,
+                    camera=camera,
+                    result=outcome,
+                    error=error.message,
+                )
+            self._failure_message = error.message if outcome == "failed" else None
+            if outcome == "ok" and (self._connected is not True or self._fault is not None):
+                self._connected, self._fault = True, None
+                self._seq += 1
+        if error is not None:
+            raise error
         if annotated:
             encoded = io.BytesIO()
-            job["image"].save(encoded, format="JPEG")
+            image.save(encoded, format="JPEG")
             return encoded.getvalue()
-        return job["result"]
+        return result
 
     def _process(self, job):
         if job["cancel"].is_set():
@@ -754,7 +879,9 @@ class VisionService:
                 },
             )
             device = self._devices[job["camera"] - 1]
-            saved = self.calibrations.save(device, model, commit_guard=lambda: self._commit(job))
+            saved = self.calibrations.save(
+                device, model, commit_guard=lambda: self._commit(job, published=True)
+            )
             with self._lock:
                 self._calibrated_cameras.add(job["camera"])
             result = {"camera": job["camera"], "calibrated": True, "calibration": saved}
@@ -800,7 +927,8 @@ class VisionService:
             }
             annotated = image
         elif job["action"] == "detect":
-            annotated, result = self._model.predict(image)
+            wrist = self._wrist_detector is not None and self._is_wrist(job["camera"])
+            annotated, result = (self._wrist_detector if wrist else self._model).predict(image)
             result = copy.deepcopy(result)
         else:
             region = job["region"] or [0, 0, image.width, image.height]
@@ -852,10 +980,14 @@ class VisionService:
             else:
                 with self._lock:
                     self._calibrated_cameras.discard(job["camera"])
+        if "flange_mm" in job["args"] and job["action"] in {"read_markers", "detect"}:
+            # The wrist camera moves with the arm: the caller gives the pose of this frame.
+            self._wrist_points(image, result.get("detections", result.get("markers")), job["args"])
+            result["calibrated"] = True
         return self._bounded_result(result), annotated
 
     @contextmanager
-    def _commit(self, job):
+    def _commit(self, job, *, published=False):
         # Slow solving, staging and inference precede this short authority fence.
         # Stop and lease expiry serialize with model installation or drift-result publication.
         with self.lease.control(job["client"]):
@@ -863,6 +995,9 @@ class VisionService:
                 if self._closed or self._active is not job or job["cancel"].is_set():
                     raise DetectionCancelled()
                 yield
+                if published:
+                    # The model is installed; a later Stop cannot discard it.
+                    job["published"] = True
 
     def _released(self, client):
         with self._lock:
@@ -885,6 +1020,10 @@ class VisionService:
             raise ServiceError(503, "Vision result is not finite JSON data.") from exc
 
     def _execute(self, job):
+        self._finish(job, *self._infer(job))
+
+    def _infer(self, job):
+        """Return (result, image, outcome, error) of 1 inference under the inference lock."""
         result = image = error = None
         outcome = "ok"
         try:
@@ -899,14 +1038,16 @@ class VisionService:
             outcome, error = "failed", ServiceError(503, str(exc))
         except ServiceError as exc:
             outcome, error = "failed", exc
+        except TrayCheckError as exc:
+            outcome, error = "failed", ServiceError(400, _tray_check_message(exc.report))
         except ValueError as exc:
             outcome, error = "failed", ServiceError(400, str(exc))
         except Exception as exc:
             outcome, error = "failed", ServiceError(503, f"Vision processing failed: {exc}")
-        self._finish(job, result, image, outcome, error)
+        return result, image, outcome, error
 
     def _finish(self, job, result, image, outcome, error):
-        if job["client"] is not None and outcome == "ok":
+        if job["client"] is not None and outcome == "ok" and not job.get("published"):
             try:
                 with self._commit(job):
                     return self._finish_result(job, result, image, outcome, error)
@@ -922,7 +1063,7 @@ class VisionService:
             if job["done"].is_set():
                 return
             # Stop can arrive after processing finishes but before publication.
-            if self._closed or job["cancel"].is_set():
+            if (self._closed or job["cancel"].is_set()) and not job.get("published"):
                 outcome, error = (
                     "stopped",
                     ServiceError(409, "Inference stopped; its result was discarded."),
@@ -986,6 +1127,7 @@ class VisionService:
                 + {"ok": "complete", "failed": "failed", "stopped": "stopped"}[outcome],
                 **identity,
             )
+            self._failure_message = error.message if outcome == "failed" else None
             job["done"].set()
 
     def _expire_results(self):

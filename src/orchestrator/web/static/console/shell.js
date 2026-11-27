@@ -362,19 +362,20 @@
     return (shell.snapshot?.control || []).filter(item => item.mine && item.state === "held");
   }
 
-  function applyControl(list) {
+  /** ended: device -> the server's end message for this page's ended controls. */
+  function applyControl(list, ended = {}) {
     if (!shell.snapshot) return;
     const previous = shell.knownControl;
     shell.snapshot.control = list;
     const next = new Map(list.filter(item => item.mine).map(item => [item.device, item]));
     for (const [device] of previous) {
       if (!next.has(device)) {
-        const ended = list.find(item => item.device === device);
-        if (!ended && shell.expectRelease?.has(device)) continue;
-        if (!ended) notify(t("control.lost", { device: deviceName(device), message: "lease ended" }), "warn");
+        if (list.some(item => item.device === device)) continue;
+        if (shell.expectRelease?.has(device)) continue;
+        const message = typeof ended?.[device] === "string" ? ended[device] : "lease ended";
+        notify(t("control.lost", { device: deviceName(device), message }), "warn");
       }
     }
-    shell.expectRelease?.clear();
     shell.knownControl = next;
     renderControls();
   }
@@ -522,7 +523,7 @@
       shell.stateAt = now();
       trackStops(body.operations);
       renderBand();
-      applyControl(body.control || []);
+      applyControl(body.control || [], body.control_ended);
       for (const listener of shell.stateListeners) { try { listener(body); } catch (error) { console.error(error); } }
       shell.offline = false;
     } catch {
@@ -539,8 +540,8 @@
     shell.beatBusy = true;
     try {
       const body = await request("/api/console/heartbeat", {}, { timeout: 2000 });
-      applyControl(body.control || []);
-    } catch { /* The server releases after 3 s without a heartbeat. */ }
+      applyControl(body.control || [], body.control_ended);
+    } catch { /* The server releases after 3 s without a heartbeat, or 120 s during a microscope recording. */ }
     finally { shell.beatBusy = false; }
   }
 
@@ -550,18 +551,23 @@
     return body.control;
   }
 
-  async function release(device) {
+  /** Run an own release. A control list that arrives meanwhile does not report the device as lost. */
+  async function expectingRelease(devices, work) {
     shell.expectRelease = shell.expectRelease || new Set();
-    shell.expectRelease.add(device);
-    const body = await request(`/api/console/control/${encodeURIComponent(device)}/release`, {});
-    await poll();
-    return body;
+    for (const device of devices) shell.expectRelease.add(device);
+    try {
+      const body = await work();
+      await poll();
+      return body;
+    } finally { for (const device of devices) shell.expectRelease.delete(device); }
+  }
+
+  async function release(device) {
+    return expectingRelease([device], () => request(`/api/console/control/${encodeURIComponent(device)}/release`, {}));
   }
 
   async function releaseAll() {
-    shell.expectRelease = new Set(myControls().map(item => item.device));
-    const body = await request("/api/console/release-all", {});
-    await poll();
+    const body = await expectingRelease(myControls().map(item => item.device), () => request("/api/console/release-all", {}));
     return body.results;
   }
 
@@ -572,7 +578,8 @@
       if (body.outcome === "unknown") notify(t("outcome.unknown"), "error");
       return body;
     } catch (error) {
-      if (error.status === 0) {
+      // No answer, a server error or an unreadable reply: the command may have run.
+      if (error.status === 0 || error.status >= 500 || error.body === null) {
         notify(t("outcome.unknown"), "error");
         return { outcome: "unknown", error: error.message };
       }
@@ -685,6 +692,8 @@
     shell.lang = pickLanguage(stored, root.navigator?.language);
     $("lc-lang").addEventListener("click", () => setLanguage(shell.lang === "en" ? "zh" : "en"));
     $("lc-theme")?.addEventListener("click", toggleTheme);
+    // The page sends STOP ALL itself before this script runs; from now on the shell sends it.
+    $("lc-stop-all").onclick = null;
     $("lc-stop-all").addEventListener("click", () => { stopAll().catch(() => {}); });
     root.addEventListener("hashchange", () => show(String(root.location.hash || "").slice(1)));
     root.addEventListener("pagehide", () => {
@@ -709,6 +718,6 @@
     register, start, strings, shell, setAuthority,
     logic: { translate, pickLanguage, serviceChip, runsChip, chips, filterEvents, latestOperation, stopView, isStop },
     STALE_MS, BEAT_MS, SERVICES,
-    _internal: { request, relay, take, release, beat, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops, authority, refreshAuthority },
+    _internal: { request, relay, take, release, beat, applyControl, poll, setLanguage, myControls, connect, link, stop, stopAll, safetyStop, stops, authority, refreshAuthority },
   };
 });

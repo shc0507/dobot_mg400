@@ -439,3 +439,10 @@ def test_upload_collision_preserves_selected_profile(tmp_path, complete_profile)
     uploaded = store.upload(json.dumps(duplicate).encode())
     assert uploaded["profile_id"] != complete_profile["profile_id"]
     assert store.selected() == complete_profile
+
+
+def test_one_invalid_profile_file_does_not_hide_the_others(tmp_path, complete_profile):
+    store = turret.TurretProfileStore(tmp_path)
+    store.save(complete_profile)
+    (tmp_path / ("f" * 32 + ".json")).write_text('{"schema_version": 99}')
+    assert [item["profile_id"] for item in store.list()] == [complete_profile["profile_id"]]

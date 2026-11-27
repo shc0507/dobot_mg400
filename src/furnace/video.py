@@ -183,13 +183,13 @@ def _concat_segments(segments: Iterable[int], concat_fd: int) -> None:
             output.write(f"file '/proc/self/fd/{descriptor}'\n")
 
 
-def _run_ffmpeg(cmd: list[str], *, pass_fds=()) -> None:
+def _run_ffmpeg(cmd: list[str], *, pass_fds=(), timeout=300) -> None:
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         check=False,
-        timeout=300,
+        timeout=timeout,
         umask=0o077,
         pass_fds=pass_fds,
     )
@@ -267,9 +267,19 @@ def combine_run_to_target(
             verb = "is" if len(missing) == 1 else "are"
             raise VideoToolsMissing(f"{' and '.join(missing)} {verb} not installed")
         total_seconds = 0
-        for descriptor in segments:
+        readable = []
+        for name, descriptor in zip(names, segments):
             _check_cancel(check_cancel)
-            total_seconds += _ffprobe_duration(ffprobe_path, descriptor)
+            try:
+                total_seconds += _ffprobe_duration(ffprobe_path, descriptor)
+            except RuntimeError as exc:
+                # A crash before release() leaves a segment without its MP4 index.
+                print(f"Skipped unreadable segment {name}: {exc}")
+                continue
+            readable.append(descriptor)
+        if not readable:
+            raise RuntimeError("No video segment of the selected run is readable")
+        segments = readable
         _check_cancel(check_cancel)
         actual_minutes = total_seconds / 60.0
         speed = speed_factor_for_target(actual_minutes, target_minutes)
@@ -303,7 +313,12 @@ def combine_run_to_target(
                     f"/proc/self/fd/{temporary_fd}/summary.mp4",
                 ]
                 _check_cancel(check_cancel)
-                _run_ffmpeg(ffmpeg_cmd, pass_fds=(*segments, concat_fd, temporary_fd))
+                # The summary encodes every recorded frame: allow 2 s per recorded second.
+                _run_ffmpeg(
+                    ffmpeg_cmd,
+                    pass_fds=(*segments, concat_fd, temporary_fd),
+                    timeout=max(300, 2 * total_seconds),
+                )
                 _check_cancel(check_cancel)
             finally:
                 os.close(concat_fd)

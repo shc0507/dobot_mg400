@@ -1,5 +1,6 @@
 """Offline lifecycle tests through real drivers and memory-only transports."""
 
+import contextlib
 import os
 import socket
 import stat
@@ -15,7 +16,17 @@ import serial
 from furnace import controller as p
 from furnace.config import FurnaceConfig
 from furnace.controller import Furnace, MFCFlowController
-from furnace.service import FRAME_METADATA_FIELDS, FurnaceService
+from furnace.service import (
+    COOLING_MAX_S,
+    COOLING_WARN_S,
+    FRAME_METADATA_FIELDS,
+    MAX_HOLD_MIN,
+    POLL_READ_FAILURES,
+    STEP_REACH_FACTOR,
+    STEP_REACH_MIN_S,
+    STOP_RETRY_S,
+    FurnaceService,
+)
 from furnace.sim import FurnaceSerial, MFCSerial
 from furnace.state import StateError, StateStore
 from labkit.errors import ServiceError
@@ -124,6 +135,14 @@ def enter_hold(lab):
     result = lab.service.poll_once()
     assert result["sequence"]["phase"] == "holding", result
     return result
+
+
+def poll_until_read_fault(lab):
+    """Poll while every controller read fails: the last allowed poll faults."""
+    for _ in range(POLL_READ_FAILURES - 1):
+        assert not lab.service.poll_once()["locked"]
+        lab.clock.advance(1)
+    return lab.service.poll_once()
 
 
 def writes(transport):
@@ -427,11 +446,31 @@ def test_restart_does_not_reset_manual_orphan_deadline(lab):
 
 @pytest.mark.parametrize(
     "bad",
-    ["missing", "corrupt", "target", "bank", "caps", "identity", "incomplete", "intent", "future"],
+    [
+        "missing",
+        "corrupt",
+        "target",
+        "bank",
+        "caps",
+        "manual_caps",
+        "ramp",
+        "identity",
+        "incomplete",
+        "intent",
+        "future",
+    ],
 )
 def test_bad_recovery_stops_locks_and_requires_acknowledgement(lab, bad):
-    lab.service.start_sequence(recipe(hold=5), client="operator")
-    if bad == "missing":
+    if bad == "manual_caps":
+        lab.service.apply_setpoint(30, 60, client="operator")
+    else:
+        lab.service.start_sequence(recipe(hold=5), client="operator")
+    if bad in ("caps", "manual_caps"):
+        pass
+    elif bad == "ramp":
+        # 101 C/min at 1 decimal place, above the 100 C/min cap.
+        p.write_register(lab.instrument, p.SPR_REGISTER, 1010)
+    elif bad == "missing":
         lab.store.path.unlink()
     elif bad == "corrupt":
         lab.store.path.write_text('{"invalid"')
@@ -452,7 +491,7 @@ def test_bad_recovery_stops_locks_and_requires_acknowledgement(lab, bad):
         lab.store.save(saved)
     kwargs = (
         {}
-        if bad != "caps"
+        if bad not in ("caps", "manual_caps")
         else dict(config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=29))
     )
     resumed = lab.make(**kwargs)
@@ -465,7 +504,7 @@ def test_bad_recovery_stops_locks_and_requires_acknowledgement(lab, bad):
     assert not resumed.acknowledge(client="operator")["locked"]
 
 
-def test_stop_startup_does_not_resume_saved_cooling_gas(lab):
+def test_stop_startup_resumes_saved_end_gas_plan_without_gas_commands(lab):
     lab.service.start_sequence(
         recipe(hold=0, gas={0: 20}), end_gas={0: 10}, end_gas_until_c=26, client="operator"
     )
@@ -473,9 +512,137 @@ def test_stop_startup_does_not_resume_saved_cooling_gas(lab):
     lab.service.poll_once()
     assert lab.store.load()["phase"] == "cooling"
     before = (list(lab.mfc.requests), len(writes(lab.serial)))
-    result = lab.make().start(background=False)
-    assert result["sequence"]["phase"] == "idle"
+    # The process dies without close(): the restart finds STOP and the saved cooling phase.
+    resumed = lab.make()
+    result = resumed.start(background=False)
+    assert result["sequence"]["phase"] == "cooling"
+    assert result["sequence"]["end_gas_until_c"] == 26
     assert (list(lab.mfc.requests), len(writes(lab.serial))) == before
+    assert lab.mfc.channel_state(7)["target_percent"] == 10
+    lab.clock.advance(60)
+    assert resumed.poll_once()["sequence"]["phase"] == "complete"
+    assert lab.mfc.channel_state(7)["target_percent"] == 0
+
+
+def test_end_gas_plan_ends_after_its_time_bound(lab):
+    lab.service.start_sequence(
+        recipe(hold=0, gas={0: 20}), end_gas={0: 10}, end_gas_until_c=0, client="operator"
+    )
+    enter_hold(lab)
+    lab.service.poll_once()
+    assert lab.service.status()["sequence"]["phase"] == "cooling"
+    lab.clock.advance(COOLING_MAX_S - 10)
+    assert lab.service.poll_once()["sequence"]["phase"] == "cooling"
+    lab.clock.advance(10)
+    result = lab.service.poll_once()
+    assert result["sequence"]["phase"] == "complete" and not result["locked"]
+    assert lab.mfc.channel_state(7)["target_percent"] == 0
+
+
+def warnings(lab, code):
+    return [
+        event
+        for event in lab.service.events.since()["events"]
+        if event["level"] == "warning" and event["fields"].get("code") == code
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "ramp", "limit_s"),
+    [(100, 60, STEP_REACH_MIN_S), (500, 1, STEP_REACH_FACTOR * 475 * 60)],
+)
+def test_slow_step_warns_and_keeps_running(lab, monkeypatch, target, ramp, limit_s):
+    steps = [dict(temperature_c=target, ramp_rate_c_per_min=ramp, hold_minutes=0.1)]
+    lab.service.start_sequence(steps, client="operator")
+    # The furnace cannot heat: PV stays at ambient.
+    monkeypatch.setattr(lab.serial, "_evolve", lambda *args, **kwargs: None)
+    lab.clock.advance(limit_s - 1)
+    assert lab.service.poll_once()["sequence"]["warning"] is None
+    lab.clock.advance(1)
+    result = lab.service.poll_once()
+    warning = result["sequence"]["warning"]
+    assert warning["code"] == "step_slow" and warning["step_index"] == 0
+    assert result["sequence"]["running"] and result["sequence"]["phase"] == "ramping"
+    assert not result["locked"] and result["run_state_code"] != 1
+    lab.service.poll_once()
+    assert len(warnings(lab, "step_slow")) == 1
+    monkeypatch.undo()
+    lab.clock.advance(limit_s)
+    result = lab.service.poll_once()
+    assert result["sequence"]["phase"] == "holding"
+    assert result["sequence"]["warning"] is None
+
+
+def test_slow_end_gas_warns_and_keeps_the_plan(lab):
+    lab.service.start_sequence(
+        recipe(hold=0, gas={0: 20}), end_gas={0: 10}, end_gas_until_c=0, client="operator"
+    )
+    enter_hold(lab)
+    lab.service.poll_once()
+    lab.clock.advance(COOLING_WARN_S - 10)
+    assert lab.service.poll_once()["sequence"]["warning"] is None
+    lab.clock.advance(10)
+    result = lab.service.poll_once()
+    assert result["sequence"]["warning"]["code"] == "end_gas_slow"
+    assert result["sequence"]["phase"] == "cooling" and not result["locked"]
+    assert lab.mfc.channel_state(7)["target_percent"] == 10
+    lab.clock.advance(COOLING_MAX_S - COOLING_WARN_S)
+    result = lab.service.poll_once()
+    assert result["sequence"]["phase"] == "complete"
+    assert result["sequence"]["warning"] is None
+    assert len(warnings(lab, "end_gas_slow")) == 1
+
+
+def test_stop_clears_the_step_warning(lab, monkeypatch):
+    lab.service.start_sequence(recipe(target=100), client="operator")
+    monkeypatch.setattr(lab.serial, "_evolve", lambda *args, **kwargs: None)
+    lab.clock.advance(STEP_REACH_MIN_S)
+    assert lab.service.poll_once()["sequence"]["warning"] is not None
+    assert lab.service.stop_sequence()["sequence"]["warning"] is None
+
+
+def test_hold_time_has_a_fixed_maximum(lab):
+    with pytest.raises(ValueError, match="hold time must be at most"):
+        lab.service.start_sequence(recipe(hold=MAX_HOLD_MIN + 1), client="operator")
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+
+
+def test_running_edit_without_end_gas_keeps_the_end_plan(lab):
+    lab.service.start_sequence(
+        recipe(hold=60, gas={0: 50}), end_gas={0: 0}, end_gas_until_c=30, client="operator"
+    )
+    lab.service.set_sequence(recipe(hold=60), client="operator")
+    sequence = lab.service.status()["sequence"]
+    assert sequence["end_gas"] == {0: 0.0, 1: 0.0, 2: 0.0}
+    assert sequence["end_gas_until_c"] == 30
+
+
+def test_front_panel_stop_at_program_step_2_is_not_overridden(lab):
+    lab.service.start_sequence(recipe(hold=60), client="operator")
+    # The operator presses STOP on the controller while the program is at step 2.
+    lab.serial._registers[p.SRUN_REGISTER] = 1
+    lab.serial._registers[p.PROGRAM_STEP_REGISTER] = 2
+    before = len(writes(lab.serial))
+    lab.clock.advance(1)
+    result = lab.service.poll_once()
+    assert result["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert all(packet[3] == p.SRUN_REGISTER for packet in writes(lab.serial)[before:])
+    assert all(packet[5] == 1 for packet in writes(lab.serial)[before:])
+
+
+def test_flow_readback_above_100_percent_does_not_fault(lab, monkeypatch):
+    lab.service.set_gas_flow(0, 100, client="operator")
+    controller = lab.service.flow_controller
+    original = controller.gas_channel_status
+    monkeypatch.setattr(
+        controller,
+        "gas_channel_status",
+        lambda channel: dict(original(channel), actual_percent=100.4),
+    )
+    result = lab.service.inspect_gas_flow(0, client="operator")
+    assert result["gas_channels"][0]["actual_percent"] == 100.4
+    assert not lab.service.status()["locked"]
 
 
 def test_fault_lock_survives_stop_and_restart(lab):
@@ -507,10 +674,11 @@ def test_write_failure_faults_without_replay_on_later_poll(lab, monkeypatch):
         )
     assert failed and lab.service.status()["locked"]
     assert lab.store.load()["phase"] == "fault"
-    before = (list(lab.mfc.requests), list(lab.serial.requests))
+    before = (list(lab.mfc.requests), writes(lab.serial))
     lab.clock.advance(100)
     lab.service.poll_once()
-    assert before == (list(lab.mfc.requests), list(lab.serial.requests))
+    # The locked poll only reads the controller.
+    assert before == (list(lab.mfc.requests), writes(lab.serial))
 
 
 def test_shutdown_attempts_all_channels_after_heat_and_coil_failure(lab, monkeypatch):
@@ -572,6 +740,117 @@ def test_stop_reopens_ports_after_a_dead_serial_handle(lab, monkeypatch):
     assert sorted(lab.factories) == [("flow", "sim://mfc"), ("furnace", "sim://furnace")]
     assert lab.serial.registers[p.SRUN_REGISTER] == 1
     assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
+
+
+def replug(transport):
+    """Model a USB reset: the old handle stays open but fails; a new open works."""
+
+    def dead(data):
+        raise serial.SerialException("write failed: [Errno 5] Input/output error")
+
+    def reopen():
+        del transport.write, transport.open
+        transport.open()
+
+    transport.write, transport.open = dead, reopen
+
+
+def test_poll_fault_after_furnace_usb_reset_stops_heat_on_a_new_handle(lab):
+    lab.service.start_sequence(
+        recipe(hold=60, gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+    enter_hold(lab)
+    replug(lab.serial)
+    lab.factories.clear()
+    result = poll_until_read_fault(lab)
+    assert result["locked"]
+    assert lab.factories == [("furnace", "sim://furnace")]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert lab.mfc.channel_state(7)["actual_percent"] == 0
+    assert lab.service.connected
+    lab.service.lease.acquire("operator")
+    assert not lab.service.acknowledge(client="operator")["locked"]
+
+
+def unplug(transport):
+    """Model a USB reset with an absence: old writes fail and a new open fails until replug."""
+
+    def dead(data):
+        raise serial.SerialException("write failed: [Errno 5] Input/output error")
+
+    def absent():
+        raise serial.SerialException("could not open port: No such file or directory")
+
+    transport.write, transport.open = dead, absent
+
+    def back():
+        del transport.write, transport.open
+
+    return back
+
+
+def test_failed_stop_retries_while_locked_until_the_port_returns(lab):
+    lab.service.start_sequence(
+        recipe(hold=60, gas={0: 20}), end_gas={}, end_gas_until_c=30, client="operator"
+    )
+    enter_hold(lab)
+    back = unplug(lab.serial)
+    assert poll_until_read_fault(lab)["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    back()
+    lab.clock.advance(STOP_RETRY_S / 2)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    lab.clock.advance(STOP_RETRY_S / 2)
+    result = lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert result["locked"] and result["connected"]
+    assert result["fault"]["message"].endswith("; stop retry succeeded")
+    before = len(writes(lab.serial))
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert len(writes(lab.serial)) == before
+
+
+def test_acknowledge_ends_stop_retries(lab, monkeypatch):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    monkeypatch.setattr(lab.service, "_flow_off", lambda: (_ for _ in ()).throw(OSError("MFC")))
+    assert lab.service.stop_sequence()["locked"]
+    lab.service.lease.acquire("operator")
+    assert not lab.service.acknowledge(client="operator")["locked"]
+    lab.service.apply_setpoint(30, 10, client="operator")
+    lab.clock.advance(STOP_RETRY_S)
+    lab.service.poll_once()
+    assert lab.serial.registers[p.SRUN_REGISTER] != 1
+
+
+def test_gas_usb_reset_at_step_change_stops_gas_on_a_new_handle(lab):
+    steps = recipe(30, 0, gas={0: 10}) + recipe(35, 0, gas={0: 20})
+    lab.service.start_sequence(steps, end_gas={0: 5}, end_gas_until_c=26, client="operator")
+    enter_hold(lab)
+    replug(lab.mfc)
+    lab.factories.clear()
+    result = lab.service.poll_once()
+    assert result["locked"]
+    assert lab.factories == [("flow", "sim://mfc")]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert all(lab.mfc.channel_state(unit)["actual_percent"] == 0 for unit in GAS_UNITS)
+    assert all(lab.mfc.channel_state(unit)["override"] == "closed" for unit in GAS_UNITS)
+    flow = lab.service.flow_status()
+    assert [channel["target_percent"] for channel in flow["gas_channels"]] == [0, 0, 0]
+
+
+def test_failed_zero_keeps_the_last_gas_target(lab, monkeypatch):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    dead = lambda packet: (_ for _ in ()).throw(OSError("device unplugged"))  # noqa: E731
+    monkeypatch.setattr(lab.mfc, "write", dead)
+    monkeypatch.setattr(lab.mfc, "open", lambda: None)
+    assert lab.service.stop_all_flow()["locked"]
+    assert lab.service.flow_status()["gas_channels"][0]["target_percent"] == 20
+    assert lab.store.load()["gas_plan"]["0"] == 20
 
 
 def test_intent_is_durable_before_first_output(lab, monkeypatch):
@@ -706,16 +985,29 @@ def test_disconnect_clears_tracking_and_preserves_failed_stop(lab, monkeypatch, 
     lab.service.start_sequence(recipe(), client="operator")
     if failed:
 
-        def fail():
+        def fail(self):
             raise RuntimeError("STOP failed")
 
-        monkeypatch.setattr(lab.service.furnace, "set_stop", fail)
+        monkeypatch.setattr(Furnace, "set_stop", fail)
     result = lab.service.disconnect(client="operator")
     assert not result["sequence"]["running"]
     assert result["locked"] is failed
     assert lab.store.load()["phase"] == ("fault" if failed else "stopped")
-    # Retain a failed transport for explicit stop attempts instead of detaching it.
-    assert lab.serial.is_open is failed
+
+
+def test_stop_failure_on_one_handle_retries_on_a_new_handle(lab, monkeypatch):
+    lab.service.start_sequence(recipe(), client="operator")
+
+    def fail():
+        raise RuntimeError("STOP failed")
+
+    monkeypatch.setattr(lab.service.furnace, "set_stop", fail)
+    assert not lab.service.stop_sequence()["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    assert any(
+        event["message"] == "Heat stopped after reopening the furnace port"
+        for event in lab.service.events.since()["events"]
+    )
 
 
 def test_reopen_primes_new_target_before_restoring_normal_valve(lab, monkeypatch):
@@ -1034,5 +1326,156 @@ def test_ramp_rounded_by_the_controller_is_refused_before_writes(lab, rate, mess
         service.start_sequence(
             [dict(temperature_c=500, ramp_rate_c_per_min=rate, hold_minutes=1)], client="operator"
         )
+    assert len(writes(lab.serial)) == before
+    assert not service.status()["locked"]
+
+
+def test_one_failed_poll_read_does_not_end_the_run(lab, monkeypatch):
+    lab.service.start_sequence(recipe(hold=60), client="operator")
+    enter_hold(lab)
+    original = lab.service.furnace.get_current_values
+    failures = []
+
+    def flaky():
+        if failures:
+            failures.pop()
+            raise minimalmodbus.InvalidResponseError("Checksum error in rtu mode")
+        return original()
+
+    monkeypatch.setattr(lab.service.furnace, "get_current_values", flaky)
+    # 2 failures, a good read, 2 failures: the count restarts after each good read.
+    for fail in (True, True, False, True, True):
+        failures[:] = [fail] if fail else []
+        lab.clock.advance(1)
+        result = lab.service.poll_once()
+        assert not result["locked"], result["fault"]
+        assert result["sequence"]["phase"] == "holding"
+    assert lab.serial.registers[p.SRUN_REGISTER] == 2
+    # The third failure in a row ends the run.
+    failures[:] = [True]
+    assert lab.service.poll_once()["locked"]
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+
+
+def test_locked_poll_keeps_controller_values_current(lab, monkeypatch):
+    lab.service.apply_setpoint(30, 10, client="operator")
+    monkeypatch.setattr(lab.service, "_flow_off", lambda: (_ for _ in ()).throw(OSError("MFC")))
+    assert lab.service.stop_sequence()["locked"]
+    before = lab.service.status()["sample_time"]
+    lab.clock.advance(1)
+    result = lab.service.poll_once()
+    assert result["locked"]
+    assert result["sample_time"] > before
+    assert result["run_state_code"] == 1
+
+
+def test_stop_skips_flow_readback_on_a_silent_mfc(lab):
+    lab.mfc.reply_ascii = False
+    lab.service.set_gas_flow(0, 20, client="operator")
+
+    def reads():
+        return sum(b"RFR" in packet for packet in lab.mfc.requests)
+
+    before = reads()
+    lab.service.stop_gas_flow(0)
+    assert reads() == before
+    # Channels 1 and 2 were never read: 1 read each (4 attempts), then none.
+    lab.service.stop_sequence()
+    assert reads() == before + 8
+    lab.service.stop_sequence()
+    lab.service.set_gas_flow(1, 20, client="operator")
+    assert reads() == before + 8
+    lab.service.inspect_gas_flow(0, client="operator")
+    assert reads() == before + 12
+    assert lab.mfc.channel_state(7)["target_percent"] == 0
+
+
+def test_state_read_returns_the_last_state_while_an_operation_runs(lab, monkeypatch):
+    lab.service.apply_setpoint(30, 10, client="operator")
+    busy = threading.Lock()
+    busy.acquire()
+    monkeypatch.setattr(lab.service, "_operation_lock", busy)
+    result = lab.service.status(wait=0.01)
+    assert result["sequence"]["phase"] == "manual"
+    assert result["lease"]["holder"] == "operator"
+
+
+def test_parallel_stops_share_one_stop(lab):
+    lab.service.set_gas_flow(0, 20, client="operator")
+    waiting = [lab.service._stop_ticket() for _ in range(2)]
+    lab.service.stop_sequence()
+    with lab.service._operation_lock:
+        # Requests that arrived before the stop began need no I/O of their own.
+        assert not lab.service._stop_needed(waiting[0], "all")
+        assert not lab.service._stop_needed(waiting[1], "gas0")
+        assert lab.service._stop_needed(lab.service._stop_ticket(), "gas0")
+    before = (len(lab.mfc.requests), len(writes(lab.serial)))
+    lab.service.stop_all_flow()
+    lab.service.stop_sequence()
+    assert len(lab.mfc.requests) > before[0] and len(writes(lab.serial)) > before[1]
+
+
+def test_command_waiting_when_a_stop_arrives_is_refused(lab, monkeypatch):
+    control = lab.service.lease.control
+
+    @contextlib.contextmanager
+    def stop_arrives(client):
+        lab.service.stop_sequence()
+        with control(client):
+            yield
+
+    monkeypatch.setattr(lab.service.lease, "control", stop_arrives)
+    with pytest.raises(ServiceError, match="stop arrived"):
+        lab.service.apply_setpoint(30, 10, client="operator")
+    assert lab.serial.registers[p.SRUN_REGISTER] == 1
+    monkeypatch.setattr(lab.service.lease, "control", control)
+    lab.service.apply_setpoint(30, 10, client="operator")
+    assert lab.serial.registers[p.SRUN_REGISTER] != 1
+
+
+def test_stop_after_close_sends_nothing_and_keeps_the_state(lab):
+    lab.service.close()
+    saved = lab.store.load()
+    before = (len(lab.mfc.requests), len(lab.serial.requests), list(lab.factories))
+    result = lab.service.stop_sequence()
+    lab.service.stop_gas_flow(0)
+    lab.service.stop_all_flow()
+    assert not result["locked"]
+    assert (len(lab.mfc.requests), len(lab.serial.requests), list(lab.factories)) == before
+    assert lab.store.load() == saved
+
+
+def test_gas_stop_during_a_run_holds_for_later_steps_and_the_end_plan(lab):
+    steps = [
+        dict(temperature_c=30, ramp_rate_c_per_min=60, hold_minutes=0, gas={0: 20, 1: 30}),
+        dict(temperature_c=31, ramp_rate_c_per_min=60, hold_minutes=0, gas={0: 25, 1: 35}),
+    ]
+    lab.service.start_sequence(steps, end_gas={0: 10, 1: 10}, end_gas_until_c=0, client="operator")
+    lab.service.stop_gas_flow(0)
+    assert lab.mfc.channel_state(7)["target_percent"] == 0
+    for _ in range(40):
+        lab.clock.advance(5)
+        if lab.service.poll_once()["sequence"]["phase"] == "cooling":
+            break
+    assert lab.service.status()["sequence"]["phase"] == "cooling"
+    # Channel 0 stayed off through step 2 and the end plan; channel 1 followed both.
+    assert lab.mfc.channel_state(7)["target_percent"] == 0
+    assert lab.mfc.channel_state(8)["target_percent"] == 10
+
+
+def test_later_step_ramp_rounded_by_the_controller_is_refused_before_writes(lab):
+    # 470 C at 0.149 C/min passes the time check, but SPR stores 0.1 (4700 min).
+    service = lab.make(
+        config=FurnaceConfig(port="sim://furnace", flow_port="sim://mfc", max_c=1000, max_ramp=10)
+    )
+    service.start(background=False)
+    service.lease.acquire("operator")
+    steps = [
+        dict(temperature_c=30, ramp_rate_c_per_min=10, hold_minutes=0),
+        dict(temperature_c=500, ramp_rate_c_per_min=0.149, hold_minutes=1),
+    ]
+    before = len(writes(lab.serial))
+    with pytest.raises(ValueError, match="controller maximum"):
+        service.start_sequence(steps, client="operator")
     assert len(writes(lab.serial)) == before
     assert not service.status()["locked"]

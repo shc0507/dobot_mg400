@@ -35,7 +35,6 @@ Deployment does not depend on a specific platform. For Olares networking, code a
 | `/usr/local/lib/mg400/caddy` | Caddy 2 proxy program | `root:root`, `0755` |
 | `/usr/local/lib/mg400/libtoupcam.so` | Optional Toupcam 59.30594.20260120 Linux x64 library | `root:root`, `0755` |
 | `/usr/local/bin/labctl` | Routine command tool, linked to `/opt/mg400/deploy/labctl` | None |
-| `/usr/local/bin/labctl` | Another link to the same command, with identical arguments and behavior | None |
 
 All services run as the user and group with numeric ID `1000`.
 Service definitions are in `config/systemd/` and are installed in `/etc/systemd/system/`:
@@ -135,7 +134,7 @@ The installer works in this order:
    If `--toupcam` is supplied, install the library bytes verified in step 1.
 7. If selected services have udev templates, render and install their rules. Reload the rules, then trigger udev events for USB devices.
 8. Install selected service definitions and reload systemd.
-9. Create the `labctl` link and remove an old `labctl` link.
+9. Create the `labctl` link and remove an old `mg400ctl` link.
 
 The installer does not start, stop, or restart services.
 You must stop services before updating the code. Running services can read a mixture of old and new files.
@@ -169,6 +168,7 @@ The script applies these update rules:
 - If only static console JavaScript/CSS changes, do not restart services.
 - If backend code or templates change, restart `mg400-twin-test`.
 - Restart `mg400-camera-preview.service` for camera code or dependency changes only when the override below is active and verified.
+  This restart also stops go2rtc and all camera streams, including the microscope side stream. Deploy such a change only when no microscope or vision work is active.
 
 The script preserves the calibration profile and run data directories.
 After deployment, the script checks service health. It does not run tests.
@@ -310,7 +310,7 @@ It copies the verified bytes atomically to `/usr/local/lib/mg400/libtoupcam.so`,
 It does not load the library or open a camera. Add `--dry-run` to validate and list the steps without changing files.
 Without `--toupcam`, an existing library stays unchanged.
 
-Without the library, the installer prints a warning and installs the microscope service without its camera.
+Without the library, the installer prints a warning and installs the microscope service. The microscope service does not start without the library.
 An installed library must have the pinned hash and safe ownership and permissions.
 The installer rejects untrusted destination directories before changing the host.
 Existing destination directories must be root-owned, traversable by UID `1000`, and not writable by the service or other users.
@@ -405,10 +405,20 @@ The destination is `/var/lib/mg400/models/chip-arm-yolo26s-seg-v1.pt`, with perm
 The manifest records the license as `AGPL-3.0`, as declared by Roboflow.
 Downloads fail if the release does not contain the file.
 
+The `vision-wrist-weights` entry specifies `chip-wrist-yolo26s-seg-v1.pt` in this repository's `vision-wrist-model-v1` release. It is the detector weights for the wrist camera.
+Its size is 23,501,597 bytes. Its SHA-256 is `1683fca75712b6ae0675d23599dcff0e737a33b1a4ac3ba1c3918e71c2d9598b`.
+The destination is `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`, with permissions `0640`. The asset belongs to `vision`.
+Installation does not require it. Without it, the vision service uses `vision-weights` for the wrist camera. See [Settings](vision.en.md#settings).
+
 The `twin-model` entry specifies `twin.glb` in this repository's `twin-model-v2` release. It is the 3D bench model of the Lab Console Twin workspace.
 Its size is 3,447,272 bytes. Its SHA-256 is `1cf153e44ffe8d68d1f3edb60b896b7d8fcacf02f62f419b220bfc8d9d7028bc`.
 The destination is `/var/lib/mg400/twin/twin.glb`, with permissions `0640`. The asset belongs to `orch`.
 Installation does not require it. Without it, the Twin workspace shows that it cannot load the model.
+
+The `twin-collision` entry specifies `collision.json` in this repository's `twin-collision-v2` release. It is the collision world of the bench twin: convex hulls and the joint tree of the arm and the bench.
+Its size is 3,164,921 bytes. Its SHA-256 is `5ce043aadb397e2da3237a026c540963a9082fe7f9f524c2034209e651dcc6ef`.
+The destination is `/var/lib/mg400/twin/collision.json`, with permissions `0640`. The asset belongs to `orch`.
+Without it, `labctl robot move` refuses each move that does not have `--no-collision-check`. See [Collision check](agent-cli.en.md#collision-check).
 
 Assets must belong to an enabled service and appear in its `assets` list.
 When `vision` is enabled, installation requires `vision-weights`, even without `--fetch-assets`.
@@ -460,7 +470,8 @@ Their inner double quotes remain literal. Escapes, apostrophes, control characte
 See [furnace configuration](furnace.en.md#configuration) for syntax and process limits.
 Each time it runs, the installer restores this file's owner to `root:root` and permissions to `0600`.
 
-The file contains only hardware facts. Bind addresses, ports, base paths, and service URLs are fixed defaults in the code and the units.
+The file contains only hardware facts. Bind addresses, ports, and service URLs are fixed defaults in the code and the units.
+Data paths are defaults in the code. Some services still accept path overrides, for example `MG400_ORCH_TOOL_FILE`. Do not set path overrides in this file.
 All services listen on `127.0.0.1`. From the VPN, only the proxy port `8080` is open. The VPN is the access boundary, and the services do not check tokens.
 The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console uses the base path `/lab/`.
 
@@ -481,8 +492,8 @@ The robot connection lock directory is `/var/lib/mg400/locks`. The Lab Console u
 Configure the furnace caps and gas map as described in [furnace configuration](furnace.en.md#configuration).
 Configure microscope device selection, focus limits, and camera streams as described in the [microscope guide](microscope.en.md#contract-service).
 
-Use distinct stable camera paths under `/dev/v4l/by-path/` or `/dev/v4l/by-id/`. Port paths distinguish cameras of the same model by their USB ports.
-Configured streams are named `camera1` through `camera5` in device order. This Console displays the first 4 USB camera views; it accepts a fifth shared device without adding wrist-camera controls.
+Use distinct camera device paths under `/dev/v4l/by-path/`. These paths distinguish cameras of the same model by their USB ports. The wrist camera uses its name under `/dev/v4l/by-id/`.
+The camera service provides only configured streams, named `camera1` through `camera5` in device order.
 With an empty mode list, ordinary cameras use `1280x720@30`; the configured `MG400_MICROSCOPE_SIDE_STREAM` uses `3840x2160@30`.
 Remove an old `MG400_CAMERA_CAPTURE_SIZES` entry. If it is set with `MG400_CAMERA_MODES`, the installer, `labctl` and preview service refuse to run.
 An explicit mode list overrides these defaults. Invalid counts, paths, or modes stop installation before host changes.
@@ -506,8 +517,8 @@ UID/GID `1000` can also run the recipe commands `run`, `rehearse`, `runs`, and `
 | `labctl gpu` | Read GPU name, used memory, and total memory as UID `1000` |
 | `labctl status` | Show the status of the enabled services |
 | `labctl start web stage camera` | Start services. Names are `web`, `stage`, `camera`, `thermal`, `furnace`, `microscope`, `vision`, `orch`, `proxy`, or `all` |
-| `labctl stop all` | Stop services. Add `--force` to stop the furnace service. See below |
-| `labctl restart web` | Restart services. Add `--force` to restart the furnace service |
+| `labctl stop all` | Stop services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
+| `labctl restart web` | Restart services. If the furnace check refuses, add `--force` only after you coordinate the heat and gas shutdown. See below |
 | `labctl logs web -n 100` | Show service logs. Add `-f` for continuous output |
 | `labctl mode` | Read the controller mode. See [Switching TCP/IP mode](hardware.en.md#switch-to-tcpip-mode-from-the-server) |
 | `labctl mode --switch-to-tcp` | Switch the controller to TCP/IP mode |
@@ -525,7 +536,7 @@ GPU output alone does not confirm that vision selected CUDA. Check `labctl logs 
 
 Furnace `stop` and `restart` query live state before changing any selected service.
 The check includes mixed lists and `all`, including a disabled furnace selected by `stop all`.
-`stop` skips the check only when systemd reports every furnace unit as not installed and inactive. If systemd gives no clear answer, the check runs.
+The check is skipped only when systemd reports every furnace unit as inactive: then no furnace process runs. If systemd gives no clear answer, the check runs.
 An active sequence or cooling gas plan requires `--force`. Unavailable, malformed, disconnected, or locked status also requires `--force`.
 Coordinate with all clients before using `labctl stop furnace --force` or `labctl restart furnace --force`.
 Forced shutdown requests that the service stop heat and gas. Verify the stop result. The check is advisory: a sequence can start between the status read and systemd action.
@@ -545,9 +556,11 @@ When the robot service stops or restarts, it can take up to approximately 60 sec
 
 ## Panel connection lock
 
-The robot service, interactive terminal, and mode-switch tool acquire a file lock before connecting to the robot.
+The robot service and the mode-switch tool acquire a file lock before connecting to the robot.
 The robot service's read-only mode also uses this lock.
-If another program holds the lock, a new connection returns `Robot controlled by another panel`.
+If another program holds the lock, a new connection returns `Robot controlled by another panel`, and `Disable` is refused.
+`Stop` and STOP ALL then still send 1 `ResetRobot()`, but they do not check rest, and the result is unconfirmed. The robot service locks control. When the lock is free, start sync and click Recover.
+The controller keeps only the newest `29999` connection. This stop disconnects the `29999` connection of the program that holds the lock.
 After a normal disconnect, the robot service waits for the feedback thread and command tasks to end before releasing the lock.
 If it cannot confirm the stopped state, the robot service stops routine coordinate queries, keeps feedback and the lock, and shows a warning.
 Check the robot, then click Recover. Reloading the Lab Console does not clear the warning.
@@ -556,7 +569,6 @@ All programs must use the same robot address and the lock directory `/var/lib/mg
 This directory is fixed in code. It must support operating-system file locks.
 All programs run as UID 1000. Lock file permissions are `0600`.
 When running as root, the program refuses lock directories not owned by root.
-If an existing lock file has a different owner, the program changes its owner in place and preserves the original file.
 
 Do not remove lock files to release ownership. When a process exits, the operating system releases the locks that process holds.
 A process exit does not confirm that the robot stopped.
@@ -565,7 +577,7 @@ This lock does not restrict DobotStudio or other hosts. Close other control prog
 ## Backup
 
 `labctl backup FILE.tar` archives `/etc/mg400/mg400.env` and `/var/lib/mg400` with numeric owners and file modes.
-It excludes only `/var/lib/mg400/locks`, which contains process connection locks.
+It excludes `/var/lib/mg400/locks`, which contains process connection locks, and `/var/lib/mg400/twin-test`, the test Console deploy state.
 It also preserves furnace state and `.state.json.lock` under `/var/lib/mg400/furnace`.
 
 Stop services and other data writers before a backup, as the migration steps below specify.

@@ -33,6 +33,15 @@ ROBOT_HEADERS = {
 pytestmark = pytest.mark.usefixtures("isolated_controller_locks")
 
 
+@pytest.fixture(autouse=True)
+def pressure_reader(monkeypatch):
+    """main() must not open the real pressure sensor port in tests."""
+    reader = Mock()
+    monkeypatch.setitem(PANEL["main"].__globals__, "PressureReader", Mock(return_value=reader))
+    reader.start.return_value = reader
+    return reader
+
+
 def test_read_only_mode_is_inert_until_sync_and_has_no_hardware_commands():
     calls = []
 
@@ -675,7 +684,9 @@ def run_panel(monkeypatch, state, serve_forever=None, server_close_error=None):
     return main([]), server
 
 
-def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal_table):
+def test_cli_defaults_to_robot_without_starting_sync(
+    monkeypatch, capsys, signal_table, pressure_reader
+):
     original = dict(signal_table)
     before_close = []
     state = closing_state(close=lambda: before_close.append(capsys.readouterr().err))
@@ -685,7 +696,9 @@ def test_cli_defaults_to_robot_without_starting_sync(monkeypatch, capsys, signal
     backends = PANEL["main"].__globals__
     assert code == 0
     backends["load_robot_host"].assert_called_once_with(PANEL["ROOT"] / "config/robot.toml")
-    backends["RobotPanelState"].assert_called_once_with("robot.test", max_speed_l=20, max_acc_l=20)
+    backends["RobotPanelState"].assert_called_once_with(
+        "robot.test", pressure=pressure_reader, max_speed_l=20, max_acc_l=20
+    )
     state.command.assert_not_called()
     state.close.assert_called_once_with()
     assert len(before_close) == 1
@@ -877,6 +890,8 @@ def test_a_blocked_event_log_cannot_delay_the_stop(monkeypatch, signal_table):
 
     def close():
         closed.append(time.monotonic())
+        # The stop has its time; later log writes need not wait.
+        unblock.set()
 
     monkeypatch.setattr(sys, "stderr", BlockedStderr())
     try:
@@ -997,14 +1012,14 @@ def test_contract_routes_do_not_enable_commands_in_read_only_mode(server):
     assert request(server, "POST", "/api/stop", "{}", ROBOT_HEADERS)[0] == 403
 
 
-def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table):
+def test_robot_caps_are_fixed_in_code(monkeypatch, signal_table, pressure_reader):
     # The host environment no longer raises or lowers the speed cap.
     monkeypatch.setenv("MG400_ROBOT_MAX_SPEED_L", "100")
     monkeypatch.setenv("MG400_ROBOT_MAX_ACC_L", "100")
     code, _ = run_panel(monkeypatch, closing_state())
     assert code == 0
     PANEL["main"].__globals__["RobotPanelState"].assert_called_once_with(
-        "robot.test", max_speed_l=20, max_acc_l=20
+        "robot.test", pressure=pressure_reader, max_speed_l=20, max_acc_l=20
     )
 
 
@@ -1066,9 +1081,12 @@ def test_labkit_client_drives_the_robot_contract():
             wait_for(lambda: not agent.state()["syncing"])
             assert agent.state()["lease"]["holder"] is None
             assert not agent.state()["locked"]
-            # Any client may stop. Feedback stops with the disconnect, so a stop
-            # that runs 0.25 s later cannot be confirmed; all outcomes are valid.
-            assert other.stop()["stop"] in {"confirmed", "pending", "unconfirmed"}
+            # Any client may stop. Feedback ends with the disconnect, so the stop
+            # cannot confirm rest. Nothing can move without a new sync: no lock.
+            stopped = other.stop(wait_s=1)
+            assert stopped["stop"] == "unconfirmed"
+            assert not stopped["state"]["locked"]
+            assert not stopped["state"]["stop_unconfirmed"]
     finally:
         state.close()
 
@@ -1087,3 +1105,47 @@ def test_contract_posts_check_type_and_client_before_the_state(headers, status):
         assert request(server, "POST", "/api/heartbeat", "{}", headers)[0] == status
         assert request(server, "POST", "/api/keys", "{}", headers)[0] == 404
     assert state.calls == []
+
+
+def test_a_bad_robot_host_setting_exits_with_status_2(monkeypatch, capsys):
+    main = PANEL["main"]
+    error = ValueError("Robot host must be a nonempty string without whitespace")
+    monkeypatch.setitem(main.__globals__, "load_robot_host", Mock(side_effect=error))
+    monkeypatch.setitem(main.__globals__, "RobotPanelState", Mock())
+    with pytest.raises(SystemExit) as exit_info:
+        main([])
+    # The unit does not restart after exit status 2.
+    assert exit_info.value.code == 2
+    assert "without whitespace" in capsys.readouterr().err
+    main.__globals__["RobotPanelState"].assert_not_called()
+
+
+def test_a_blocked_stderr_delays_replies_and_errors_only_briefly(monkeypatch):
+    unblock = threading.Event()
+
+    class BlockedStderr:
+        def write(self, text):
+            unblock.wait(5)
+            return len(text)
+
+        def flush(self):
+            pass
+
+    class FailingState(RecordingState):
+        def snapshot(self):
+            raise KeyError("snapshot failed")
+
+    command = json.dumps({"action": "stop"})
+    try:
+        with running(RecordingState()) as server:
+            monkeypatch.setattr(sys, "stderr", BlockedStderr())
+            started = time.monotonic()
+            assert request(server, "POST", "/api/command", command, ROBOT_HEADERS)[0] == 202
+            assert time.monotonic() - started < 1.0
+        with running(FailingState()) as server:
+            started = time.monotonic()
+            with pytest.raises((http.client.HTTPException, OSError)):
+                request(server, "GET", "/api/state")
+            assert time.monotonic() - started < 1.0
+    finally:
+        unblock.set()

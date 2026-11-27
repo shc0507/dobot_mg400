@@ -96,6 +96,7 @@ ROBOT_FIELDS = (
     "syncing",
     "feedback_fresh",
     "vacuum",
+    "pressure",
     "keyboard_enabled",
     "keyboard_arming",
     "keyboard_speed_percent",
@@ -329,8 +330,15 @@ def register(blueprint, service):
     @blueprint.post("/stage/position")
     def stage_position():
         page = _page()
-        data = _body({"target"})
-        operation = get_sample_transfer(service).start_coordinates(page, data["target"])
+        data = request.get_json()
+        data = _body(
+            {"target", "stop_epoch"}
+            if isinstance(data, dict) and "stop_epoch" in data
+            else {"target"}
+        )
+        operation = get_sample_transfer(service).start_coordinates(
+            page, data["target"], stop_epoch=data.get("stop_epoch")
+        )
         return jsonify(operation=operation), 202
 
     @blueprint.get("/state")

@@ -56,6 +56,11 @@ GPU 内存配置在模型加载前执行。
 | `MG400_VISION_CALIBRATION_RMS_MM` | 无 | `1`，校准验收阈值，单位为 mm RMS。必须大于 0 且不大于 1 |
 | `MG400_VISION_CACHE_DIR` | 无 | `/var/lib/mg400/vision/yolo`，用作 Ultralytics 的 `YOLO_CONFIG_DIR` |
 
+腕部相机有单独的权重文件 `/var/lib/mg400/models/chip-wrist-yolo26s-seg-v1.pt`，模型输入为 1280x1280。
+如果配置了腕部相机，并且该文件存在，服务在启动时同时加载它，`detect` 对腕部相机使用它。
+如果文件不存在，`detect` 对所有摄像头使用主权重。`detect` 结果的 `weights` 字段给出服务所用的文件。
+该文件是资源 `vision-wrist-weights`。要安装它，运行 `install.py --fetch-assets`（见[外部资源](deploy.md#外部资源)）。
+
 标记到指尖的名义距离等于名义标记高度加 `tool_dz_mm`。
 服务不检查令牌、`Host` 或 `Origin`。VPN 是访问边界。
 配置无效时，退出码为 2，systemd 不重启服务。模型加载、相机或服务运行失败时，退出码为 1，systemd 在 3 s 后重启服务。
@@ -105,7 +110,8 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 
 路由相对于 `--base-path`，遵循 [服务契约](adr/0001-instrument-service-contract.md)。
 同一时刻只运行 1 个操作，包括检测、QR 读取、标记读取、校准、漂移检查和槽位观测。
-重叠请求返回 409，服务不排队执行额外操作。
+与另一命令重叠的命令返回 409，服务不排队执行额外命令。
+读取路由等待正在运行的操作结束，且不使服务进入忙状态。读取期间到达的命令等待读取结束。
 
 | 读取路由 | 结果 |
 | --- | --- |
@@ -144,7 +150,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 
 | 命令 | 参数与结果 |
 | --- | --- |
-| `read_markers` | `camera`。返回含 `id`、`center_px` 和 `corners_px` 的 `markers`，以及 `camera`、`calibrated=false`、`coordinate_system`、`image_size`、`camera_device`、`frame_sha256` 和 `read_at`。没有稳定端口路径时，`camera_device` 为 `null`。 |
+| `read_markers` | `camera`。返回含 `id`、`center_px` 和 `corners_px` 的 `markers`，以及 `camera`、`calibrated=false`、`coordinate_system`、`image_size`、`camera_device`、`frame_sha256` 和 `read_at`。没有稳定端口路径时，`camera_device` 为 `null`。对腕部相机，可选的 `flange_mm`（法兰位姿 `[x, y, z, r]`）和 `touch_z_mm` 给每个标记加上 `robot_mm`：标记中心的机械臂 x 和 y，标记须在 1 个水平面上。`detect` 接受同样的 2 个参数。此时结果含 `calibrated=true`。见[腕部相机校准](#腕部相机校准)。 |
 | `calibrate_camera` | `camera`、`tag_points`、`tag_pixels`、`tray_points`、`tray_pixels`、`image_size`、`scan_r_deg` 和 `tool_dz_mm`。在持有租约时拟合并保存模型。返回 `camera`、`calibrated=true` 和已保存的模型 `calibration`。 |
 | `check_calibration` | `camera`、`flange_mm` 和可选 `limit_px`。返回同一图像的标记 4 检查。 |
 
@@ -167,7 +173,7 @@ QR 结果的 `corners_px`、`center_px` 和 `bounds_px` 使用完整图像坐标
 失败或停止的命令为 `output=null`。
 `last_result` 保存最近一次成功操作的 `instance`、`job_id`、`camera`、`action`、`count` 和 `finished_at`。
 真实模式在首次成功处理图像前报告 `connected=false`。
-任何失败的操作都设置 `fault`，下次成功的操作清除它。只有返回 503 的失败才把 `connected` 设为 `false`。
+任何失败的命令都设置 `fault`，下次成功的命令或读取清除它。只有返回 503 的命令失败才把 `connected` 设为 `false`。失败的读取只返回错误，不改变状态。
 `fault` 不为空时，校准技能和漂移检查拒绝执行。此时先完成 1 次成功读取，例如 `GET api/detect`。
 
 ### 最终事件与结果查询
@@ -418,7 +424,7 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 | `camera` | 已配置的相机编号。该相机必须有稳定端口路径和已安装的校准模型。 |
 | `tray` | 通过校验的托盘模型文档，不是主机文件路径。 |
 | `targets` | 请求的槽位 ID，以及各槽位准确的示教机器人 XY 对。值为 `null` 时，该槽位没有示教工位，只检查芯片。 |
-| `axis` | 按显式吸取约定选择 `long` 或 `short`。 |
+| `axis` | 按显式吸取约定选择 `long` 或 `short`。只有所有目标都没有示教工位时（吸盘拾取），才使用 `null`。此时每个 `angle_deg` 为 `null`，方形芯片也可接受。 |
 
 完整 JSON 命令不得超过 16 KiB。托盘文件有效，不代表完整命令符合大小限制。
 每次观测使用 1 个当前帧和绑定该相机的校准模型。
@@ -427,7 +433,8 @@ Runner 停止并等待已接受的工作结束，同时保留占用区域。
 数据缺失或芯片归属含糊，不能证明槽位为空。
 请求的整条槽道必须位于检测区域（居中的 4:3 裁剪区域）内。机械臂遮挡或芯片掩模截断时，无法得到确证。
 请求槽道的芯片证据不得与另一条已配置槽道重叠。
-掩模边长之差不超过长边的 1% 时，轴方向含糊。
+芯片归属按槽道宽度判断，不加 `tolerance_mm`。槽道可见性和机械臂遮挡按槽道宽度加 `tolerance_mm` 判断。
+`axis` 为 `long` 或 `short` 时，如果掩模边长之差不超过长边的 1%，轴方向含糊。
 
 输出包含 `camera`、`camera_device`、`calibrated`、`image_size`、`model_created_at`、`frame_sha256`、`read_at` 和 `axis`。
 每个槽位报告 `state`、`center_xy_mm`、`angle_deg` 和 `reason`。位置和角度可以为空。
@@ -480,6 +487,8 @@ cross_check_slots(location, *, taught_stations, chips,
 
 函数先通过相机模型映射实测中心，再按配置的托盘几何拟合相似变换。
 任一角点残差超过 `tolerance_mm` 时，定位失败。
+拟合比例使距角点质心最远的角点移动超过 `tolerance_mm` 时，定位也失败。对所提供的 TOML，4 个角点均测得时，比例限制约为 1 ± 1.9%。
+比例误差说明托盘模型或校准的托盘高度有误。新托盘使托盘表面高度改变时，重新校准相机。
 它返回变换、实测标记残差，以及采用 `robot_xy_mm` 坐标的 `slots`。
 每个槽位包含 `centerline_xy_mm`、`reference_xy_mm`，以及变换后的 `width_mm`。
 输出只提供 XY 几何，不确定物理 Z 或安全机器人路径。
@@ -523,7 +532,75 @@ cross_check_slots(location, *, taught_stations, chips,
 每个槽位的 `status` 为 `ok`、`incomplete` 或 `failed`，并提供 `missing` 和 `failures` 详情。
 只有全部槽位通过时，结果的 `ok` 才为真。
 检查不完整或失败时，抛出 `TrayCheckError`。通过 `TrayCheckError.report` 查看完整的逐槽位报告。
+`observe_slots` 的错误消息列出每个未通过的槽位，以及其失败项、缺失证据和残差。
 不得把不完整证据视为运动许可。常规机器人限位、避让检查、租约和区域规则仍然适用。
+
+## 腕部相机校准
+
+腕部相机（`camera5`）装在机械臂的腕部支架上。该连杆保持水平，只随 J1 转动。工具旋转 R 不带动相机。
+
+`config/cameras/wrist.json` 保存 `3840x2160` 画面的校准：
+
+- 相机矩阵和 OpenCV 有理模型的 8 个畸变系数。
+- 安装位置：相机在腕部连杆坐标系中的位置，即相对工具轴的 x 和 y，以及连杆坐标系到相机坐标系的旋转。校准不给出相机相对法兰的高度。
+- `arm_radial_scale` 和 `calibration_radius_mm`：标定板运行给机械臂报告的径向移动定出的比例系数，以及该系数所围绕的半径。该系数只在运行位姿附近有效，即 X -79 到 41、Y -316 到 -236。映射函数不使用它。
+- `camera_above_tip_mm`：镜头高出吸盘尖端的距离。
+- `arm`：在观察位姿和接触点之间，机械臂沿伸展方向报告的移动比真实移动长。映射在连杆坐标系中把法兰到目标点的向量的伸展分量乘以 `radial_scale`，再加上 `radial_drift` 乘以观察位姿的法兰半径与 `radius_mm` 之差。机械臂的横向移动是准确的。
+- `tool`：`offset_xy_mm` 是吸盘中心相对法兰轴的位置，在法兰坐标系中表示。
+- `touch_fit`：接触拟合的数据数量和误差。
+- 拟合误差，单位为像素。
+
+`vision.wrist_camera.load()` 读取该文件。视觉服务的 `read_markers` 和 `detect` 命令对腕部相机使用它。
+`surface_points()` 给出水平面上图像点的机械臂 x 和 y。移动到该结果，吸盘就在该点上方。这次移动保持观察位姿的工具旋转 R：吸盘偏移随 R 转动。`surface_pixels()` 是 `surface_points()` 的逆运算。
+`locate()` 给出 2 个或更多位姿都看到的 1 个点的机械臂 x、y 和接触 Z。接触 Z 是吸盘尖端接触表面时的法兰 Z。
+使用 `surface_points()` 时，选镜头高出表面 170 mm 或更多的位姿。距离更近时，结果可能偏差 2 mm。
+改变镜头对焦、相机安装或采集尺寸后，重新校准。
+
+### 用打印的标定板校准
+
+1. 生成标定板：`uv run python scripts/wrist_camera_calibrate.py board work/wrist-camera/board.pdf`。用 A4 纸按 100% 打印。
+2. 测量打印图案的长边，即 11 个方格的两端边缘之间的距离。按 100% 打印时为 264 mm。
+3. 把打印件固定在硬底板上，放到托盘台上。运行期间不得移动标定板，也不得移动位移台。
+4. 把机械臂停在 X -39、Y -236、Z 163.8，偏差在 5 mm 内。标定板必须在相机下方 160 到 190 mm 处。脚本检查这 2 个条件，有一个不满足就拒绝启动。
+5. 确认机械臂周围没有障碍物。机械臂从起始位姿出发，X 方向移动 -40 到 80 mm，Y 方向移动 0 到 -80 mm，Z 方向移动 0 到 -38 mm，速度为 15。
+6. 运行 `uv run python scripts/wrist_camera_calibrate.py run --board-mm 264`，填入测得的长度。看住机械臂。`sudo labctl robot stop` 使它停止。
+7. 提交新的 `config/cameras/wrist.json`。
+
+脚本用会话 `wrist-calibration` 取得机器人的控制权。它记录 50 个位姿，把机械臂移回起始位姿，再释放机器人。
+拟合误差不超过 1 像素时，脚本才保存结果。
+脚本把记录的位姿和标定板角点写入 `work/wrist-camera/run.json`。
+如果不移动机械臂而重新拟合，运行 `uv run python scripts/wrist_camera_calibrate.py fit work/wrist-camera/run.json --board-mm 264`。
+
+### 用接触拟合吸盘偏移和机械臂比例
+
+标定板运行看不到工具。接触拟合把相机与吸盘在芯片上密封时的法兰位置作比较。
+
+1. 在水平面上放 8 个或更多芯片。求芯片顶面的接触 Z：表面的接触 Z 加上芯片厚度。不要用开着吸气时首次密封的 Z。吸盘还没碰到薄芯片，吸力就把它吸起来了。
+2. 从 8 个或更多位姿观察这些芯片。
+3. 拾取每个芯片，放到另一个位置，工具转动不超过 60 度。每次移动前后，从同一位姿各观察一次。移动 12 次或更多。
+4. 把记录写入一个 JSON 文件，包含 `touch_z`、`looks` 和 `moves`。`vision.wrist_camera.fit_touch()` 的文档字符串说明各字段。
+5. 运行 `uv run python scripts/wrist_camera_calibrate.py touch work/wrist-camera/touch.json`。
+6. 提交新的 `config/cameras/wrist.json`。
+
+密封位置的误差不超过 0.4 mm 时，命令才保存结果。
+新的标定板拟合把机械臂比例设为 1，把吸盘偏移设为 0。标定板拟合之后，重新运行接触拟合。
+
+### 相机高出工具尖端的距离
+
+接触拟合给出 `camera_above_tip_mm`。它把机械臂的横向移动当作真实距离，因此芯片顶面的接触 Z 必须正确。
+不要用 `locate()` 从沿伸展方向的移动得到的高度来求该值。那个高度带有机械臂的比例误差。
+`surface_points()` 的接触 Z 也按同一规则：对芯片，给出表面的接触 Z 加上芯片厚度。
+`run` 和 `fit` 命令保留已保存的值。改变相机安装或吸盘后，重新拟合。
+
+### 腕部校准的限制
+
+- 标定板的点位于图像中部。图像左边缘和机械臂入镜的区域没有点。
+- 每个标定板角点都是自由点，因此标定板不必平整。测得的长度确定比例。
+- 拟合把机械臂的 Z 步长当作真实距离。
+- 机械臂的各项只在接触拟合的观察和接触附近有效：观察位姿 X -79 到 41、Y -316 到 -236、Z 126 到 164，接触在 Z 23 附近。在该范围内，`surface_points()` 的结果与吸盘密封的位置相差不超过 0.5 mm。
+- 在位移台台面上，镜头高出表面 200 mm 或更多时，结果的偏差在 0.5 mm 内。
+- 腕部相机的权重只认识托盘台面上的芯片。在裸露的位移台台面上，`detect` 找不到芯片。
+- 吸盘的垫宽 4 mm。比约 4 mm 窄的芯片要求吸盘与其宽度中线的偏差在 0.2 mm 内，因此拾取流程必须能向侧面 0.5 mm 处再接触一次。
 
 ## 停止与退出
 
@@ -565,6 +642,7 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 - 脚本把每帧交给 `Localizer.predict`，与视觉服务相同。该函数先把宽于 4:3 的图像裁成居中的 4:3 区域（1280x720 裁成 960x720），再拉伸到 640x640。检测坐标仍按完整原图像素报告。
 - 脚本只读取 `images/` 中的 `.jpg`、`.jpeg` 和 `.png` 文件。
 - `--weights` 默认读取 `MG400_VISION_WEIGHTS`。`--device` 默认为 `cpu`。使用 GPU 时，设置 `--device cuda`。
+- `--input-size` 设置模型输入尺寸，默认为 `640`。评估腕部相机权重时，设置 `--input-size 1280`。
 - 脚本使用 `Localizer.predict` 的默认置信度阈值 `0.39`，与服务相同。如果要评估其他阈值，设置 `--confidence`。
 - 检测框与标签框的 IoU（交并比）不小于 0.5 时，二者匹配。脚本按置信度从高到低匹配。每个标签最多匹配 1 个检测。
 - 未匹配的检测计为误检。未匹配的标签计为漏检。
@@ -572,3 +650,22 @@ uv run --group vision-gpu python scripts/vision_eval.py ~/datasets/h22-tray-eval
 - 中心误差是匹配框的中心距离。`--px-per-mm` 把像素换算为毫米。
 
 输出是 Markdown 报告。报告列出各组帧的计数、芯片精确率和召回率、中心误差，以及有误检或漏检的帧。
+
+### 腕部相机的带标注画面
+
+`scripts/wrist_chip_dataset.py` 用腕部相机拍摄的托盘画面生成带标注的数据集。不需要人标注芯片，也不使用训练过的检测模型。
+芯片的轮廓不变。脚本用 1 个布局的多个视角取 1 次每个芯片的轮廓。对之后的布局，脚本把每个已保存的轮廓平移和旋转，使它与每张画面中的物体重合。
+
+```bash
+python scripts/wrist_chip_dataset.py OUT LAYOUT [LAYOUT ...] --shapes SHAPES --sam SAM
+```
+
+- 每个 `LAYOUT` 文件夹包含芯片的 1 个布局的 `3840x2160` 画面和 `frames.json`。该文件是 `{"image": "name.jpg", "pose": [x, y, z, r]}` 的列表，给出每张画面的法兰位姿。同一个布局的画面之间不得移动芯片。
+- `OUT` 得到 `images/` 和 `labels/`，`scripts/vision_eval.py` 可以读取。每个标注是 1 个芯片的已保存轮廓在该画面中的位置，写成类别 `0` 的 YOLO 多边形，角点不超过 32 个。文件名以 `LAYOUT` 文件夹的名称开头。
+- `SHAPES` 是 JSON 文件，保存每个芯片的轮廓，单位是 mm。文件不存在时，脚本用第 1 个 `LAYOUT` 生成轮廓并写出该文件。脚本不修改已有的文件。
+- `SAM` 是 `ultralytics` 的 Segment Anything 权重文件，例如 `sam2.1_l.pt`。必须在装有 `ultralytics` 的环境中运行脚本，例如视觉环境。
+- 托盘板是纯灰色。脚本找出与周围托盘不同的每个物体，Segment Anything 给出该物体的轮廓。
+- 脚本用托盘角上的标记 `0`、`1` 和 `2` 找到托盘。每个标记必须出现在同一个布局的 2 张或更多画面中。
+- 在同一个布局 60% 或更多的画面中位于托盘同一位置的物体才算芯片。使用 3 个或更多不同方向的视角。芯片的顶面是 80% 的视角共有的区域。
+- 画面中有不是已知芯片的物体，或者视野内的芯片位置上没有物体时，脚本不写出该画面。脚本打印这些数量和每个布局中每个芯片的位置。
+- 物体必须距托盘边缘和角上的标记块 3 mm 或更远，颜色必须与托盘的灰色不同。

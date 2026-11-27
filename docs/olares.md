@@ -56,7 +56,7 @@ MG400_PROXY_PORT=8080
 | `/lab/` | `127.0.0.1:8772`，固定基础路径为 `/lab/` |
 | `/camera/<view>.mp4`、`/camera/<view>.mjpeg`、`/camera/<view>.jpg`、`/camera/<view>.full.jpg`、`/camera/microscope.png`、`/camera/fps.json` | `127.0.0.1:1985`，仅移除 `/camera` |
 
-`<view>` 为 `camera1` 到 `camera4`。`/camera/<view>.mp4` 和 `/camera/<view>.mjpeg` 的 `<view>` 还可以是 `microscope`。
+`<view>` 为 `camera1` 到 `camera5`。`/camera/<view>.mp4` 和 `/camera/<view>.mjpeg` 的 `<view>` 还可以是 `microscope`。
 代理用 `302` 把根路径 `/` 重定向到实验室控制台 `/lab/`，用 `308` 把 `/camera` 和 `/lab` 重定向到带末尾斜杠的路径。其他路径返回 `404`。参见[实验室控制台](dashboard.md#实验室控制台)。
 摄像头路由只转发视频流和单帧图像，供控制台的 Cameras 工作区使用。
 代理不转发机器人、位移台、热像仪、炉控、显微镜和视觉服务。
@@ -192,7 +192,7 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
    labctl status
    ```
 
-   `is-enabled` 对三项都显示 `static`，表示服务不会开机自启。
+   `is-enabled` 对 3 个服务都显示 `static`，表示服务不会开机自启。
 
 8. 启用[实验室控制台](dashboard.md#实验室控制台)后，核对以下各项：
    - Cameras 工作区显示所有已配置的画面。
@@ -207,9 +207,9 @@ Olares 没有 GitHub 写入凭据，不能推送。在本地修改代码，推�
 
 实验室 USB 设备通过 2 个集线器连接到控制器 `0000:80:14.0`。
 原自供电集线器使用 USB 2 根端口 `12` 和 USB 3 根端口 `3`。
-它连接 `camera1`、热像仪和其他实验室设备。
+它连接 `camera1`、热像仪和其他实验室设备。腕部摄像头（`camera5`）连接在它的 USB 3 侧。
 第二个集线器使用 USB 2 根端口 `6`，连接 `camera2`、`camera3` 和 `camera4`。
-4 台 USB 网络摄像头的连接速率均为 480 Mbit/s。两个集线器共用同一主机控制器。
+`camera1` 到 `camera4` 的连接速率均为 480 Mbit/s。腕部摄像头的连接速率为 5000 Mbit/s。两个集线器共用同一主机控制器。
 
 Toupcam 摄像头保持连接在原集线器的 USB 3 侧。不得复位原集线器。
 复位会同时断开其电机、炉子、气体和摄像头的连接。
@@ -220,7 +220,8 @@ Angetube Live Camera（`camera1`）的序列号为 `HU1234567898`。
 `12.1.2` 上的摄像头从上方拍摄位移台。`6.4` 上的摄像头沿插入导轨拍摄，后方可见托盘。
 显微镜侧视摄像头（`camera3`）使用 `6.1`，拍摄物镜转盘。
 托盘摄像头（`camera4`）使用 `6.3`。
-更换集线器后，先识别每台摄像头，再分配路径。保留全部 4 个列表项，保持视频流编号不变。
+腕部摄像头（`camera5`）装在机械臂腕部，镜头朝下。它的序列号为 `2023121018`，因此稳定名称使用 `/dev/v4l/by-id/`，不随端口变化。
+更换集线器后，先识别每台摄像头，再分配路径。保留全部 5 个列表项，保持视频流编号不变。
 go2rtc 独占侧视摄像头，显微镜读取共享的 `camera3` 视频流。
 
 | 设备 | VID:PID | 稳定标识 | 集线器端口 | 服务 |
@@ -234,6 +235,7 @@ go2rtc 独占侧视摄像头，显微镜读取共享的 `camera3` 视频流。
 | AC410 插入导轨摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0` | `6.4` | `camera` |
 | AC410 显微镜侧视摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0` | `6.1` | `camera`，通过 go2rtc 共享 |
 | AC410 托盘摄像头 | `f326:1306` | `/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0` | `6.3` | `camera` |
+| ELP-USB4KCAM30H-H120 腕部摄像头 | `32e4:3415` | `/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0` | `3.1.4` | `camera` |
 | ToupTek USB 3 摄像头 | `0547:1375`（USB 3），`0547:1376`（USB 2） | Toupcam SDK，无序列号 | `3.2.4` | `microscope`，与炉子录像共享 |
 
 控制器必须使用完整串口路径。
@@ -245,14 +247,13 @@ go2rtc 独占侧视摄像头，显微镜读取共享的 `camera3` 视频流。
 安装程序只为已注册且启用的服务选择 `config/udev/70-mg400-<name>.rules.in`。
 它从主机用户组数据库获取 GID `1000` 的组名，替换 `@SERVICE_GROUP@`。
 每条规则匹配 VID:PID，并以 `MODE="0660"` 授予该组访问权限。
-串口规则还匹配表中的设备序列号。摄像头规则保留现有端口路径名称。
+串口规则还匹配表中的设备序列号，并设置 `ENV{ID_MM_DEVICE_IGNORE}="1"`。ModemManager 因此不探测这些串口。它的 AT 探测字节会破坏下一条固件命令。摄像头规则保留现有端口路径名称。
 热像仪规则按前缀匹配表中的 P1 序列号。P1 在序列号后附加不可打印字节，而 udev 比较完整的值。
 模板不创建设备别名，也不执行复位程序。
 
 安装程序以 root 身份写入 `/etc/udev/rules.d/70-mg400-<name>.rules`，权限为 `0644`。
-随后执行 `udevadm control --reload-rules` 和 `udevadm trigger --subsystem-match=usb`。
-USB trigger 不会复位集线器或启动服务。
-TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 `dialout` 和 `video` 组访问设备。
+随后执行 `udevadm control --reload-rules` 和 `udevadm trigger --action=change --subsystem-match=usb --subsystem-match=tty --subsystem-match=video4linux`。
+change 事件把新规则应用到已连接的 USB、TTY 和视频设备节点。它不会复位集线器或启动服务。
 安装前，用安装程序的 dry run 检查所选文件和命令。
 
 默认服务选择 `stage`、`camera`、`furnace` 和 `microscope` 模板。
@@ -263,8 +264,8 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 ## 摄像头
 
-在 `MG400_CAMERA_DEVICES` 中配置 1 到 5 台 USB 摄像头。使用 `/dev/v4l/by-path/` 或 `/dev/v4l/by-id/` 下不同的稳定路径。
-视频流按设备顺序命名为 `camera1` 到 `camera5`。配置为空时关闭摄像头。此控制台显示前 4 个 USB 摄像头视图，并接受配置中的第 5 个共享设备。
+在 `MG400_CAMERA_DEVICES` 中配置 1 到 5 台 USB 摄像头。使用不同的 USB 接口路径。腕部摄像头使用 `/dev/v4l/by-id/` 名称。
+视频流按设备顺序命名为 `camera1` 到 `camera5`。配置为空时关闭摄像头。
 在 `MG400_CAMERA_MODES` 中为每台设备指定 1 个 MJPEG 模式，用逗号分隔。
 软件只接受以下模式，列表来自 AC410（`camera2` 到 `camera4`）。所选摄像头也必须报告支持该模式：
 
@@ -277,27 +278,27 @@ TTY 和视频权限在下次 udev 事件时生效。服务仍可通过现有的 
 
 配置替换摄像头前，用 `v4l2-ctl --device <by-path> --list-formats-ext` 查询该设备的 MJPEG 模式。
 此命令需要 `v4l-utils` 软件包。
-Angetube Live Camera（`camera1`）支持 `3840x2160@30` MJPEG。
+Angetube Live Camera（`camera1`）和腕部摄像头（`camera5`）支持 `3840x2160@30` MJPEG。
 
 列表为空时，普通流使用 `1280x720@30`，`MG400_MICROSCOPE_SIDE_STREAM` 使用 `3840x2160@30`。
 显式列表覆盖这些默认值，包括侧视流。删除旧的 `MG400_CAMERA_CAPTURE_SIZES` 项：它与 `MG400_CAMERA_MODES` 同时设置时，安装器、`labctl` 和预览服务拒绝运行。
-以下 4 台摄像头的配置按上表接口顺序排列。
-`camera1` 使用 `3840x2160@30`。其他 3 台摄像头使用 `1280x720@30`。
+以下 5 台摄像头的配置按上表顺序排列。
+`camera1` 和 `camera5` 使用 `3840x2160@30`。其他 3 台摄像头使用 `1280x720@30`。
 侧视流 `camera3` 的宽高比与 `3840x2160` 侧视参考图像相同。
 原版 `uvcvideo` 驱动让 AC410 在大于 `640x480` 的模式下占用最大的同步传输时隙。此时，每条共享 USB 2 链路只能容纳 1 路这样的流。
 [USB 带宽补丁](#usb-带宽补丁) 支持 4 路流同时配置为 `1280x720@30` 采集。须测量实际交付帧率。
 提高模式前，先用 `labctl camera-check` 和内核日志检查带宽：
 
 ```ini
-MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0
-MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30
+MG400_CAMERA_DEVICES=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:12.1.2:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.4:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.1:1.0-video-index0,/dev/v4l/by-path/pci-0000:80:14.0-usb-0:6.3:1.0-video-index0,/dev/v4l/by-id/usb-HDMI_3.0_USB_Camera_HDMI_USB_Camera_2023121018-video-index0
+MG400_CAMERA_MODES=3840x2160@30,1280x720@30,1280x720@30,1280x720@30,3840x2160@30
 MG400_MICROSCOPE_SIDE_STREAM=camera3
 ```
 
-只有宽度不超过 1280 且高度不超过 720 的流会预加载。
+只有宽度不超过 1280 且高度不超过 720 的流会预加载。腕部摄像头的流在任何模式下都预加载。
 浏览器关闭后，预加载的流继续采集。
 更大的流在视频流、显微镜或单帧读取请求时启动。
-显微镜服务只在 `select_objective` 运行期间读取侧视流。
+显微镜服务在 `select_objective`、其他相机引导操作和校准采集期间读取侧视流。
 预览转发服务不转发大于 `1280x720` 的侧视流。
 按需启动的流可能发送截断的第 1 帧。显微镜读取线程丢弃不完整的帧。
 按需启动的流的最后 1 个观看者离开后，预览服务在读取响应正文的间隙释放上游读取连接。
@@ -311,8 +312,8 @@ go2rtc 只在有 H.264 观看者时读取显微镜预览。显微镜服务没有
 go2rtc 在第 1 个观看者打开 H.264 预览时启动 ffmpeg 编码，在最后 1 个观看者离开后停止。
 ffmpeg 用 2 帧估计输入帧率（`-fpsprobesize 2`），每个源帧只发送 1 次，并保留源时间戳（`-enc_time_base:v 1/90000`），每 1 s 发送 1 个关键帧。编码器默认按估计帧率的网格取整时间戳；估计值与 30 fps 不同时，约 8% 的帧成对相差 1 tick，随后有间隙，画面闪动。因此新画面在约 1 s 内显示首帧，低帧率的显微镜也一样。`-fps_mode` 需要 ffmpeg 5.1 或更新版本。
 安装器运行 ffmpeg 测试 `h264_nvenc`。测试通过时，H.264 预览用 NVIDIA GPU 编码，否则用 `libx264`。更换 GPU 或驱动后，重新运行安装器。
-使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。宽度大于 640 的流和显微镜码率上限为 2.5 Mbit/s，其他流为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。go2rtc 没有所请求的预览时，该路由返回 404；go2rtc 没有应答时返回 502。
-使用 NVENC 时，大于 `1280x720` 的流只有 H.265 预览，侧视流除外。预览分辨率与采集模式相同，码率上限为 6 Mbit/s。
+使用 NVENC 时，每路预览另有 H.265 版本，由 `hevc_nvenc` 编码。每路 H.265 预览码率上限为 2 Mbit/s。请求 `/camera/<view>.mp4?codec=h265` 得到 H.265；主机没有 H.265 预览时返回 H.264。go2rtc 没有所请求的预览时，该路由返回 404；go2rtc 没有应答时返回 502。
+使用 NVENC 时，大于 `1280x720` 的流只有 H.265 预览，侧视流除外。预览分辨率与采集模式相同。腕部摄像头预览码率上限为 6 Mbit/s，供观察机械臂所见画面。其他大尺寸预览码率上限为 3 Mbit/s。这些上限使全部预览和控制流量能通过约 22 Mbit/s 的中继 VPN 链路。
 RTP 不能传输宽度大于 2040 的 JPEG，因此 ffmpeg 通过 HTTP 读取该流的 MJPEG。
 摄像头实际发送的帧率可以低于模式帧率。每帧以到达时间为时间戳，因此预览帧率与实际帧率相同。
 go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 1 个包时，浏览器解码在第 1 帧后停止。
@@ -320,15 +321,17 @@ go2rtc 1.9.14 发布版不拆分 RTP 聚合包。ffmpeg 把小帧和 SEI 合成 
 NVENC 把 `3840x2160` 的帧分成 2 个 slice，ffmpeg 也把它们合成 1 个包。大尺寸预览因此必须用带补丁 `deploy/go2rtc/aggregation-packets.patch` 的 go2rtc。
 ffmpeg 通过只监听 `127.0.0.1:8554` 的 RTSP 读写该流。主机未安装 ffmpeg 时，H.264 预览返回 502。
 单帧请求 `/camera/<view>.jpg` 从同一 go2rtc 流读取配置尺寸的图像，不切换模式，也不另行打开设备采集。有的摄像头启动采集后先发出截断的帧。带补丁 `deploy/go2rtc/v4l2-cut-jpeg.patch` 的 go2rtc 丢弃没有 JPEG 结束标记的帧。
-全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。模式高于 `1280x720` 的摄像头保持自己的模式。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
+全分辨率单帧 `/camera/<view>.full.jpg` 例外：拍摄期间 go2rtc 只以 `4000x3000@15` 采集这 1 台摄像头，其他画面暂停。腕部摄像头以 `3840x2160@30` 采集。模式高于 `1280x720` 的摄像头保持自己的模式。显微镜正在使用侧视流时返回 409。另一张单帧 45 s 内未完成时返回 503。参见[相机工作区](dashboard.md#相机工作区)。
 
 `camera1` 与热像仪和控制器共用原集线器的 USB 2 连接。
 `camera2`、`camera3` 和 `camera4` 共用第二个集线器的 USB 2 连接。
+`camera5` 与 Toupcam 共用原集线器的 USB 3 连接。
 多路大尺寸流可能超过共享连接的周期传输预算。
 同时使用真实设备前，在有人监督下打开所需画面以检查带宽。检查连续多张 JPEG 图像均能完整解码。
 托盘上约 30 mm 的 Micro QR 标签含 17 个模块，横向至少需要 70 像素。
 图像宽度为 1280 像素时，556 mm 的托盘视野约有 2.3 像素/mm。
 保持摄像头连接表中的 USB 接口。修改设备或模式后，重新运行安装器，再运行 `labctl restart camera vision microscope orch`。这些服务都读取摄像头模式。未启用 `vision` 时，从命令中删除 `vision`。
+腕部摄像头在视频流停止后可能拒绝下一次打开，而 go2rtc 只在重启后再次打开摄像头。因此 go2rtc 让腕部摄像头的流保持打开，预览服务每次重启 go2rtc 前，先通过 USB 复位腕部摄像头。复位只影响这 1 台摄像头，不复位集线器。摄像头服务的 udev 规则让服务组能打开它在 `/dev/bus/usb` 下的设备节点。
 更换摄像头后，保留原校准文件。即使安装位置不变，也必须重新校准图像坐标映射。
 
 启动摄像头服务：
@@ -377,7 +380,7 @@ labctl start camera
 限制：
 
 - DKMS 为同一内核系列的每个新内核重建模块。启动其他内核系列时，主机使用原版驱动，并忽略 `mjpeg_bpp`。此时再次运行脚本。
-- 构建失败时，脚本删除它的 DKMS 包，原版驱动保持不变。
+- 构建失败时，脚本删除新的 DKMS 包，已安装的驱动保持不变。新版本构建成功后，脚本才删除旧的补丁版本。
 - 在 1 条共享 USB 2 链路上，4 路 `1920x1080@30` 接近链路上限。不要在该链路上使用此配置。
 
 ### 摄像头故障

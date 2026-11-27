@@ -526,7 +526,7 @@ def test_mjpeg_parser_rejects_oversized_headers_even_with_complete_body_in_one_c
         next(module.iter_mjpeg(ChunkedUpstream(body, (65536,))))
 
 
-@pytest.mark.parametrize("count", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 4, 5])
 def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkeypatch, count):
     _, upstream = preview
     monkeypatch.setenv(
@@ -539,7 +539,7 @@ def test_preview_routes_and_tiles_follow_only_configured_cameras(preview, monkey
     assert tuple(module.FEEDS) == (*cameras, "microscope")
     assert all(feed.thread is None for feed in module.FEEDS.values())
     assert [feed.on_demand for feed in module.FEEDS.values()] == [False] * count + [True]
-    for camera in range(count + 1, 6):
+    for camera in range(count + 1, 7):
         for route in (
             f"camera{camera}.jpg",
             f"camera{camera}.mjpeg",
@@ -592,6 +592,20 @@ def test_preview_configuration_uses_shared_legacy_size_and_side_stream_rules(pre
     monkeypatch.delenv("MG400_CAMERA_CAPTURE_SIZES")
     module = load_preview()
     assert module.CAMERAS.mode(1) == (1920, 1080, 60)
+
+
+def test_full_still_of_the_wrist_camera_uses_its_largest_mode(preview, monkeypatch):
+    wrist = "/dev/v4l/by-id/usb-HDMI_USB_Camera_2023121018-video-index0"
+    monkeypatch.setenv(
+        "MG400_CAMERA_DEVICES",
+        ",".join([*(f"/dev/v4l/by-path/fake-camera-{camera}" for camera in range(1, 5)), wrist]),
+    )
+    module = load_preview()
+    assert module.still_mode("camera4") == (4000, 3000, 15)
+    assert module.still_mode("camera5") == (3840, 2160, 30)
+    overlay = module.still_overlay("camera5")
+    assert f"video={wrist}&input_format=mjpeg&video_size=3840x2160&framerate=30" in overlay
+    assert '  camera4: ""\n' in overlay
 
 
 def test_side_stream_above_1280x720_is_not_relayed(preview, monkeypatch):
@@ -859,6 +873,32 @@ def test_full_still_failure_still_restores_the_previews(still, monkeypatch):
     assert not module.STILL_LOCK.locked()
 
 
+def test_full_still_opens_the_stream_again_after_a_refused_open(still, monkeypatch):
+    module, calls, _ = still
+    urlopen, refused = module.urllib.request.urlopen, []
+
+    def flaky(target, timeout=None):
+        if "/api/stream.mjpeg" in str(target) and not refused:
+            refused.append(target)
+            answer = io.BytesIO(b"streams: input/output error")
+            answer.headers = {"Content-Type": "text/plain"}
+            return answer
+        return urlopen(target, timeout=timeout)
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", flaky)
+    status, _, body = request(module, "camera2.full.jpg")
+    assert status == 200 and body == jpeg(4000, 3000)
+    assert calls == [
+        "http://127.0.0.1:1984/api/restart",
+        "http://127.0.0.1:1984/api",
+        "http://127.0.0.1:1984/api/restart",
+        "http://127.0.0.1:1984/api",
+        "http://127.0.0.1:1984/api/stream.mjpeg?src=camera2",
+        "http://127.0.0.1:1984/api/restart",
+        "http://127.0.0.1:1984/api",
+    ]
+
+
 def test_full_still_waits_for_the_full_mode(still, monkeypatch):
     module, _, overlays = still
     monkeypatch.setattr(
@@ -872,14 +912,15 @@ def test_full_still_waits_for_the_full_mode(still, monkeypatch):
     assert not module.STILL_CONFIG.exists()
 
 
-def test_full_still_of_the_side_stream_waits_for_an_idle_microscope(preview, monkeypatch):
+def test_every_full_still_waits_for_an_idle_microscope(preview, monkeypatch):
     monkeypatch.setenv("MG400_MICROSCOPE_SIDE_STREAM", "camera3")
     monkeypatch.setenv("MG400_CAMERA_MODES", "640x480@30,640x480@30,640x360@30")
     module = load_preview()
-    state = Mock(return_value=io.BytesIO(b'{"busy": true}'))
+    state = Mock(side_effect=lambda *args, **kwargs: io.BytesIO(b'{"busy": true}'))
     monkeypatch.setattr(module.urllib.request, "urlopen", state)
     assert request(module, "camera3.full.jpg")[0] == 409
     state.assert_called_once_with("http://127.0.0.1:8770/api/state", timeout=2)
+    assert request(module, "camera1.full.jpg")[0] == 409
     assert request(module, "camera4.full.jpg")[0] == 404
     assert request(module, "camera1.full.jpg?fps=5")[0] == 404
 
@@ -911,3 +952,57 @@ def test_startup_fails_when_go2rtc_never_answers(preview, monkeypatch):
     upstream.side_effect = ConnectionRefusedError()
     with pytest.raises(OSError, match="go2rtc did not answer"):
         module.wait_go2rtc(seconds=0)
+
+
+WRIST = "/dev/v4l/by-id/usb-HDMI_USB_Camera_2023121018-video-index0"
+
+
+@pytest.mark.parametrize("failure", [None, OSError("no such device")])
+def test_go2rtc_restart_resets_the_wrist_camera_first(preview, monkeypatch, failure):
+    monkeypatch.setenv("MG400_CAMERA_DEVICES", f"/dev/v4l/by-path/fake-camera-1,{WRIST}")
+    module = load_preview()
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    order = []
+
+    def reset(device):
+        order.append(device)
+        if failure is not None:
+            raise failure
+
+    def urlopen(target, timeout=None):
+        order.append(getattr(target, "full_url", target))
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(module, "reset_usb_device", reset)
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    module.restart_go2rtc()
+    assert order == [WRIST, "http://127.0.0.1:1984/api/restart", "http://127.0.0.1:1984/api"]
+
+
+def test_usb_reset_goes_to_the_usb_device_of_the_camera(tmp_path, monkeypatch):
+    from cameras import usb
+
+    node = tmp_path / "dev/video7"
+    interface = tmp_path / "sys/devices/usb4/4-3/4-3:1.0"
+    sys_root = tmp_path / "sys/class/video4linux"
+    by_id = tmp_path / "by-id/wrist-video-index0"
+    bus = tmp_path / "bus/004/066"
+    for path in (node, bus):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    for path in (interface, sys_root / "video7", by_id.parent):
+        path.mkdir(parents=True)
+    (interface.parent / "busnum").write_text("4\n")
+    (interface.parent / "devnum").write_text("66\n")
+    (sys_root / "video7/device").symlink_to(interface)
+    by_id.symlink_to(node)
+    requests = []
+    monkeypatch.setattr(usb.fcntl, "ioctl", lambda _handle, *request: requests.append(request))
+    monkeypatch.setattr(usb.time, "sleep", lambda _seconds: None)
+    opened = []
+    real_open = usb.os.open
+    monkeypatch.setattr(
+        usb.os, "open", lambda path, flags: opened.append(Path(path)) or real_open(path, flags)
+    )
+    usb.reset_usb_device(str(by_id), sys_root=sys_root, usb_root=tmp_path / "bus")
+    assert opened == [bus] and requests == [(0x5514, 0)]

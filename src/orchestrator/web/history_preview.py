@@ -20,13 +20,28 @@ class PreviewHistory:
 
     def add_device_events(self, rows):
         with self.lock:
-            for device, seq, ts, level, message, fields in rows:
-                if any(row["device"] == device and row["seq"] == seq for row in self.events):
+            for value in rows:
+                if len(value) not in (6, 7):
+                    raise ValueError(
+                        "Device events require 6 fields and an optional service instance."
+                    )
+                device, seq, ts, level, message, fields = value[:6]
+                instance = value[6] if len(value) == 7 else None
+                if any(
+                    row["device"] == device and row["seq"] == seq and row["instance"] == instance
+                    for row in self.events
+                ):
                     continue
                 self._append(
                     self.events,
                     dict(
-                        device=device, seq=seq, ts=ts, level=level, message=message, fields=fields
+                        device=device,
+                        seq=seq,
+                        ts=ts,
+                        level=level,
+                        message=message,
+                        fields=fields,
+                        instance=instance,
                     ),
                 )
 
@@ -43,10 +58,15 @@ class PreviewHistory:
                 for row in rows
                 if row["id"] > since
                 and (device is None or row["device"] == device)
-                and (start is None or row["ts"] >= start)
-                and (end is None or row["ts"] <= end)
+                and (start is None or (row["ts"] is not None and row["ts"] >= start))
+                and (end is None or (row["ts"] is not None and row["ts"] <= end))
             ]
-            selected.sort(key=lambda row: (row["ts"], row["id"]), reverse=True)
+            if since:
+                selected.sort(key=lambda row: row["id"])
+                selected = selected[:limit]
+            selected.sort(
+                key=lambda row: (row["ts"] is not None, row["ts"] or 0, row["id"]), reverse=True
+            )
             return copy.deepcopy(selected[:limit])
 
     def device_events(self, **query):
@@ -58,6 +78,6 @@ class PreviewHistory:
     def prune_devices(self, before):
         with self.lock:
             for rows in (self.events, self.states):
-                retained = [row for row in rows if row["ts"] >= before]
+                retained = [row for row in rows if row["ts"] is None or row["ts"] >= before]
                 rows.clear()
                 rows.extend(retained)

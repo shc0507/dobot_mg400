@@ -2,6 +2,8 @@
 
 import math
 
+from stage_controller.protocol import position_reached, target_counts
+
 AXES = {"top": "x", "bottom": "y", "insert": "insert"}
 MOVE_ORDER = ("bottom", "top", "insert")
 SPEED = 0.25
@@ -39,6 +41,15 @@ def coordinates(state):
         else None
         for motor, axis in AXES.items()
     }
+
+
+def reached(axis, target, slack_counts=0):
+    """Apply the stage service's completion rule to a snapshot axis."""
+    if not finite(axis.get("tolerance")) or not finite(axis.get("position_rotations")):
+        return False
+    return position_reached(
+        axis["position_rotations"], target_counts(target), axis["tolerance"], slack_counts
+    )
 
 
 def target_ready(state, motor, target):

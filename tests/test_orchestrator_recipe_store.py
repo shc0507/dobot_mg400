@@ -360,3 +360,33 @@ def test_device_event_migration_failure_preserves_old_rows_and_schema():
         assert tables == {"device_events"}
     finally:
         database.close()
+
+
+def test_events_after_a_cursor_start_with_the_oldest_so_pollers_skip_none(tmp_path):
+    folder = tmp_path / "runs"
+    with RunStore(folder) as store:
+        store.add_device_events(
+            [("robot", seq, float(seq), "info", f"e{seq}", {}) for seq in range(10)]
+        )
+        first = store.device_events(since=2, limit=3)
+        assert [row["message"] for row in first] == ["e4", "e3", "e2"]
+        after = store.device_events(since=max(row["id"] for row in first), limit=3)
+        assert [row["message"] for row in after] == ["e7", "e6", "e5"]
+        assert [row["message"] for row in store.device_events(limit=2)] == ["e9", "e8"]
+
+
+def test_event_cursor_keeps_unknown_timestamps_without_skipping_rows(tmp_path):
+    with RunStore(tmp_path / "runs") as store:
+        store.add_device_events(
+            [
+                ("stage", 1, 10.0, "info", "Before", {}, "stage-a"),
+                ("stage", 2, None, "info", "Unknown time", {}, "stage-a"),
+                ("stage", 3, 12.0, "info", "Known time", {}, "stage-a"),
+                ("stage", 4, 13.0, "info", "Next page", {}, "stage-a"),
+            ]
+        )
+        first = store.device_events(since=1, limit=2)
+        assert [row["message"] for row in first] == ["Known time", "Unknown time"]
+        assert first[-1]["ts"] is None
+        following = store.device_events(since=max(row["id"] for row in first), limit=2)
+        assert [row["message"] for row in following] == ["Next page"]

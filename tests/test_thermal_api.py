@@ -75,6 +75,22 @@ def test_demo_frame_content_and_lifespan_cleanup():
     assert not service._thread.is_alive()
 
 
+def test_summary_and_replay_share_state_identity():
+    service = CameraService(demo=True)
+    with TestClient(create_app(service=service)) as client:
+        wait_for_frame(client)
+        instance = client.get("/api/state").json()["instance"]
+        frame = client.get("/api/frame?summary=1").json()
+        assert frame["instance"] == instance == service.events.instance
+        assert frame["frame_age_s"] >= 0 and frame["capture_timestamp"] is None
+        assert frame["timestamp_basis"] == "read_completed"
+        assert not {"raw", "ir", "temperatures_c"} & frame.keys()
+        replay = client.get("/api/events?since=0&instance=previous-process").json()
+        assert replay["instance"] == instance and replay["restarted"]
+        assert all(row["instance"] == instance for row in replay["events"])
+        assert client.get("/api/events?instance=a&instance=b").status_code == 400
+
+
 def test_describe_lists_connect_and_shutter_for_any_client():
     with TestClient(
         create_app(demo=True, auto_connect=False), base_url="http://127.0.0.1"
@@ -98,12 +114,11 @@ def test_connect_command_after_disconnect_restarts_frames():
         assert set(body) == {"command_id", "state"}
         last = body["state"]["last_command"]
         assert last["id"] == body["command_id"]
-        assert (last["action"], last["client"], last["result"]) == (
-            "connect",
-            "lab-console",
-            "ok",
-        )
+        assert (last["action"], last["client"]) == ("connect", "lab-console")
+        assert last["result"] in ("running", "ok")
         assert wait_for_frame(client)["sequence"] > first["sequence"]
+        last = wait_until(lambda: client.get("/api/state").json()["last_command"])
+        assert (last["id"], last["result"]) == (body["command_id"], "ok")
         assert client.get("/api/state").json()["connected"] is True
     assert not service._thread.is_alive()
 

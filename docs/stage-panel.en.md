@@ -37,7 +37,7 @@ For hardware-free operation, use `uv run stage-panel --demo` and connect to `DEM
 
 Take stage control before connection or motion. Only 1 controller can hold the lease. The default lease lasts 3 s. Expiry requests a stop. Releasing the lease does not stop a finite move. Stop or wait for completion before release.
 
-- Positions use rotations and speeds use rotations/s. The firmware fixes microstepping at 1/8. Defaults are 200 full steps/revolution and 0.25 rotations/s. Use the reported motor speed limit, normally 0.5 rotations/s with these defaults.
+- Positions use rotations and speeds use rotations/s. The firmware fixes microstepping at 1/8. Defaults are 200 full steps/revolution and 0.25 rotations/s. Use the reported motor speed limit, normally 0.6 rotations/s with these defaults.
 - Hold a direction button to move. Release it to stop. **Keys** uses I/K for Bottom Up/Down, J/L for Top Right/Left, and U/O for Insert In/Out.
 - Each axis row has **Clear fault** beside its movement controls. It requires stage control and does not move the motor. The X/Y diagram shows the minimum and maximum rotation bounds at its corners; unavailable bounds show **—**.
 - **Moves, limits and calibration** contains relative moves, absolute targets and setup controls. Relative moves accept 0.001–10000 rotations. A relative move requires fresh healthy encoder feedback, but no completed calibration.
@@ -60,11 +60,13 @@ Use **Auto calibrate** separately for each axis:
 
 Calibration phases are `none`, `lower`, `upper`, `center`, `done`, `cancelled` and `failed`. New motion is unavailable during active phases. Calibration starts only on request.
 
+Auto calibrate clears both bounds before it moves. The seeks ignore limits from **Set limit here** and travel to the switches. After Stop or a failure, the bounds stay cleared or partial. The service logs a warning when a calibration clears such limits.
+
 **Reset position** sets the measured position to 0 and clears both bounds. **Set limit here** records positive coordinates as upper bounds and negative coordinates as lower bounds. It rejects 0. **Clear upper** and **Clear lower** remove only the selected bound. Each change invalidates completed calibration.
 
-Normal switch contact stops travel toward that switch. It permits travel away from it and does not zero the coordinate. Configured soft limits also restrict travel. Direction pauses and warning counts do not start calibration. **Clear fault** clears feedback faults without moving. Lost tracking with saved bounds requires clearing both bounds before fault recovery.
+Normal switch contact stops travel toward that switch. It permits travel away from it and does not zero the coordinate. Configured soft limits also restrict travel, except during Auto calibrate. Direction pauses and warning counts do not start calibration. **Clear fault** clears feedback faults without moving. Lost tracking with saved bounds requires clearing both bounds before fault recovery.
 
-Position, bounds and calibration state reside in Arduino RAM. Reset or power loss invalidates them. Recalibrate before using saved absolute targets. Sample Transfer stores named coordinates on disk, but a saved profile does not restore the Arduino reference.
+Position, bounds and calibration state reside in Arduino RAM. Reset or power loss invalidates them. Each connect resets the Arduino. After a connect clears bounds or calibration, the service logs a warning. Recalibrate before using saved absolute targets. Sample Transfer stores named coordinates on disk, but a saved profile does not restore the Arduino reference.
 
 Old `steps_per_mm`, millimetre geometry, named pulse poses and camera references are inactive. The service does not use them to create encoder targets. A missing legacy file does not prevent encoder control.
 

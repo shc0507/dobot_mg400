@@ -19,7 +19,7 @@ def test_all_motors_start_in_fixed_eighth_step_mode(stage_rig):
     assert list(MICROSTEP_MODES) == [8]
     assert snapshot["microstep"] == transport.microstep == 8
     assert [item["value"] for item in snapshot["microstep_modes"]] == [8]
-    assert all(item["max_speed"] == 0.5 for item in snapshot["motors"])
+    assert all(item["max_speed"] == 0.6 for item in snapshot["motors"])
     assert all(item["tolerance"] == pytest.approx(4 / 4096) for item in snapshot["motors"])
     assert not transport.commands
 
@@ -183,12 +183,12 @@ def test_disconnected_state_does_not_claim_a_mode():
 @pytest.mark.parametrize("held", [False, True])
 def test_rotation_speed_ceiling_is_enforced_for_every_fixed_mode_axis(stage_rig, motor, held):
     controller, transport, clock = stage_rig
-    assert controller.snapshot()["motors"][0]["max_speed"] == 0.5
+    assert controller.snapshot()["motors"][0]["max_speed"] == 0.6
     with pytest.raises((ValueError, ControllerError)):
         if held:
-            controller.hold(motor, "cw", 0.501, "speed-bound-hold-001", clock())
+            controller.hold(motor, "cw", 0.601, "speed-bound-hold-001", clock())
         else:
-            controller.move(motor, "cw", 0.501, 0.5)
+            controller.move(motor, "cw", 0.601, 0.5)
     assert transport.commands == []
 
 

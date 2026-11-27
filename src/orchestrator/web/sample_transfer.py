@@ -17,6 +17,7 @@ from orchestrator.transfer_motion import (
     fresh,
     idle,
     motors,
+    reached,
     sequence,
     target_ready,
 )
@@ -31,6 +32,7 @@ from orchestrator.transfer_profiles import (
     record_endpoint,
     record_position,
 )
+from stage_controller.protocol import ENCODER_NOISE_COUNTS
 
 PROFILE_ROOT = Path("/var/lib/mg400/calibration/sample-transfer")
 MAX_SECONDS = 600
@@ -133,6 +135,10 @@ def stage_reference(state, profile=None):
     }
 
 
+# Drafts kept for the most recently used pages; an older page starts a new draft.
+PAGE_DRAFTS = 32
+
+
 class SampleTransfer:
     """One cancellable sequence, with page-local drafts and persistent saved profiles."""
 
@@ -143,12 +149,16 @@ class SampleTransfer:
         self.operation = None
 
     def _page(self, page):
-        if page not in self.pages:
-            self.pages[page] = {
+        """This page's draft. Each page load is a new page, so only the latest pages keep one."""
+        with self.lock:
+            entry = self.pages.pop(page, None) or {
                 "draft": new_profile(default_profile_name()),
                 "draft_name_is_default": True,
             }
-        return self.pages[page]
+            self.pages[page] = entry
+            while len(self.pages) > PAGE_DRAFTS:
+                del self.pages[next(iter(self.pages))]
+            return entry
 
     def operation_state(self, page):
         """Read sequence status without reading stage telemetry or saved profiles."""
@@ -324,7 +334,7 @@ class SampleTransfer:
         self._all_idle(stage)
         return stage
 
-    def _wait(self, operation, motor, target, command_id):
+    def _wait(self, operation, motor, target, command_id, slack_counts=0):
         if not isinstance(command_id, str) or not command_id.strip():
             raise ValueError("The stage returned no command completion ID.")
         while True:
@@ -344,10 +354,7 @@ class SampleTransfer:
             if idle(axis) and axis.get("cooldown", 0) <= 0:
                 # The command result must be known before accepting even a near target.
                 if last.get("id") == command_id and last.get("result") == "ok":
-                    if (
-                        not finite(axis.get("tolerance"))
-                        or abs(axis["position_rotations"] - target) > axis["tolerance"]
-                    ):
+                    if not reached(axis, target, slack_counts):
                         raise ValueError("The motor stopped before reaching its encoder target.")
                     return
             operation["cancelled"].wait(SAMPLE_INTERVAL)
@@ -368,7 +375,7 @@ class SampleTransfer:
                     operation.update(
                         motor=motor, target_rotations=target, message=f"Moving {motor}."
                     )
-                if abs(axis["position_rotations"] - target) > axis["tolerance"]:
+                if not reached(axis, target):
                     self._check(operation)
                     params = {
                         "motor": motor,
@@ -391,7 +398,9 @@ class SampleTransfer:
                         )
                     if result.get("outcome") != "accepted":
                         raise ValueError(result.get("error") or "The stage command was refused.")
-                    self._wait(operation, motor, target, result.get("command_id"))
+                    # A jog is relative: it starts from the firmware's own encoder sample.
+                    slack = 0 if jog is None else ENCODER_NOISE_COUNTS
+                    self._wait(operation, motor, target, result.get("command_id"), slack)
                 self._check(operation)
                 with self.lock:
                     operation["completed_axes"] += 1
@@ -430,8 +439,11 @@ class SampleTransfer:
         threading.Thread(target=self._run, args=(operation, targets, jog), daemon=True).start()
         return self.operation_state(page)
 
-    def start_coordinates(self, page, target):
-        """Move X/Y or Insert to rotations without creating or selecting a profile."""
+    def start_coordinates(self, page, target, stop_epoch=None):
+        """Move X/Y or Insert to rotations without creating or selecting a profile.
+
+        With stop_epoch (the stage stop count when the operator chose the target),
+        refuse the move when the stage stopped since then."""
         if not isinstance(target, dict) or set(target) not in ({"x", "y"}, {"insert"}):
             raise ValueError("Send target with x and y, or insert only.")
         if not all(finite(value) for value in target.values()):
@@ -441,6 +453,8 @@ class SampleTransfer:
             sequence(target, stage_only=True) if "x" in target else [("insert", target["insert"])]
         )
         stage = self._preflight(page)
+        if stop_epoch is not None and stage.get("stop_epoch") != stop_epoch:
+            raise ServiceError(409, "The stage stopped after this target was chosen.")
         if not all(target_ready(stage, motor, value) for motor, value in targets):
             raise ValueError("Auto calibrate the stage and keep targets within its current limits.")
         return self._launch(page, target, stage, targets)

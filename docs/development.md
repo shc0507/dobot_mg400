@@ -33,7 +33,7 @@ uv run ruff format --check .
 `uv sync` 默认安装 `pyproject.toml` 中 `default-groups` 列出的依赖组：`dev`、`stage`、`vision`、`thermal`、`furnace`、`camera`、`orchestrator` 和 `microscope`。
 `vision-gpu` 和 `notebook` 不在默认组中。
 `stage` 组含位移台服务使用的 Flask、waitress、pySerial、NumPy 和 OpenCV。
-机器人服务和交互终端只用标准库，不依赖 `stage` 组。
+机器人服务只用标准库，不依赖 `stage` 组。
 
 测试不连接机械臂或 Arduino。
 拉取请求和推送到 `main` 时，GitHub Actions（`.github/workflows/ci.yml`）在 Python 3.12 上运行以上检查。
@@ -43,7 +43,7 @@ uv run ruff format --check .
 
 测试共用的 fixture 位于 `tests/conftest.py`。
 位移台测试的 `stage_rig`、`stage_ports` 和 `stage_usb` 也在此文件，测试按名称引用。
-模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_ws.py`。
+模拟控制器、连接和网页服务的测试替身（代替真实设备的测试对象）位于 `tests/helpers.py`、`tests/sim_mg400.py` 和 `tests/panel_http.py`。
 服务契约测试的共用检查位于 `tests/contract_helpers.py`。
 位移台的时钟、串口和串口列表替身位于 `tests/stage_helpers.py`。
 新增测试时复用这些模块，不得在测试文件中另写副本。
@@ -209,14 +209,14 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 
 | 命令 | 其他字段 | 行为 |
 | --- | --- | --- |
-| `enable` | 无 | 使能机械臂 |
+| `enable` | 无 | 使能机械臂，并设定负载 |
 | `disable` | 无 | 下使能机械臂，任何客户端都可发送 |
 | `stop` | 无 | 停止机械臂，任何客户端都可发送 |
 | `home` | 无 | J1–J4 移动到 0° |
 | `execute` | `targets`（含 `x`、`y`、`z`、`r`），可选 `speed` | 直线移动到法兰坐标 |
 | `vacuum` | `operation`：`suck`、`release` 或 `off` | 控制真空吸盘，见 [真空吸盘](#真空吸盘) |
 | `keyboard` | `enabled`、`seq`，开启时加 `speed`，关闭时加 `reason` | 开启或关闭键盘控制 |
-| `clear_alarm` | 无 | 发送 `ClearError()`，报警清除后下使能并确认静止 |
+| `clear_alarm` | 无 | 发送 `ClearError()`；报警清除后发送 `ResetRobot()`，下使能并确认静止 |
 | `keys` | `seq`、`held` | 发送一次按住的键，`command_id` 为 `null`，见 [按键](#按键) |
 
 对于 `keyboard`，`speed` 是 1–100 的整数。
@@ -228,12 +228,12 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 加速度上限为 `20`。
 两个上限固定在 `apps/control_panel/server.py` 中。
 
-未提供 `speed` 时，即使主机上限提高，协议命令仍为 `SpeedL=1,AccL=1`。
-这些配置不改变 `home`、`SpeedFactor` 或键盘点动。
+未提供 `speed` 时，协议命令仍为 `SpeedL=1,AccL=1`。
+这些上限不改变 `home`、`SpeedFactor` 或键盘点动。
 无人值守搬运使用高于 1 的速度前，操作员必须先在硬件上验证。
 `clear_alarm` 在控制器报警且反馈新鲜时可用。
 `recoverable` 为 `true` 时也可用：停止或下使能未确认，控制器无报警，且反馈新鲜。
-此时服务不发送 `ClearError()`，只下使能、确认静止并清除警告。
+此时服务不发送 `ClearError()`，只发送 `ResetRobot()`、下使能、确认静止并清除警告。
 状态对象的 `alarms` 列出当前报警，无报警时为 `null`。
 每项含 `id`、`source`（`controller` 或 `J1`–`J4`）、`description` 和 `solution`。
 `reason` 取值为 `user`、`focus`、`edit`、`speed` 或 `modifier`。
@@ -256,7 +256,7 @@ POST 请求遵循 [仪器服务契约](adr/0001-instrument-service-contract.md)�
 | `busy`、`locked`、`stop_unconfirmed`、`recoverable` | 执行中、控制锁定、停止未确认、可恢复 |
 | `alarms` | 当前报警列表，见上文 |
 | `message`、`last_command` | 服务消息和最近命令结果 |
-| `vacuum`、`payload_kg` | 吸盘实测状态和负载，见 [真空吸盘](#真空吸盘) |
+| `vacuum`、`payload_kg`、`pressure` | 吸盘实测状态、负载和吸盘管路压力，见 [真空吸盘](#真空吸盘) |
 | `controller_id` | 持有控制权的客户端 ID，无持有者时为 `null` |
 | `keyboard_enabled`、`keyboard_arming` | 键盘点动已开启，正在开启 |
 | `keyboard_active_key`、`keyboard_speed_percent`、`keyboard_disarm_reason` | 正在执行的按键、键盘速度和关闭原因 |
@@ -466,10 +466,12 @@ J4 使用厂家 ±360° 范围，目标允许范围为 ±358.95°。
 
 未提供 `speed` 时，`execute` 的 `MovL` 使用 `SpeedL=1,AccL=1`。
 控制器逆解验证目标关节范围，控制器规划直线路径。
+服务只检查起点和目标。控制器检查路径；路径超出范围时，控制器报警，例如 23 或 72。
 复位使用 `JointMovJ`，参数为 `SpeedJ=5,AccJ=5`。
 `execute` 和复位不修改全局速度或工具配置。
 
 键盘点动开启时，服务发送 `SpeedFactor(<speed>)`，设置全局速度。
+键盘点动关闭后，控制器保留该值。`execute` 和复位的实际速度 = 命令速度 × 全局 `SpeedFactor` × 控制器回放设置。验证速度前，先读取状态中的 `speed_factor`。
 按住按键时，服务发送连续点动命令 `MoveJog`：
 
 | 按键 | 命令 |
@@ -510,7 +512,8 @@ A/D 启动和运行中只用实测关节反馈，不查询 `GetPose`。
 - 服务每条命令只发送一次，然后等待 30004 反馈中的 DO 实测位改变，时限 1 秒。
 - 停止和下使能在运动停止命令后发送 1 次 `DOExecute(1,0)`，条件是吹气正在进行或反馈显示 DO1 为高电平。它们不等待吹气结束，也不发送 DO2 命令。该命令失败时，`JointControl.stop()` 的结果包含 `blow_error`，停止本身不因此失败。机器人服务不报告 `blow_error`，下使能不记录该错误。
 - 状态对象的 `vacuum` 含 `suck`、`blow` 和 `held`。`suck` 和 `blow` 是 DO2 和 DO1 的实测电平，无反馈时为 `null`。`held` 是 DI8（`GRIP_DI`）的实测电平；`GRIP_DI` 为 `None` 或无反馈时为 `null`。
-- 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。
+- 状态对象的 `payload_kg` 是控制器反馈的负载，单位 kg。服务每次使能时用 `EnableRobot` 命令发送 `PAYLOAD_KG` 和 `PAYLOAD_CENTER_MM`。两个常量在 `src/mg400/joint_control.py` 中。`PAYLOAD_KG` 是末端工具、腕部相机和相机支架的总质量。`PAYLOAD_CENTER_MM` 是 J4 为 0° 时该质量的重心相对 J4 轴的位置。
+- 状态对象的 `pressure` 为压力传感器板给出的 `{"abs_hpa": ..., "gauge_hpa": ...}`；最近 1 s 内没有读数时为 `null`。`gauge_hpa` 相对于服务打开串口时板子测得的零点。打开串口会复位板子，因此启动服务时吸盘必须通向室内空气。`src/mg400/pressure.py` 在后台线程中读取串口 `PORT`，5 s 内没有采样时重新打开串口。
 - 常量在 `src/mg400/suction.py` 中：`PRESSURE_DO`、`VACUUM_DO`、`BLOW_SECONDS` 和 `GRIP_DI`。
 - 离线模拟器响应 `DOExecute`，并在反馈帧中报告 DO 位。DO2 为高电平时，模拟器同时置高 DI8。
 - 接线和反馈字段见 [真空吸盘](hardware.md#真空吸盘)。

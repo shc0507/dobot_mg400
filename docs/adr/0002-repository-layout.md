@@ -26,7 +26,7 @@
 | `docs`, `docs/adr`, `docs/agents`, `tests` | 人员指南、决定、智能体流程和离线测试 |
 
 - 每个领域使用 1 个顶层软件包。将它加入 wheel 的 `packages` 列表。轻量依赖组加入 `default-groups`。`vision-gpu` 不加入默认组或 CI。
-- 机械臂核心、机械臂面板及 `labkit.auth`、`labkit.lease`、`labkit.events`、`labkit.client` 只用标准库。
+- 机械臂核心、机械臂面板及 `labkit.lease`、`labkit.events`、`labkit.client` 只用标准库。
 - 从固定的源提交迁入已批准文件及其测试。保留行为，使用软件包导入，并将主机路径与设备访问迁至 Linux。
 - 按规定用无界面接口替代桌面 GUI 功能。Windows 二进制文件、模型权重、虚拟环境和硬件脚本不得进入测试。
 - 导入模块时不得打开设备、启动线程或写文件。除机器人服务（使用模拟器）和摄像头预览外，每个服务均提供 `--demo`。

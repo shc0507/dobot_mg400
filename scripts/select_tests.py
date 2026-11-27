@@ -27,6 +27,7 @@ ROBOT = [
     "test_control_mode.py",
     "test_mg400_sim.py",
     "test_suction.py",
+    "test_pressure.py",
     "test_console*.py",
     "test_orchestrator_clients.py",
     "test_orchestrator_rehearsal.py",
@@ -50,7 +51,8 @@ AREAS = [
     ("src/labkit/*", [FULL]),
     ("tests/fixtures/*", [FULL]),
     ("tests/*.py", None),  # Shared helpers; test files are handled before this table.
-    ("scripts/select_tests.py", [FULL]),
+    # A push to main runs the full suite, so a selection error shows there.
+    ("scripts/select_tests.py", ["test_select_tests.py"]),
     # Areas.
     ("src/mg400/*", ROBOT),
     ("apps/control_panel/*", ROBOT),
@@ -154,7 +156,10 @@ AREAS = [
         ],
     ),
     ("src/stage_controller/*", ["test_stage_*.py", "test_orchestrator_rehearsal.py"]),
-    ("firmware/stage-controller-v3/*", ["test_stage_*.py", "test_console_preview.py"]),
+    # Host tests cannot detect firmware bugs; the stage-firmware CI job runs the native checks.
+    ("firmware/stage-controller-v3/*", []),
+    # Host tests cannot detect firmware bugs; nothing tests this sketch.
+    ("firmware/pressure-sensor/*", []),
     ("src/thermal_cam/*", ["test_thermal_*.py", "test_orchestrator_rehearsal.py"]),
     ("src/vision/stage_twin/*", ["test_stage_twin.py", "test_console_position_finder.py"]),
     (
@@ -168,6 +173,9 @@ AREAS = [
         ],
     ),
     ("config/trays/*", ["test_vision_tray.py"]),
+    ("config/cameras/*", ["test_vision_wrist_camera.py"]),
+    ("scripts/wrist_camera_calibrate.py", ["test_vision_wrist_camera.py"]),
+    ("scripts/wrist_chip_dataset.py", ["test_vision_wrist_dataset.py"]),
     ("scripts/vision_eval.py", ["test_vision_eval.py"]),
     ("scripts/console_shots.py", ["test_console_shots.py"]),
     ("scripts/agent_signal.py", ["test_agent_signal.py"]),
@@ -256,7 +264,8 @@ def select(changed, root=ROOT):
     tests = root / "tests"
     patterns = set(ALWAYS)
     # The area table can miss a module that imports a changed package.
-    parts = [Path(path).parts for path in changed]
+    # Only Python files can be imported; static web files and data use the area table.
+    parts = [Path(path).parts for path in changed if path.endswith(".py")]
     packages = {p[1] for p in parts if len(p) > 2 and p[0] == "src"}
     for path in changed:
         if fnmatch(path, "tests/test_*.py"):

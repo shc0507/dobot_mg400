@@ -1,4 +1,4 @@
-// Runs the real control loop, encoder reader, serial parser and AccelStepper source.
+// Runs the real control loop, encoder reader, serial parser and step generator.
 // Only clocks/GPIO/I2C/UART are replaced. No hardware port is opened.
 #include "Arduino.h"
 #include "Wire.h"
@@ -24,12 +24,26 @@ uint8_t outputs[20] = {};
 uint8_t pinModes[20] = {};
 uint16_t analogInputs[3] = {1023,1023,1023};
 bool switchPlant[3] = {};
+// Microseconds for which an opening upper contact reads in the lower band (RC rise, bounce).
+uint64_t releaseUs[3] = {}, upperSeenUs[3] = {};
 double physicalUpper[3] = {}, physicalLower[3] = {};
 double physical[3] = {};
 uint16_t physicalSpr[3] = {200,200,200};
 long pulseCount[3] = {}, reversePulses[3] = {};
 bool online[3] = {true,true,true}, magnet[3] = {true,true,true}, inverted[3] = {};
 bool jammed[3] = {};
+// A one-sided obstruction: the rotor bounces against it instead of freezing.
+int wallSide[3] = {};
+double wallAt[3] = {}, field[3] = {};
+// A4988 translator microstep within one electrical cycle, 0 = Home.
+int translator[3] = {};
+bool homeOnWake[3] = {};
+// 0: the rotor reaches the Home equilibrium 20 ms after wake. N: friction holds it
+// until pulse N moves the field, as measured on the bench Bottom axis.
+int snapPulses = 0;
+uint64_t snapAtUs[3] = {};
+long snapAtPulse[3] = {};
+double pendingSnap[3] = {}; // Field minus rotor, counts.
 int dropEvery[3] = {};
 bool accelerationSensitive[3] = {};
 double rotorPulseRate[3] = {};
@@ -39,6 +53,7 @@ bool noisy[3] = {};
 bool checkPhysicalBounds[3] = {};
 double testLower[3] = {}, testUpper[3] = {};
 bool shortRaw[3] = {}, shortStatus[3] = {};
+int failRaw[3] = {}, failRawEvery[3] = {}; // Next N, or every Nth, RAW read is short.
 uint8_t statusOverride[3] = {255,255,255};
 uint8_t registerPointer[3] = {};
 unsigned int rawRequests[3] = {}, statusRequests[3] = {};
@@ -51,6 +66,27 @@ int divisor() {
   int bits=outputs[MotorPins::MS1] | (outputs[MotorPins::MS2]<<1) | (outputs[MotorPins::MS3]<<2);
   return bits==7 ? 16 : bits==3 ? 8 : bits==2 ? 4 : bits==1 ? 2 : 1;
 }
+const uint8_t sleepPins[] = {MotorPins::BottomSleep,MotorPins::TopSleep,MotorPins::InsertSleep};
+// One electrical cycle is 4 full steps. Torque pushes toward the field for half a
+// cycle; beyond that the rotor slips back to the equilibrium behind the obstruction.
+double electricalCycle(int axis) { return 4*4096.0/physicalSpr[axis]; }
+double againstWall(int axis) {
+  const double lead=wallSide[axis]*(field[axis]-wallAt[axis]);
+  if(lead<=0) return field[axis];
+  const double cycles=lead/electricalCycle(axis);
+  return cycles-std::floor(cycles)<0.5 ? wallAt[axis]
+         : field[axis]-wallSide[axis]*electricalCycle(axis)*std::ceil(cycles);
+}
+void applySnap(int axis) {
+  if((snapAtUs[axis] && clockUs>=snapAtUs[axis]) ||
+     (snapAtPulse[axis] && pulseCount[axis]>=snapAtPulse[axis])) {
+    // The rotor moves to the nearest equilibrium of the present field.
+    const double cycle=electricalCycle(axis);
+    const double snap=pendingSnap[axis]-cycle*std::floor(pendingSnap[axis]/cycle+0.5);
+    physical[axis]+=snap; field[axis]+=snap;
+    snapAtUs[axis]=0; snapAtPulse[axis]=0; pendingSnap[axis]=0;
+  }
+}
 }
 FakeSerial Serial;
 FakeWire Wire;
@@ -58,24 +94,38 @@ double requestedPulseRate(uint8_t axis);
 unsigned long millis() { return static_cast<uint32_t>(clockUs/1000); }
 unsigned long micros() { return static_cast<uint32_t>(clockUs); }
 void delayMicroseconds(unsigned int us) { clockUs += us; }
+uint8_t ADCSRA = 0x87; // Arduino core default: ADC on, prescaler 128.
 void pinMode(uint8_t pin,uint8_t mode) { assert(pin<20); pinModes[pin]=mode; }
 int analogRead(uint8_t pin) {
   assert(pin>=A0 && pin<=A2 && pinModes[pin]==INPUT_PULLUP);
-  delayMicroseconds(100); // Model the Uno ADC's approximately 100 microsecond conversion.
+  // Model the Uno ADC conversion: about 104 us at prescaler 128, 13 us at prescaler 16.
+  delayMicroseconds((ADCSRA & 7) == 4 ? 13 : 104);
   const uint8_t axis=pin-A0;
   if(switchPlant[axis]) {
     if(physical[axis]>=physicalLower[axis]) return 250;
-    if(physical[axis]<=physicalUpper[axis]) return 0;
+    if(physical[axis]<=physicalUpper[axis]) { upperSeenUs[axis]=clockUs; return 0; }
+    if(upperSeenUs[axis] && clockUs-upperSeenUs[axis]<releaseUs[axis]) return 400;
     return 1023;
   }
   return analogInputs[pin-A0];
 }
 void digitalWrite(uint8_t pin,uint8_t level) {
   assert(pin<20);
+  for (int i=0;i<3;++i) if (homeOnWake[i] && pin==sleepPins[i] && level==HIGH && outputs[pin]==LOW) {
+    // SLEEP high returns the translator to Home. The rotor then moves to the nearest
+    // Home equilibrium, up to 2 full steps away in either direction.
+    pendingSnap[i]=-translator[i]*electricalCycle(i)/(4*divisor());
+    translator[i]=0;
+    if(snapPulses) snapAtPulse[i]=pulseCount[i]+snapPulses; else snapAtUs[i]=clockUs+20000;
+  }
   for (int i=0;i<3;++i) if (pin==pairs[i].step && level==HIGH && outputs[pin]==LOW) {
     ++pulseCount[i];
     int sign=outputs[pairs[i].dir]==HIGH ? 1 : -1;
     if(sign<0) ++reversePulses[i];
+    translator[i]=((translator[i]+sign)%(4*divisor())+4*divisor())%(4*divisor());
+    const bool frictionHeld=snapAtPulse[i]!=0; // The field moves; the rotor does not.
+    if(frictionHeld) pendingSnap[i]+=sign*4096.0/(physicalSpr[i]*divisor());
+    applySnap(i);
     bool accelerationDrop=false;
     if(accelerationSensitive[i]) {
       // A rotor can accelerate at 500 pulses/s^2 and capture a drive within 80 pulses/s.
@@ -87,7 +137,11 @@ void digitalWrite(uint8_t pin,uint8_t level) {
       accelerationDrop=std::fabs(requested-rotorPulseRate[i])>80;
       if(accelerationDrop) ++accelerationDrops[i];
     }
-    if(!jammed[i] && !accelerationDrop && !(dropEvery[i] && pulseCount[i]%dropEvery[i]==0))
+    if(frictionHeld) {
+    } else if(wallSide[i]) {
+      field[i] += sign * 4096.0/(physicalSpr[i]*divisor());
+      physical[i] = againstWall(i);
+    } else if(!jammed[i] && !accelerationDrop && !(dropEvery[i] && pulseCount[i]%dropEvery[i]==0))
       physical[i] += sign * 4096.0/(physicalSpr[i]*divisor());
     if(checkPhysicalBounds[i]) {
       assert(physical[i]>=testLower[i]-1e-6);
@@ -114,6 +168,7 @@ uint8_t FakeWire::requestFrom(uint8_t address,uint8_t length) {
   assert(address==0x36 && length>0 && length<=sizeof(readBuffer));
   int axis=axisForChannel(channel);
   if(!online[axis]) return 0;
+  applySnap(axis);
   long count=static_cast<long>(std::llround(physical[axis] * (inverted[axis] ? -1 : 1)));
   if(noisy[axis]) count += (millis()/12)%2 ? 2 : -2;
   uint16_t raw=static_cast<uint16_t>((count%4096+4096)%4096);
@@ -121,7 +176,10 @@ uint8_t FakeWire::requestFrom(uint8_t address,uint8_t length) {
   if(first==0x0B && length==1) ++statusRequests[axis];
   if(first==0x0C && length==2) ++rawRequests[axis];
   readLength=length;
-  if((first==0x0B && shortStatus[axis]) || (first==0x0C && shortRaw[axis]))
+  const bool failRead=first==0x0C && length==2 &&
+      (failRaw[axis]>0 || (failRawEvery[axis] && rawRequests[axis]%failRawEvery[axis]==0));
+  if(failRead && failRaw[axis]>0) --failRaw[axis];
+  if((first==0x0B && shortStatus[axis]) || (first==0x0C && shortRaw[axis]) || failRead)
     --readLength;
   // Real register-pointer behavior instead of manufacturing STATUS+angle bytes
   // for every request. Starting a RAW word at 0x0C loops that two-byte word.
@@ -161,13 +219,15 @@ void reset() {
     physical[i]=4080; physicalSpr[i]=200; pulseCount[i]=reversePulses[i]=0;
     accelerationSensitive[i]=false; rotorPulseRate[i]=0; lastPlantUs[i]=0; accelerationDrops[i]=0;
     analogInputs[i]=1023;
-    switchPlant[i]=false;
+    switchPlant[i]=false; releaseUs[i]=upperSeenUs[i]=0;
     online[i]=magnet[i]=true; inverted[i]=(i!=0); jammed[i]=false; dropEvery[i]=0;
+    wallSide[i]=0; translator[i]=0; homeOnWake[i]=false; snapAtUs[i]=snapAtPulse[i]=0; pendingSnap[i]=0;
     noisy[i]=false; checkPhysicalBounds[i]=false;
-    shortRaw[i]=shortStatus[i]=false; registerPointer[i]=0;
+    shortRaw[i]=shortStatus[i]=false; registerPointer[i]=0; failRaw[i]=failRawEvery[i]=0;
     rawRequests[i]=statusRequests[i]=0;
     statusOverride[i]=255;
   }
+  snapPulses=0;
   Serial.input.clear(); Serial.output.clear();
   Serial.roomProvider=nullptr; Serial.byteObserver=nullptr;
   commandLength=0; discardLine=false;
@@ -216,7 +276,7 @@ void testFixedEighthAndConcurrentAxes() {
     assert(state().position==0 && pulseCount[0]==0);
   }
   finite(.5f);
-  assert(std::fabs(state().maxSpeed-.5f)<0.00001f);
+  assert(std::fabs(state().maxSpeed-.6f)<0.00001f);
   assert(state().tolerance==4.0f/4096);
   assert(pulseCount[0]>784 && pulseCount[0]<816);
   reset(); assert(MotorControl::rotateSteps(1600)); finish();
@@ -252,9 +312,19 @@ void testFaultsAndRecovery() {
   reset(); inverted[0]=true; // Rebaseline the changed physical sign while idle.
   MotorControl::begin(); assert(MotorControl::rotateRevolutions(1)); advance(2000);
   assert(!state().rotating && state().fault==Fault::Direction);
+  // A short dropout (< MaxGapMs between good samples) neither stops motion nor loses trust.
   reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(20);
+  assert(state().rotating && state().fault==Fault::None);
+  assert(state().encoder==Encoders::Health::Ok);
+  const float kept=state().position; assert(kept<0);
+  online[0]=true; advance(40);
+  assert(state().rotating && state().fault==Fault::None && state().position<kept);
+  MotorControl::stopRotation(); advance(20); assert(!state().rotating);
+  finite(.1f);
+  // A longer dropout cannot prove continuity: untrusted, and clear rebases to 0.
+  reset(); assert(MotorControl::startHold()); advance(200); online[0]=false; advance(80);
   assert(!state().rotating && state().fault==Fault::Encoder);
-  assert(!MotorControl::clearFault()); online[0]=true; advance(20);
+  online[0]=true; advance(20);
   assert(state().encoder==Encoders::Health::Untrusted);
   assert(MotorControl::clearFault()); assert(state().position==0); assert(!state().rotating);
   finite(.1f);
@@ -266,7 +336,7 @@ void testFaultsAndRecovery() {
   reset(); jammed[0]=noisy[0]=true;
   assert(MotorControl::rotateRevolutions(.1f)); advance(3000);
   assert(!state().rotating && state().fault==Fault::Stall);
-  reset(); jammed[0]=true; assert(MotorControl::setSpeed(.5f));
+  reset(); jammed[0]=true; assert(MotorControl::setSpeed(.3f));
   assert(MotorControl::startHold());
   advance(800); assert(MotorControl::keepHoldAlive()); advance(650);
   assert(!state().rotating && state().fault==Fault::Tracking);
@@ -295,14 +365,14 @@ void testProtocolAndBounds() {
   assert(Serial.output.find("OK: bottom rev")!=std::string::npos);
   assert(!MotorControl::setSpeed(NAN)); assert(!MotorControl::setSpeed(INFINITY));
   assert(!MotorControl::rotateRevolutions(0)); assert(!MotorControl::rotateRevolutions(10001));
-  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.501f));
+  assert(MotorControl::setMicrostep(8)); assert(!MotorControl::setSpeed(.601f));
   assert(MotorControl::setSpeed(.001f)); assert(!MotorControl::rotateRevolutions(100));
   assert(!MotorControl::setStepsPerRevolution(0));
   assert(MotorControl::setStepsPerRevolution(65535));
   assert(state().maxSpeed>=.001f);
   assert(!MotorControl::setMicrostep(1));
   assert(!MotorControl::setMicrostep(16));
-  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.332226f));
+  assert(MotorControl::setStepsPerRevolution(301)); assert(MotorControl::setSpeed(.398671f));
   assert(state().speed<=state().maxSpeed);
   Serial.output.clear(); Serial.input="microstep 16\nmicrostep 8\nmicrostep\n";
   while(Serial.available()) readSerialCommands();
@@ -358,13 +428,18 @@ void testRegisterReadsAndLiveDiagnostics() {
     reset(); assert(MotorControl::rotateRevolutions(1)); advance(200);
     if(rawFailure) shortRaw[0]=true; else shortStatus[0]=true;
     advance(20);
+    // Failed reads within MaxGapMs of the last good sample: the move continues.
+    assert(state().fault==Fault::None && state().rotating);
+    assert(Encoders::get(0).health==Encoders::Health::Ok);
+    assert(Encoders::get(0).magnetStatus==(rawFailure ? 0x20 : 255));
+    advance(60);
     assert(state().fault==Fault::Encoder && !state().rotating);
     assert(Encoders::get(0).health==Encoders::Health::Offline);
-    assert(Encoders::get(0).magnetStatus==(rawFailure ? 0x20 : 255));
     assert(!MotorControl::clearFault());
     shortRaw[0]=shortStatus[0]=false; advance(20);
+    // The gap between good samples exceeded MaxGapMs: continuity is not provable.
     assert(Encoders::get(0).health==Encoders::Health::Untrusted);
-    assert(MotorControl::clearFault());
+    assert(MotorControl::clearFault() && state().position==0);
   }
   reset(); magnet[0]=false; advance(20);
   assert(Encoders::get(0).health==Encoders::Health::Magnet);
@@ -702,7 +777,7 @@ void testLimitEnforcementAndRecoveryDirection() {
   assert(state().positionCounts>500 && state().positionCounts<700);
   for(bool jitter: {false,true}) for(Direction dir: {Direction::Clockwise,Direction::Counterclockwise}) {
     reset(); captureTestBounds(-100,100);
-    assert(MotorControl::setAcceleration(50) && MotorControl::setSpeed(.5f));
+    assert(MotorControl::setAcceleration(50) && MotorControl::setSpeed(.3f));
     assert(MotorControl::setDirection(dir));
     noisy[0]=jitter;
     checkPhysicalBounds[0]=true; testLower[0]=4080-100; testUpper[0]=4080+100;
@@ -736,9 +811,19 @@ void testLimitEnforcementAndRecoveryDirection() {
   assert(pulseCount[0]==0); // Outward correction remains forbidden.
 }
 void testLimitTrackingLossAndSerialContract() {
+  // One failed transaction on a bounded axis: the move continues; trust and bounds remain.
   reset(); captureTestBounds(-500,500);
   assert(MotorControl::rotateRevolutions(.1f)); advance(100);
-  online[0]=false; advance(20); assert(state().fault==Fault::Encoder);
+  online[0]=false; advance(13); assert(state().fault==Fault::None && state().rotating);
+  online[0]=true; advance(20);
+  assert(state().encoder==Encoders::Health::Ok && state().bounds==3 && state().rotating);
+  MotorControl::stopRotation(); advance(20);
+  assert(state().bounds==3 && state().fault==Fault::None);
+  assert(MotorControl::rotateRevolutions(.01f));
+  // A gap longer than MaxGapMs loses tracking.
+  reset(); captureTestBounds(-500,500);
+  assert(MotorControl::rotateRevolutions(.1f)); advance(100);
+  online[0]=false; advance(80); assert(state().fault==Fault::Encoder);
   online[0]=true; advance(20);
   const long counts=state().positionCounts;
   assert(!MotorControl::clearFault() && !MotorControl::resetPosition() && !MotorControl::setLimit());
@@ -828,12 +913,18 @@ void testSwitchBounceResetEscapeAndCorrection() {
     analogInputs[0]=1023; advance(25); analogInputs[0]=250; advance(25);
     assert(state().bounds==0 && state().positionCounts==(resetting ? 0 : -100));
   }
-  // A changing analog classification temporarily blocks both directions.
+  // Leaving a debounced upper contact passes the lower band: it still reads upper,
+  // so CCW stays blocked and CW (away from the switch) is allowed until it settles.
   reset(); analogInputs[0]=0; advance(25);
-  analogInputs[0]=250; advance(2); assert(state().switchMask==3);
-  assert(!MotorControl::startHold());
+  analogInputs[0]=250; advance(2); assert(state().switchMask==2);
+  assert(MotorControl::startHold()); MotorControl::stopRotation();
   assert(MotorControl::setDirection(Direction::Counterclockwise) && !MotorControl::startHold());
   advance(25); assert(state().switchMask==1 && state().bounds==0);
+  // Any other change of classification blocks both directions until it settles.
+  reset(); analogInputs[0]=250; advance(25);
+  analogInputs[0]=0; advance(2); assert(state().switchMask==3);
+  assert(!MotorControl::startHold());
+  assert(MotorControl::setDirection(Direction::Counterclockwise) && !MotorControl::startHold());
   for(bool alreadyEscaping: {false,true}) {
     reset(); assert(MotorControl::setDirection(Direction::Counterclockwise));
     if(alreadyEscaping) { assert(MotorControl::startHold()); advance(30); }
@@ -867,7 +958,7 @@ void testSwitchContactsPreserveCoordinatesAndFaults() {
   manualPosition(0,200); analogInputs[0]=0; advance(25);
   assert(state().fault==Fault::None && state().bounds==1 && state().lowerCounts==-100);
   assert(state().upperCounts==1000000000);
-  reset(); manualPosition(0,100); online[0]=false; analogInputs[0]=250; advance(25);
+  reset(); manualPosition(0,100); online[0]=false; analogInputs[0]=250; advance(80);
   assert(state().fault==Fault::None && state().encoder==Encoders::Health::Offline && state().bounds==0);
   assert(state().switchMask==1 && pulseCount[0]==0);
 }
@@ -972,7 +1063,7 @@ void testExplicitZeroAndOrdinaryContactFaultPreservation() {
   assert(state().fault==Fault::Stall && state().positionCounts==-200 && state().upperCounts==100);
   // An idle contact does not invent a fault or a new coordinate from unusable feedback.
   reset(); captureTestBounds(-300,800); manualPosition(0,500);
-  online[0]=false; analogInputs[0]=250; advance(25);
+  online[0]=false; analogInputs[0]=250; advance(80);
   assert(state().fault==Fault::None && state().encoder==Encoders::Health::Offline && state().positionCounts==-500);
   assert(state().lowerCounts==-800 && state().upperCounts==300 && state().bounds==3);
   // Contacts beyond saved limits cannot cause a capture conflict or rebase overflow.
@@ -1071,30 +1162,30 @@ void testHeldRampReferenceAndRepeatedPresses() {
   for(uint8_t axis=0;axis<3;++axis) for(Direction direction: {Direction::Clockwise,Direction::Counterclockwise}) {
     reset(); const Motor motor=static_cast<Motor>(axis);
     assert(MotorControl::selectMotor(motor) && MotorControl::setDirection(direction));
-    assert(MotorControl::setSpeed(.5f) && MotorControl::setAcceleration(.25f));
+    assert(MotorControl::setSpeed(.3f) && MotorControl::setAcceleration(.25f));
     auto &control=MotorControl::motors[axis];
     const double sign=direction==Direction::Clockwise ? 1 : -1;
     for(int press=0;press<2;++press) {
       assert(MotorControl::startHold());
       assert(control.referenceSpeed==0 && control.outputSpeed==0);
       const auto started=control.lastControlMs;
-      const auto origin=control.originCounts;
+      const auto origin=control.targetCounts; // Reference start; the guard anchor moves back on wake.
       float previousOutput=0; auto previousFeedback=started;
       for(int ms=0;ms<2500;++ms) {
         advance(1);
         if(ms%100==0) assert(MotorControl::keepHoldAlive());
         assert(state(motor).rotating && state(motor).fault==Fault::None);
         const double seconds=(control.lastControlMs-started)*.001;
-        const double expected=seconds<2 ? .125*seconds*seconds : .5*(seconds-1);
+        const double expected=seconds<1.2 ? .125*seconds*seconds : .3*(seconds-.6);
         const double reference=sign*(control.targetCounts-origin+control.phaseRemainder)/4096.0;
-        assert(std::fabs(reference-expected)<.0001); // Analytic area under a two-second speed ramp.
-        assert(control.referenceSpeed>=0 && control.referenceSpeed<=.500001);
+        assert(std::fabs(reference-expected)<.0001); // Analytic area under a 1.2-second speed ramp.
+        assert(control.referenceSpeed>=0 && control.referenceSpeed<=.300001);
         const double dt=(control.lastControlMs-previousFeedback)*.001;
         assert(std::fabs(control.outputSpeed-previousOutput)<=.25*dt+.000002);
-        assert(sign*control.outputSpeed>=0 && std::fabs(control.outputSpeed)<=.625001);
+        assert(sign*control.outputSpeed>=0 && std::fabs(control.outputSpeed)<=.375001);
         previousOutput=control.outputSpeed; previousFeedback=control.lastControlMs;
       }
-      assert(control.referenceSpeed>.4999);
+      assert(control.referenceSpeed>.2999);
       MotorControl::stopRotation();
       const long stopped=pulseCount[axis]; advance(10);
       assert(pulseCount[axis]==stopped && control.referenceSpeed==0 && control.outputSpeed==0);
@@ -1104,21 +1195,21 @@ void testHeldRampReferenceAndRepeatedPresses() {
 }
 void testHeldRampAccelerationSensitivePlantAndLegacyStart() {
   reset(); accelerationSensitive[0]=true; lastPlantUs[0]=clockUs;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   for(int i=0;i<40;++i) { advance(100); assert(MotorControl::keepHoldAlive()); }
   assert(state().rotating && state().fault==Fault::None && accelerationDrops[0]==0);
-  // 2s acceleration plus2s cruising:1.5 rotations, with finite polling/correction error.
-  assert(std::fabs(state().position+1.5f)<.035);
+  // 1.2 s acceleration plus 2.8 s cruising: 1.02 rotations, with finite polling/correction error.
+  assert(std::fabs(state().position+1.02f)<.035);
   reset(); accelerationSensitive[0]=true; lastPlantUs[0]=clockUs;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startRotation());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startRotation());
   advance(20);
-  assert(std::fabs(MotorControl::motors[0].outputSpeed)>.49);
+  assert(std::fabs(MotorControl::motors[0].outputSpeed)>.29);
   assert(MotorControl::motors[0].referenceSpeed==0); // Legacy start is intentionally not ramped.
-  advance(650);
+  advance(1000);
   assert(accelerationDrops[0]>100 && !state().rotating && state().fault==Fault::Tracking);
 }
 void testHeldRampCorrectionHeadroomAndImmediateStops() {
-  reset(); Serial.input="speed 0.5\nhold\n"; advanceLoop(250);
+  reset(); Serial.input="speed 0.3\nhold\n"; advanceLoop(250);
   assert(state().rotating && state().position<0 && state().position>-.02);
   assert(MotorControl::motors[0].referenceSpeed>.05 && MotorControl::motors[0].referenceSpeed<.07);
   assert(Serial.output.find("OK: bottom hold\r\n")!=std::string::npos);
@@ -1126,8 +1217,8 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
   assert(!state().rotating && MotorControl::motors[0].referenceSpeed==0);
   assert(Serial.output.find("OK: bottom keepalive\r\n")!=std::string::npos);
   assert(Serial.output.find("OK: bottom stop\r\n")!=std::string::npos);
-  reset(); dropEvery[0]=6;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  reset(); dropEvery[0]=20;
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   auto &control=MotorControl::motors[0];
   float previous=0, peak=0; auto previousFeedback=control.lastControlMs;
   for(int ms=0;ms<7000;++ms) {
@@ -1138,12 +1229,23 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
     const double dt=(control.lastControlMs-previousFeedback)*.001;
     assert(std::fabs(control.outputSpeed-previous)<=.25*dt+.000002);
     peak=std::max(peak,std::fabs(control.outputSpeed));
-    assert(std::fabs(control.outputSpeed)<=.625001);
+    assert(std::fabs(control.outputSpeed)<=.375001);
     previous=control.outputSpeed; previousFeedback=control.lastControlMs;
   }
-  assert(peak>.55 && std::fabs(control.outputSpeed)<peak-.01); // Catch-up keeps headroom and slews back down.
+  assert(peak>.33 && std::fabs(control.outputSpeed)<peak-.01); // Catch-up keeps headroom and slews back down.
+  // A slow hold that is held back catches up at most 1.25 times the requested speed.
+  reset(); dropEvery[0]=2; assert(MotorControl::setSpeed(.05f) && MotorControl::startHold());
+  peak=0;
+  for(int ms=0;ms<6000;++ms) {
+    if(ms==3000) dropEvery[0]=0;
+    advance(1);
+    if(ms%100==0) assert(MotorControl::keepHoldAlive());
+    assert(state().rotating && state().fault==Fault::None);
+    peak=std::max(peak,std::fabs(control.outputSpeed));
+  }
+  assert(peak>.055 && peak<=.0625001);
   for(int stopKind=0;stopKind<4;++stopKind) {
-    reset(); assert(MotorControl::setSpeed(.5f) && MotorControl::setAcceleration(.1f));
+    reset(); assert(MotorControl::setSpeed(.3f) && MotorControl::setAcceleration(.1f));
     assert(MotorControl::startHold()); advance(250);
     assert(MotorControl::motors[0].referenceSpeed<.03); // All stops happen well before ramp completion.
     if(stopKind==0) MotorControl::stopRotation();
@@ -1157,7 +1259,7 @@ void testHeldRampCorrectionHeadroomAndImmediateStops() {
   // Physical startup already close to a software bound remains inside it during the ramp.
   reset(); captureTestBounds(-12,12);
   checkPhysicalBounds[0]=true; testLower[0]=4080-12; testUpper[0]=4080+12;
-  assert(MotorControl::setSpeed(.5f) && MotorControl::startHold());
+  assert(MotorControl::setSpeed(.3f) && MotorControl::startHold());
   for(int i=0;i<100 && state().rotating;++i) {
     advance(10); if(i%10==0 && state().rotating) assert(MotorControl::keepHoldAlive());
   }
@@ -1180,7 +1282,7 @@ void testAutonomousCalibrationAllAxesAndSavedSettings() {
     assert(MotorControl::selectMotor(motor) && MotorControl::setDirection(saved));
     manualPosition(axis,-100); assert(MotorControl::setLimit());
     manualPosition(axis,100); assert(MotorControl::setLimit()); manualPosition(axis,0);
-    assert(MotorControl::setSpeed(.5f)); plantForCalibration(axis);
+    assert(MotorControl::setSpeed(.3f)); plantForCalibration(axis);
     assert(MotorControl::calibrate()); assert(state(motor).bounds==0);
     assert(!MotorControl::setDirection(saved) && !MotorControl::startHold() && !MotorControl::startRotation());
     assert(!MotorControl::setSpeed(.1f) && !MotorControl::resetPosition() && !MotorControl::setMicrostep(8));
@@ -1191,7 +1293,7 @@ void testAutonomousCalibrationAllAxesAndSavedSettings() {
     const auto s=state(motor);
     assert(s.lowerCounts==0 && s.bounds==3 && std::labs(s.upperCounts-1000)<=8);
     assert(std::labs(s.positionCounts-(s.upperCounts+1)/2)<=4);
-    assert(s.direction==saved && s.speed==.5f && outputs[pairs[axis].dir]==(saved==Direction::Clockwise ? HIGH:LOW));
+    assert(s.direction==saved && s.speed==.3f && outputs[pairs[axis].dir]==(saved==Direction::Clockwise ? HIGH:LOW));
     bool lower=false, upper=false, center=false, done=false;
     for(const auto &sample:limitSamples()) if(sample.motor==names[axis]) {
       lower|=sample.calibration=="lower"; upper|=sample.calibration=="upper";
@@ -1272,10 +1374,24 @@ void testCalibrationPressedSwitchesOddSpanAndBusyDebounce() {
   finishCalibration(Bottom); assert(std::labs(state().positionCounts-513)<=4);
   assert(MotorControl::resetPosition() && state().calibration==Calibration::None && state().bounds==0);
   // Two interlocks during an analog transition cannot start calibration or erase old bounds.
-  reset(); captureTestBounds(-100,100); analogInputs[0]=0; advance(25);
-  const auto before=state(); analogInputs[0]=250; advance(1);
+  reset(); captureTestBounds(-100,100); analogInputs[0]=250; advance(25);
+  const auto before=state(); analogInputs[0]=0; advance(1);
   assert(state().switchMask==3 && !MotorControl::calibrate());
   assert(state().bounds==before.bounds && state().lowerCounts==before.lowerCounts && state().upperCounts==before.upperCounts);
+}
+void testUpperReleaseThroughLowerBand() {
+  // Opening the upper contact raises the input through the lower band (rv-stage-fw-S-10).
+  // The midpoint move and a lower seek that start on the upper switch continue through it.
+  for(bool startOnUpper: {false,true}) {
+    reset(); releaseUs[0]=3000;
+    if(startOnUpper) { plantForCalibration(0,4100,5100); advance(25); assert(state().switchMask==2); }
+    else plantForCalibration(0);
+    assert(MotorControl::calibrate()); finishCalibration(Bottom);
+    assert(state().bounds==3 && state().upperCounts>900);
+  }
+  // A real lower contact still stops CW motion once it is the debounced state.
+  reset(); analogInputs[0]=0; advance(25); assert(MotorControl::startHold());
+  analogInputs[0]=250; advance(30); assert(state().switchMask==1 && !state().rotating);
 }
 void testCalibrationCancellationTimeoutAndFaults() {
   for(Calibration phase: {Calibration::Lower,Calibration::Upper,Calibration::Center}) for(bool all: {false,true}) {
@@ -1290,12 +1406,14 @@ void testCalibrationCancellationTimeoutAndFaults() {
     assert(state().fault==Fault::None && state().direction==Direction::Counterclockwise && state().bounds==bounds);
     assert(!MotorControl::keepHoldAlive());
   }
-  // False candidate contact never resumes movement while calibration waits for confirmation.
+  // A false candidate contact halts the seek at once; when it does not confirm, the seek
+  // continues. The phase timeout still counts from the start of the phase.
   reset(); assert(MotorControl::calibrate()); advance(100);
   analogInputs[0]=250; advance(2); const long stopped=pulseCount[0];
-  analogInputs[0]=1023; advance(50);
-  assert(state().rotating && state().calibration==Calibration::Lower && pulseCount[0]==stopped);
   assert(MotorControl::motors[0].mode==MotorControl::Mode::Idle);
+  analogInputs[0]=1023; advance(500);
+  assert(state().rotating && state().calibration==Calibration::Lower && pulseCount[0]>stopped);
+  assert(MotorControl::motors[0].mode==MotorControl::Mode::Continuous);
   MotorControl::motors[0].phaseStartedMs=millis()-EncoderConfig::CalibrationSearchTimeoutMs;
   advance(1); assert(state().fault==Fault::Timeout && state().calibration==Calibration::Failed);
   // A missing physical switch is bounded even when ordinary motion is healthy and progressing.
@@ -1311,8 +1429,8 @@ void testCalibrationCancellationTimeoutAndFaults() {
     assert(!state().rotating && state().calibration==Calibration::Failed && state().fault!=Fault::None);
     const long pulses=pulseCount[0]; advance(100); assert(pulseCount[0]==pulses);
   }
-  // Feedback loss while internally idle at a candidate contact must fail promptly.
-  reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); online[0]=false; advance(15);
+  // Feedback loss while internally idle at a candidate contact fails within MaxGapMs.
+  reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().calibration==Calibration::Failed && state().fault==Fault::Encoder);
   // A confirmed upper at the same measured position as lower is not a valid travel span.
   reset(); analogInputs[0]=250; assert(MotorControl::calibrate()); advance(25);
@@ -1355,7 +1473,7 @@ void testAbsoluteEligibilityAndSignedSerialParsing() {
   assert(!MotorControl::goToPosition(.1f)); // Manually saved bounds are not successful calibration.
   assert(MotorControl::calibrate() && !MotorControl::goToPosition(0));
   MotorControl::stopRotation(); assert(state().calibration==Calibration::Cancelled && !MotorControl::goToPosition(0));
-  assert(MotorControl::calibrate()); online[0]=false; advance(20);
+  assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().calibration==Calibration::Failed && !MotorControl::goToPosition(0));
   for(int command=0;command<4;++command) {
     reset(); plantForCalibration(0); assert(MotorControl::calibrate()); finishCalibration(Bottom);
@@ -1384,6 +1502,12 @@ void testAbsoluteEligibilityAndSignedSerialParsing() {
   assert(state().calibration==Calibration::Done);
   // Zero-distance targets still require fresh trusted feedback, including an idle disconnect.
   online[0]=false; assert(!MotorControl::goToPosition(state().position)); online[0]=true;
+  // One failed transaction keeps trust: the calibrated axis stays usable without a rebase.
+  assert(MotorControl::goToPosition(state().position));
+  assert(state().calibration==Calibration::Done && state().bounds==3 && !state().rotating);
+  // A gap longer than MaxGapMs loses tracking; bounds then block the clear.
+  online[0]=false; advance(80); online[0]=true; advance(20);
+  assert(state().encoder==Encoders::Health::Untrusted);
   assert(!MotorControl::clearFault() && !MotorControl::goToPosition(state().position));
 }
 void testAbsoluteCancellationFaultsAndSelectionIsolation() {
@@ -1463,10 +1587,11 @@ void testHeldDirectionPauseRecoveryAndSlowSpeed() {
       MotorControl::stopRotation(); assert(state(motor).directionWarnings==1 && !state(motor).directionPaused);
     }
   // A one-sample spike may return to the original coordinate before the stable retry.
-  reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
+  reset(); assert(MotorControl::startHold());
+  const long startAnchor=MotorControl::motors[0].originCounts; injectHeldReverse(0,40);
   manualPosition(0,0); advance(140);
   assert(!state().directionPaused && state().fault==Fault::None && state().directionWarnings==1);
-  assert(MotorControl::motors[0].originCounts==0 && state().bounds==0);
+  assert(MotorControl::motors[0].originCounts==startAnchor && state().bounds==0);
 }
 void testHeldDirectionHardBudgetFrequencyAndInstability() {
   for(long amount: {32L,33L,63L,64L,100L}) {
@@ -1477,14 +1602,14 @@ void testHeldDirectionHardBudgetFrequencyAndInstability() {
   }
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
   advance(130); assert(!state().directionPaused);
-  manualPosition(0,-64); advance(15); // Only24 further reverse counts: fixed original anchor still faults.
+  manualPosition(0,MotorControl::motors[0].originCounts-64); advance(15); // Only24 further reverse counts: fixed original anchor still faults.
   assert(state().fault==Fault::Direction && state().directionWarnings==2 && !state().directionPaused);
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
-  manualPosition(0,-64); advance(15); // Same still-paused episode must not increment again.
+  manualPosition(0,MotorControl::motors[0].originCounts-64); advance(15); // Same still-paused episode must not increment again.
   assert(state().fault==Fault::Direction && state().directionWarnings==1);
   reset(); assert(MotorControl::startHold()); injectHeldReverse(0,40);
   for(int i=0;i<10 && state().rotating;++i) {
-    manualPosition(0,i%2 ? -40 : -48); advance(60);
+    manualPosition(0,MotorControl::motors[0].originCounts-(i%2 ? 40 : 48)); advance(60);
     if(state().rotating) assert(MotorControl::keepHoldAlive());
   }
   assert(!state().rotating && state().fault==Fault::Direction && state().directionWarnings==1);
@@ -1505,8 +1630,9 @@ void testHeldDirectionHardBudgetFrequencyAndInstability() {
       advance(100); if(state().rotating) assert(MotorControl::keepHoldAlive());
     }
     assert(!state().rotating && state().fault==Fault::Direction);
-    assert(state().directionWarnings>=1 && std::labs(Encoders::get(0).counts)>=64 &&
-           std::labs(Encoders::get(0).counts)<96);
+    // Measured from the hard anchor, which the wake moved back by the snap allowance.
+    const long reverse=std::labs(Encoders::get(0).counts-MotorControl::motors[0].originCounts);
+    assert(state().directionWarnings>=1 && reverse>=64 && reverse<96);
   }
 }
 void testHeldDirectionCancellationAndStrictOtherModes() {
@@ -1556,7 +1682,7 @@ void testHeldDirectionHistoryAndCalibrationReset() {
   assert(state().directionWarnings>5 && state().calibration==Calibration::None);
   plantForCalibration(0); assert(MotorControl::calibrate()); advance(30); MotorControl::stopRotation();
   assert(state().directionWarnings==6 && state().calibration==Calibration::Cancelled);
-  assert(MotorControl::calibrate()); online[0]=false; advance(15);
+  assert(MotorControl::calibrate()); online[0]=false; advance(80);
   assert(state().directionWarnings==6 && state().calibration==Calibration::Failed);
   online[0]=true; advance(20); assert(MotorControl::clearFault());
   assert(MotorControl::calibrate()); finishCalibration(Bottom);
@@ -1701,6 +1827,90 @@ void emitCalibrationTrace(bool positioning=false) {
 #endif
   std::cout<<Serial.output;
 }
+void testBouncingStall() {
+  // A blocked hybrid stepper does not freeze: each electrical cycle pulls the rotor
+  // back up to 2 full steps, then pushes it into the obstruction again.
+  for(bool jitter: {false,true}) for(Direction dir: {Direction::Clockwise,Direction::Counterclockwise}) {
+    reset(); noisy[0]=jitter;
+    const int side=dir==Direction::Clockwise ? 1 : -1;
+    field[0]=physical[0]; wallAt[0]=physical[0]+side*0.5*4096; wallSide[0]=side;
+    assert(MotorControl::setDirection(dir)); assert(MotorControl::rotateRevolutions(5));
+    unsigned long elapsed=0; double bounce=0;
+    while(state().rotating && elapsed<40000) {
+      advance(10); elapsed+=10;
+      if(side*(field[0]-wallAt[0])>0) bounce=std::max(bounce,side*(wallAt[0]-physical[0]));
+    }
+    // Contact comes after about 2.5 s. The push must end 1.5 s later, not at the 37 s timeout.
+    if(state().fault!=Fault::Stall || elapsed>4500)
+      std::cerr<<"bouncing stall fault="<<int(state().fault)<<" elapsed="<<elapsed<<"\n";
+    assert(state().fault==Fault::Stall && elapsed<=4500 && bounce>=20);
+    assert(side*(physical[0]-wallAt[0])<=1e-6);
+  }
+}
+void testDriverWakeSnap() {
+  // SLEEP high returns the A4988 translator to Home. The rotor snaps up to 2 full steps
+  // either way, during the wake delay or, held by friction, after the first pulses.
+  struct Case { Direction dir; int microsteps; float rotations; };
+  const Direction cw=Direction::Clockwise, ccw=Direction::Counterclockwise;
+  for(int held: {0,1}) {
+    auto sleeping=[held](int microsteps) {
+      reset(); homeOnWake[0]=true; translator[0]=microsteps; snapPulses=held;
+    };
+    // 14/18 snap 1.75 full steps against cw/ccw. 17/15 snap 1.875 full steps past a
+    // 0.001-rotation target, so the move corrects backward toward the command origin.
+    for(Case c: {Case{cw,14,.1f},Case{ccw,18,.1f},Case{cw,17,.001f},Case{ccw,15,.001f}}) {
+      sleeping(c.microsteps);
+      assert(MotorControl::setDirection(c.dir));
+      const float origin=state().position;
+      assert(MotorControl::rotateRevolutions(c.rotations));
+      finish();
+      const float expected=origin+(c.dir==cw ? -c.rotations : c.rotations);
+      assert(std::fabs(state().position-expected)<=state().tolerance+1.0/4096);
+      assert(state().directionWarnings==0);
+    }
+    // A snap against a hold is not a direction warning.
+    for(Direction dir: {cw,ccw}) {
+      sleeping(dir==cw ? 14 : 18);
+      assert(MotorControl::setDirection(dir));
+      const float origin=state().position;
+      assert(MotorControl::startHold());
+      for(int i=0;i<5;++i) { advance(200); assert(MotorControl::keepHoldAlive()); }
+      MotorControl::stopAll();
+      assert(state().fault==Fault::None && state().directionWarnings==0);
+      assert((dir==cw ? origin-state().position : state().position-origin)>.05f);
+    }
+    // Calibration starts its first seek from a sleeping driver.
+    sleeping(14); plantForCalibration(0);
+    assert(MotorControl::calibrate()); finishCalibration(Bottom);
+    // Each sleep repeats the snap, as in the bench trials: 0.0085 rotations is 1.7 full steps.
+    sleeping(0);
+    for(int i=0;i<8;++i) {
+      advance(10100); assert(outputs[MotorPins::BottomSleep]==LOW);
+      finite(.0085f, i<4 ? cw : ccw);
+    }
+    // Reverse motion beyond the snap allowance still faults.
+    sleeping(0);
+    assert(MotorControl::rotateRevolutions(.1f)); advance(30);
+    manualPosition(0,MotorControl::motors[0].originCounts-40); advance(30);
+    assert(!state().rotating && state().fault==Fault::Direction);
+  }
+}
+void testIsolatedReadFailures() {
+  // Isolated failed transactions (a noisy encoder bus) neither stop motion nor lose tracking.
+  reset(); failRawEvery[0]=7; finite(1.0f); finite(1.0f,Direction::Counterclockwise);
+  assert(rawRequests[0]>100 && state().encoder==Encoders::Health::Ok);
+  reset(); assert(MotorControl::rotateRevolutions(1)); advance(200);
+  failRaw[0]=3; advance(60); assert(state().rotating && state().fault==Fault::None);
+  finish(); assert(std::fabs(state().position+1)<=state().tolerance+1.0/4096);
+  reset(); plantForCalibration(0); failRawEvery[0]=7; assert(MotorControl::calibrate());
+  finishCalibration(Bottom);
+  // refresh() retries one failed read; two failures reject the command without a fault.
+  reset(); manualPosition(0,100); failRaw[0]=1; assert(MotorControl::resetPosition());
+  assert(state().positionCounts==0 && failRaw[0]==0);
+  manualPosition(0,200); failRaw[0]=2; assert(!MotorControl::resetPosition());
+  assert(state().positionCounts==-200 && state().fault==Fault::None);
+  assert(MotorControl::rotateRevolutions(.01f) && state().rotating);
+}
 int main(int argc, char **argv) {
   if(argc==2 && std::strcmp(argv[1],"--trace")==0) { emitTelemetryTrace(); return 0; }
   if(argc==2 && std::strcmp(argv[1],"--calibration-trace")==0) { emitCalibrationTrace(); return 0; }
@@ -1713,8 +1923,12 @@ int main(int argc, char **argv) {
   testHoldFeedbackAndWatchdog(); std::cout<<"held velocity feedback, stop and watchdog passed\n";
   testFaultsAndRecovery(); std::cout<<"stall/sign/I2C/magnet/stale faults and explicit recovery passed\n";
   testSlowMovesAndSleep(); std::cout<<"slow movement and driver sleep/wake passed\n";
+  testBouncingStall(); std::cout<<"rotor bouncing at an obstruction faults stall in both directions passed\n";
+  testDriverWakeSnap(); std::cout<<"driver wake snap before the first pulse: moves, holds, calibration and repeated sleeps passed\n";
   testProtocolAndBounds(); std::cout<<"serial protocol and numerical bounds passed\n";
   testTimerRollover(); std::cout<<"millis/micros rollover passed\n";
+  testIsolatedReadFailures();
+  std::cout<<"isolated failed encoder reads in moves, calibration and refresh retry passed\n";
   testRegisterReadsAndLiveDiagnostics();
   std::cout<<"explicit register reads, per-channel raw feedback, idle/fault diagnostics and short-read faults passed\n";
   testAutonomousTelemetryAndCommands();
@@ -1759,6 +1973,8 @@ int main(int argc, char **argv) {
   std::cout<<"post-calibration hand motion and contacts preserve origin/range, inward escape and release commands passed\n";
   testCalibrationPressedSwitchesOddSpanAndBusyDebounce();
   std::cout<<"already-pressed switch calibration, explicit reset compatibility, odd midpoint and transient busy guards passed\n";
+  testUpperReleaseThroughLowerBand();
+  std::cout<<"upper switch release through the lower band during calibration and held motion passed\n";
   testCalibrationCancellationTimeoutAndFaults();
   std::cout<<"calibration phase cancellation, bounce wait, missing-switch timeout, feedback faults and invalid span passed\n";
   testAbsolutePositionsAllAxesAndDirections();

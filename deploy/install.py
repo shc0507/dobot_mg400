@@ -87,6 +87,15 @@ SERVICE_FIELDS = {"name", "units", "optional", "venv", "groups", "assets"}
 SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 SERVICE_NAME = re.compile(r"[a-z][a-z0-9-]*")
 UNIT_NAME = re.compile(r"mg400-[a-z0-9-]+\.service")
+# Repeated subsystem matches are ORed. A change event applies new rules to present nodes.
+UDEV_TRIGGER = [
+    "udevadm",
+    "trigger",
+    "--action=change",
+    "--subsystem-match=usb",
+    "--subsystem-match=tty",
+    "--subsystem-match=video4linux",
+]
 
 
 def load_services(path):
@@ -345,9 +354,10 @@ H264_NVENC = (
 
 
 # With NVENC, a browser that plays HEVC gets H.265: the same quality at 2.5 Mbit/s as H.264
-# at 3 Mbit/s. The go2rtc 1.9.14 release does not unpack RTP aggregation packets (go2rtc
-# issue 2633), so a small frame that ffmpeg sends together with its SEI reaches the browser
-# as 1 unknown NAL unit and the decoder stops. Without SEI, ffmpeg sends each frame alone.
+# at 3 Mbit/s. The previews get 2 Mbit/s so that all of them fit the VPN link (see below).
+# The go2rtc 1.9.14 release does not unpack RTP aggregation packets (go2rtc issue 2633), so
+# a small frame that ffmpeg sends together with its SEI reaches the browser as 1 unknown
+# NAL unit and the decoder stops. Without SEI, ffmpeg sends each frame alone.
 # NVENC cuts a 3840x2160 frame into 2 slices, which ffmpeg also aggregates. A large preview
 # therefore needs go2rtc built with deploy/go2rtc/aggregation-packets.patch.
 H265_NVENC = (
@@ -384,8 +394,9 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
 
     With nvenc, the previews use the GPU encoder. It needs 3 Mbit/s for the quality
     that libx264 gives at 4 Mbit/s at 1280x720. Each H.264 preview then also has an
-    H.265 preview, <name>_h265, at 2.5 Mbit/s. A camera above 1280x720 gets only an H.265
-    preview, at 6 Mbit/s and its own resolution, unless it is the microscope side stream.
+    H.265 preview, <name>_h265, at 2 Mbit/s. A camera above 1280x720 gets only an H.265
+    preview at its own resolution, unless it is the microscope side stream: 6 Mbit/s for
+    the wrist camera, which shows what the arm sees, and 3 Mbit/s for any other camera.
 
     The API and RTSP listen on loopback only. ffmpeg reads and returns the H.264
     previews through RTSP. The microscope preview comes from the microscope service.
@@ -422,25 +433,28 @@ def render_go2rtc(devices, sizes=None, *, modes=None, nvenc=False, side=""):
     )
     if nvenc:
         streams += "".join(
-            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate={'2500k' if width > 640 else '2M'}\n"
-            for name, (width, _, _) in zip(configured.streams, configured.modes)
-            if name in configured.preloaded
+            f"  {name}_h265: ffmpeg:{name}#video=h265#bitrate=2M\n" for name in configured.preloaded
         )
+        # The relayed VPN link carries about 22 Mbit/s. At 6 Mbit/s for each large preview and
+        # 2.5 Mbit/s for the others, the previews filled it, and the queue of the largest one
+        # grew to several seconds of video. With these rates they need about 19 Mbit/s.
+        devices = dict(zip(configured.streams, configured.devices))
+        wrist = {name for name, device in devices.items() if device in configured.wrist}
         streams += "".join(
             f"  {name}_h265: ffmpeg:{ports.url('go2rtc', f'api/stream.mjpeg?src={name}')}"
-            "#input=mjpeg#video=h265#bitrate=6M\n"
+            f"#input=mjpeg#video=h265#bitrate={'6M' if name in wrist else '3M'}\n"
             for name in configured.large(side)
         )
     # go2rtc reads the microscope MJPEG preview (1296x968) only for an H.264 viewer.
-    # With its 3 Mbit/s cap, the microscope and 4 previews at 1280x720 need about
-    # 19 Mbit/s of the 22 Mbit/s VPN link.
+    # With its 3 Mbit/s cap, the microscope and 5 previews at 1280x720 need about
+    # 18 Mbit/s of the 22 Mbit/s VPN link with NVENC, and about 23 Mbit/s with libx264.
     streams += (
         f"  microscope: {ports.url('microscope', 'api/camera/microscope/mjpeg')}\n"
         "  microscope_h264: ffmpeg:microscope#video=h264#bitrate=3M\n"
     )
     if nvenc:
-        streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2500k\n"
-    preload = "".join(f"  {name}: video\n" for name in configured.preloaded)
+        streams += "  microscope_h265: ffmpeg:microscope#video=h265#bitrate=2M\n"
+    preload = "".join(f"  {name}: video\n" for name in configured.held)
     preload = f"preload:\n{preload}" if preload else "preload: {}\n"
     return (
         f"api:\n  listen: {ports.HOST}:{ports.PORTS['go2rtc']}\n"
@@ -649,6 +663,7 @@ def write_file(path, content, mode, owner, chown):
             out.flush()
             os.fchmod(out.fileno(), mode)
             chown(out.fileno(), *owner)
+            os.fsync(out.fileno())
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
@@ -703,14 +718,15 @@ def install(args, host, run, chown, out):
     if devices and args.go2rtc is None and not host.go2rtc.exists():
         raise RuntimeError("Cameras are configured. Pass the go2rtc 1.9.14 binary with --go2rtc.")
     proxy_config, caddy_binary = prepare_proxy(args, host, settings)
-    # Without a library, the microscope service installs and runs without its camera.
+    # Without a library, the microscope service installs, but its startup fails.
     toupcam_missing = args.toupcam is None and not os.path.lexists(host.toupcam)
     toupcam_binary = prepare_toupcam(
         args.toupcam, host, required="microscope" in selected and not toupcam_missing
     )
     if "microscope" in selected and toupcam_missing:
         print(
-            "The Toupcam library is not installed. Pass it with --toupcam PATH.",
+            "The Toupcam library is not installed. The microscope service does not start "
+            "without it. Pass it with --toupcam PATH.",
             file=out,
             flush=True,
         )
@@ -912,7 +928,7 @@ def install(args, host, run, chown, out):
             if not args.dry_run:
                 write_file(host.udev / name, text, 0o644, (0, 0), chown)
         system(["udevadm", "control", "--reload-rules"])
-        system(["udevadm", "trigger", "--subsystem-match=usb"])
+        system(UDEV_TRIGGER)
     for name, content in unit_contents.items():
         step(f"install {host.units / name}")
         if not args.dry_run:

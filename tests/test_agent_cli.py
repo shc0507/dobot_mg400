@@ -1,13 +1,26 @@
 """labctl agent groups with a fake console transport: parsing, JSON, exit codes, waits, stops."""
 
+import contextlib
 import io
 import json
+import os
+import threading
+from pathlib import Path
 
 import pytest
+from werkzeug.serving import make_server
 
 from orchestrator import agent as agent_module
 from orchestrator import agent_cli
-from orchestrator.agent import Agent, Unreachable, code_for, exit_code, parse_params
+from orchestrator.agent import Agent, Unreachable, code_for, exit_code, hint, parse_params
+
+WORLD = Path(__file__).parent / "fixtures/collision_world.json"
+
+
+@pytest.fixture(autouse=True)
+def collision_world(monkeypatch):
+    """`robot move` checks the test world: the arm, the table, the tray table, the camera pole."""
+    monkeypatch.setattr(agent_cli.collision, "WORLD", WORLD)
 
 
 class FakeHttp:
@@ -41,11 +54,17 @@ class Clock:
         self.value += seconds
 
 
-def make(routes, *, direct=False, **kwargs):
+def make(routes, *, direct=False, settings=None, **kwargs):
     clock = Clock()
     http = FakeHttp(routes)
     agent = Agent(
-        session="t", http=http, settings={}, direct=direct, clock=clock, sleep=clock.sleep, **kwargs
+        session="t",
+        http=http,
+        settings=settings or {},
+        direct=direct,
+        clock=clock,
+        sleep=clock.sleep,
+        **kwargs,
     )
     return agent, http
 
@@ -299,6 +318,35 @@ def test_robot_move_waits_for_its_command_id_and_uses_the_relative_pose():
     ]
 
 
+@pytest.mark.parametrize("what,action", [("markers", "read_markers"), ("chips", "detect")])
+def test_vision_locate_sends_the_flange_pose_with_the_command(what, action):
+    still = robot_state(None, actual=[278.0, -9.4, 100.0, -30.7])
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "vision", "holder": "h"}),
+            "api/console/state/robot": states(still),
+            "api/console/command/vision": (202, {"command_id": "7"}),
+        }
+    )
+    code, result = run_cli(["vision", "locate", what, "5", "-68.75", "--no-wait"], agent)
+    assert code == 0 and result["outcome"] == "accepted"
+    params = {"camera": 5, "flange_mm": [278.0, -9.4, 100.0, -30.7], "touch_z_mm": -68.75}
+    assert http.sent("api/console/command/vision") == [{"action": action, "params": params}]
+
+
+def test_vision_locate_sends_nothing_without_a_known_pose():
+    moving = robot_state(None, actual=[None] * 4)
+    agent, http = make(
+        {
+            "api/console/heartbeat": beat({"device": "vision", "holder": "h"}),
+            "api/console/state/robot": states(moving),
+        }
+    )
+    code, result = run_cli(["vision", "locate", "chips", "5", "-68.75"], agent)
+    assert code == 1 and result["error"]["code"] == "busy"
+    assert http.sent("api/console/command/vision") == []
+
+
 def test_relative_move_waits_briefly_for_a_known_pose():
     moving = robot_state(None, actual=[None] * 4)
     agent, http = make(
@@ -310,6 +358,131 @@ def test_relative_move_waits_briefly_for_a_known_pose():
     code, result = run_cli(["robot", "move", "0", "0", "1", "0", "--relative"], agent)
     assert code == 1 and result["error"]["code"] == "busy"
     assert http.sent("api/console/command/robot") == []
+
+
+def move_agent(actual, **fields):
+    last = {"id": "i1:1", "action": "enable", "client": "h", "result": "ok"}
+    ready = robot_state(last, actual=actual, **fields)
+    done = robot_state({"id": "i1:2", "action": "execute", "client": "h", "result": "ok"})
+    return make(
+        {
+            "api/console/heartbeat": beat({"device": "robot", "holder": "h"}),
+            "api/console/state/robot": states(ready, ready, done),
+            "api/console/command/robot": (202, {"outcome": "accepted", "command_id": "i1:2"}),
+            "api/console/ws/twin/state": (200, {"joints": {"stage_top": 4.0, "insert": None}}),
+        }
+    )
+
+
+def no_check(*args, **kwargs):
+    raise AssertionError("The collision check must not run.")
+
+
+PROBLEM = {
+    "obstacle": "pole tube 1",
+    "group": "fixtures",
+    "arm_part": "link4_3_0",
+    "clearance_mm": 0.0,
+    "along_mm": 48.8,
+    "pose": [-117.8, -243.0, 163.7, -31.3],
+    "start_clearance_mm": None,
+}
+
+
+def test_robot_move_is_refused_when_the_twin_shows_a_collision(monkeypatch):
+    seen = []
+
+    def check(start, target, **options):
+        seen.append((start, target, options))
+        return PROBLEM
+
+    monkeypatch.setattr(agent_cli.collision, "check", check)
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0], joints=[1.0, 2.0, 3.0, 4.0])
+    code, result = run_cli(["robot", "move", "0", "0", "5", "0", "--relative"], agent)
+    assert code == 1 and result["outcome"] == "refused"
+    assert result["error"]["code"] == "collision" and result["collision"] == PROBLEM
+    message = result["error"]["message"]
+    assert "contact of the arm (link4_3_0) with 'pole tube 1' (fixtures)" in message
+    assert "48.8 mm along the line, at flange (-117.8, -243, 163.7)" in message
+    assert "No command was sent." in message and "--no-collision-check" in message
+    options = {"joints": [1.0, 2.0, 3.0, 4.0], "stage": {"stage_top": 4.0, "insert": None}}
+    assert seen == [([10.0, 20.0, 30.0, 40.0], [10.0, 20.0, 35.0, 40.0], options)]
+    assert http.sent("api/console/command/robot") == []
+
+
+@pytest.mark.parametrize(
+    ("change", "text"),
+    [
+        ({"clearance_mm": 6.2}, "6.2 mm from 'pole tube 1' (fixtures) 48.8 mm along the line"),
+        ({"clearance_mm": 6.2}, "The margin is 10 mm."),
+        ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "At the start it is 3 mm away."),
+        ({"clearance_mm": 1.0, "start_clearance_mm": 3.0}, "a move must not go closer"),
+    ],
+)
+def test_robot_move_refusal_names_the_clearance(monkeypatch, change, text):
+    monkeypatch.setattr(agent_cli.collision, "check", lambda *a, **k: {**PROBLEM, **change})
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4"], agent)
+    assert code == 1 and text in result["error"]["message"]
+    assert http.sent("api/console/command/robot") == []
+
+
+def test_robot_move_is_refused_when_the_check_cannot_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_cli.collision, "WORLD", tmp_path / "missing.json")
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4"], agent)
+    assert code == 1 and result["error"]["code"] == "collision"
+    assert (
+        "The collision check cannot run: Cannot read the collision world"
+        in (result["error"]["message"])
+    )
+    assert http.sent("api/console/command/robot") == []
+
+
+def test_robot_move_without_the_check_sends_the_move(monkeypatch):
+    monkeypatch.setattr(agent_cli.collision, "check", no_check)
+    agent, http = move_agent([10.0, 20.0, 30.0, 40.0])
+    code, result = run_cli(["robot", "move", "1", "2", "3", "4", "--no-collision-check"], agent)
+    assert code == 0 and result["outcome"] == "ok"
+    assert http.sent("api/console/command/robot") == [
+        {"action": "execute", "params": {"targets": {"x": 1.0, "y": 2.0, "z": 3.0, "r": 4.0}}}
+    ]
+    assert not any("twin" in path for path, _ in http.calls)
+
+
+def test_robot_stop_never_runs_the_collision_check(monkeypatch):
+    monkeypatch.setattr(agent_cli.collision, "check", no_check)
+    monkeypatch.setattr(agent_cli.collision, "WORLD", Path("/nonexistent/world.json"))
+    agent, http = make({"api/console/stop/robot": (200, {"outcome": "confirmed"})})
+    code, result = run_cli(["robot", "stop"], agent)
+    assert code == 0 and result["results"] == {"robot": "confirmed"}
+    assert [path for path, _ in http.calls] == ["api/console/stop/robot"]
+
+
+@pytest.mark.parametrize(
+    ("start", "target", "obstacle"),
+    [
+        # 2026-11-24: this move touched a screw on the pole of the tray camera.
+        ([-69.3, -237.9, 163.7, -31.3], [-137.2, -245.1, 163.7, -31.3], "pole tube 1"),
+        ([-39.0, -236.0, 163.8, -31.3], [41.0, -236.0, 163.8, -31.3], None),
+    ],
+)
+def test_robot_move_checks_the_line_in_the_bench_twin(start, target, obstacle):
+    agent, http = move_agent(start)
+    code, result = run_cli(["robot", "move", *map(str, target)], agent)
+    sent = http.sent("api/console/command/robot")
+    if obstacle is None:
+        assert code == 0 and result["outcome"] == "ok"
+        assert sent == [
+            {"action": "execute", "params": {"targets": dict(zip("xyzr", target, strict=True))}}
+        ]
+    else:
+        assert code == 1 and result["error"]["code"] == "collision"
+        assert result["collision"]["obstacle"] == obstacle
+        assert result["collision"]["clearance_mm"] == 0
+        assert 40 < result["collision"]["along_mm"] < 60
+        assert f"'{obstacle}' (fixtures)" in result["error"]["message"]
+        assert sent == []
 
 
 def test_robot_superseding_stop_is_unknown_and_alarms_give_the_clear_hint():
@@ -385,6 +558,49 @@ def test_lost_connection_after_send_is_unknown():
     assert code == 3 and result["outcome"] == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("reply", "final", "code", "outcome"),
+    [
+        (Unreachable("timed out"), "ok", 0, "ok"),
+        ((502, {"outcome": "unknown"}), "ok", 0, "ok"),
+        ((502, {"outcome": "unknown"}), "failed", 1, "failed"),
+    ],
+)
+def test_a_lost_relay_reply_reports_the_recorded_result(reply, final, code, outcome):
+    before = {"last_command": {"id": "8", "action": "connect", "client": "h"}}
+    last = {"id": "9", "action": "connect", "client": "h", "result": final, "message": "M."}
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states(before, {"last_command": last}),
+            "api/console/command/stage": reply,
+        }
+    )
+    exit_, result = run_cli(["stage", "connect", "/dev/ttyACM0"], agent)
+    assert exit_ == code and result["outcome"] == outcome
+    assert result["command_id"] == "9" and result["last_command"]["message"] == "M."
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        {"id": "8", "action": "connect", "client": "h"},
+        {"id": "9", "action": "stop_all", "client": "h"},
+        {"id": "9", "action": "connect", "client": "other"},
+    ],
+)
+def test_a_lost_relay_reply_without_its_record_stays_unknown(last):
+    agent, _ = make(
+        {
+            "api/console/heartbeat": beat({"device": "stage", "holder": "h"}),
+            "api/console/state/stage": states({"last_command": last}),
+            "api/console/command/stage": (502, {"outcome": "unknown"}),
+        }
+    )
+    code, result = run_cli(["stage", "connect", "/dev/ttyACM0"], agent)
+    assert code == 3 and result["outcome"] == "unknown"
+
+
 def test_interrupt_during_a_wait_sends_one_device_stop(monkeypatch):
     calls = {"n": 0}
 
@@ -406,6 +622,33 @@ def test_interrupt_during_a_wait_sends_one_device_stop(monkeypatch):
     assert code == 130 and result["outcome"] == "interrupted"
     assert result["stop"]["results"] == {"stage": "confirmed"}
     assert len(http.sent("api/console/stop/stage")) == 1
+
+
+def test_interrupt_during_labctl_wait_sends_one_device_stop():
+    def state(data):
+        raise KeyboardInterrupt
+
+    agent, http = make(
+        {
+            "api/console/state/stage": state,
+            "api/console/stop/stage": (200, {"device": "stage", "outcome": "confirmed"}),
+        }
+    )
+    code, result = run_cli(["stage", "wait", "9"], agent)
+    assert code == 130 and result["outcome"] == "interrupted"
+    assert result["command_id"] == "9"
+    assert len(http.sent("api/console/stop/stage")) == 1
+
+
+def test_relative_focus_does_not_hide_lease_recovery_hint():
+    state = {"focus_zero_known": False, "focus_reference": "relative_command"}
+    assert hint("microscope", "not_controlled", state) == "labctl microscope take"
+    assert hint("microscope", "busy", state) == "labctl microscope wait"
+    assert hint("microscope", "unknown", state) == "labctl microscope state"
+
+
+def test_unconfirmed_robot_stop_hints_clear_alarm():
+    assert hint("robot", "locked", {"stop_unconfirmed": True}) == "labctl robot clear-alarm"
 
 
 def test_no_wait_returns_the_command_id_and_wait_finds_it():
@@ -466,24 +709,93 @@ def test_stops_never_take_control_and_never_beat():
     assert not any("heartbeat" in path or "control" in path for path in paths)
 
 
-def test_direct_stops_work_when_the_console_is_down(monkeypatch):
-    sent = []
-    monkeypatch.setattr(
-        Agent, "_direct_stop", lambda self, device: sent.append(device) or "confirmed"
-    )
+@contextlib.contextmanager
+def served(service, create_app):
+    """Serve a real service app on loopback and record the params of each api/stop."""
+    stops = []
+    stop = service.stop
+
+    def recorded(client, wait_s, **params):
+        stops.append(params)
+        return stop(client, wait_s, **params)
+
+    service.stop = recorded
+    server = make_server("127.0.0.1", 0, create_app(service), threaded=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02})
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/", stops
+    finally:
+        server.shutdown()
+        thread.join(2)
+
+
+@pytest.fixture
+def stage_service():
+    from stage_controller.app import create_app
+    from stage_controller.controller import MotorController
+
+    controller = MotorController(demo=True)
+    controller.connect("DEMO")
+    with served(controller, create_app) as value:
+        yield value
+    controller.close()
+
+
+@pytest.fixture
+def furnace_service():
+    from furnace.app import create_app, make_service
+
+    service = make_service(demo=True)
+    service.start(background=False)
+    with served(service, create_app) as value:
+        yield value
+    service.close()
+
+
+def test_direct_stops_work_when_the_console_is_down(stage_service):
+    url, stops = stage_service
     down = Unreachable("refused")
-    agent, _ = make(
-        {
-            "api/dashboard/motion": down,
-            "api/console/stop/robot": down,
-            "api/console/stop/stage": down,
-            "api/console/stop/microscope": down,
-        },
-        direct=True,
-    )
+    # Nothing listens on port 9, so the robot and microscope direct stops are unreachable.
+    closed = "http://127.0.0.1:9/"
+    settings = {
+        "MG400_ORCH_STAGE_URL": url,
+        "MG400_ORCH_ROBOT_URL": closed,
+        "MG400_ORCH_MICROSCOPE_URL": closed,
+    }
+    routes = {
+        "api/dashboard/motion": down,
+        "api/console/stop/robot": down,
+        "api/console/stop/stage": down,
+        "api/console/stop/microscope": down,
+    }
+    agent, _ = make(routes, direct=True, settings=settings)
     code, result = run_cli(["all", "stop"], agent)
-    assert code == 0 and sorted(sent) == ["microscope", "robot", "stage"]
+    assert result["results"] == {
+        "robot": "unreachable",
+        "stage": "confirmed",
+        "microscope": "unreachable",
+    }
+    assert code != 0 and stops == [{}]
     assert result["dashboard"] == {"result": "unreachable"}
+
+
+def test_direct_furnace_stop_and_gas_off_reach_the_service(furnace_service):
+    url, stops = furnace_service
+    down = Unreachable("refused")
+    routes = {
+        "api/dashboard/heat": down,
+        "api/console/stop/furnace": down,
+        "api/console/ws/process/gas-stop": down,
+    }
+    agent, _ = make(routes, direct=True, settings={"MG400_ORCH_FURNACE_URL": url})
+    code, result = run_cli(["furnace", "stop"], agent)
+    assert code == 0 and result["results"] == {"furnace": "confirmed"}
+    assert stops == [{}]
+    code, result = run_cli(["furnace", "gas-off", "1"], agent)
+    assert code == 0 and result["results"] == {"1": "confirmed"}
+    assert result["paths"]["direct:1"] == "confirmed"
+    assert stops == [{}, {"gas_channel": 1}]
 
 
 def test_a_demo_console_url_sends_no_direct_stops():
@@ -644,3 +956,92 @@ def test_chip_locate_prints_the_slot_result():
         "reason": None,
         "run_id": "r1",
     }
+
+
+def test_robot_busy_message_maps_to_busy_not_held_by_other():
+    assert code_for(409, "Another robot operation is in progress") == "busy"
+    assert code_for(409, "Another client holds this device.") == "held_by_other"
+
+
+def test_gas_off_keeps_the_console_answer_when_the_direct_stop_times_out(monkeypatch):
+    calls = []
+
+    def direct(self, device, **params):
+        calls.append((device, params))
+        return "unreachable"
+
+    monkeypatch.setattr(Agent, "_direct_stop", direct)
+    agent, _ = make(
+        {"api/console/ws/process/gas-stop": (200, {"outcome": "unconfirmed"})}, direct=True
+    )
+    code, result = run_cli(["furnace", "gas-off", "1"], agent)
+    assert code == 3 and result["results"] == {"1": "unconfirmed"}
+    assert "write-only" in result["error"]["message"]
+    assert calls == [("furnace", {"timeout": agent_module.GAS_STOP_TIMEOUT_S, "gas_channel": 1})]
+
+
+def test_gas_off_uses_the_direct_answer_when_the_console_is_down(monkeypatch):
+    monkeypatch.setattr(Agent, "_direct_stop", lambda self, device, **params: "confirmed")
+    agent, _ = make({"api/console/ws/process/gas-stop": Unreachable("refused")}, direct=True)
+    code, result = run_cli(["furnace", "gas-off", "0"], agent)
+    assert code == 0 and result["results"] == {"0": "confirmed"}
+
+
+def test_a_stop_path_that_does_not_answer_in_time_is_unconfirmed():
+    import threading
+
+    gate = threading.Event()
+    try:
+        sent = Agent._parallel({"fast": lambda: "confirmed", "slow": gate.wait}, 0.05)
+    finally:
+        gate.set()
+    assert sent == {"fast": "confirmed", "slow": "unconfirmed"}
+    assert Agent._answered(sent["slow"]) == {"result": "no-answer"}
+
+
+def test_a_broken_error_body_is_unreachable(monkeypatch):
+    import urllib.error
+
+    class Broken(urllib.error.HTTPError):
+        def read(self, *args):
+            raise ConnectionResetError("reset")
+
+    http = agent_module.Http("http://127.0.0.1:1/lab/", "agent-t")
+
+    def fail(request, timeout):
+        raise Broken(request.full_url, 409, "Conflict", {}, None)
+
+    monkeypatch.setattr(http.opener, "open", fail)
+    with pytest.raises(Unreachable, match="broke off"):
+        http.request("api/state")
+
+
+def test_do_reports_unknown_when_the_run_post_gets_no_answer():
+    routes = run_routes(["running"])
+    routes["api/runs"] = Unreachable("reset")
+    agent, http = make(routes)
+    code, result = run_cli(["do", "slot-state"], agent)
+    assert code == 3 and result["error"]["code"] == "unknown"
+    assert "labctl all state" in result["error"]["message"]
+
+
+def test_an_unexpected_error_still_prints_one_json_object():
+    agent, _ = make({"api/console/state/robot": lambda data: 1 / 0})
+    code, result = run_cli(["robot", "state"], agent)
+    assert code == 3 and result["error"]["code"] == "unknown"
+
+
+def test_images_go_to_a_directory_per_user(monkeypatch, tmp_path):
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(agent_module, "Path", lambda value: tmp_path / value.strip("/"))
+    path = Agent._out(None, "x.jpg")
+    assert path.parent.name == f"labctl-{os.getuid()}"
+
+
+def test_an_image_that_cannot_be_saved_fails_without_usage(tmp_path):
+    agent, _ = make({})
+    url = "http://127.0.0.1:8770/api/camera/side/frame.jpg"
+    agent.http.routes[url] = lambda data: (200, b"\xff\xd8jpeg")
+    out = tmp_path / "missing" / "s.jpg"
+    code, result = run_cli(["microscope", "frame", "side", "--out", str(out)], agent)
+    assert code == 1 and result["error"]["code"] == "failed"

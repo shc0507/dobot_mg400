@@ -135,6 +135,10 @@ Move one stage axis 使用编码器绝对位置，单位为转数，原点是所
 
 状态字段 `devices.stage.values.stage_reference` 与该帧使用同一份原生缓存快照。不可用时，该字段为 `null`。为受保护的位移台动作决策前，Portal 将它与选项中的参考比较。
 
+`stage_reference` 必须包含 `instance`、`reference_revision`、`reference_source`、`stop_epoch` 和 `limits_digest`。设备重连保留服务进程的 `instance`，服务重启则更改它。服务重启后，`reference_revision` 可能重复。旧版真机上下文将缺失的身份或修订值保留为 `null`，但只有修订而没有身份时，上下文无效。缺少身份时，进程连续性未经验证。本地模型拒绝省略 `instance` 字段的上下文。
+
+只读约定 `1.2.0` 使用新摘要，并要求包含可为 null 的身份字段。位移台上下文封装保留 `version: 1`。旧版智能体必须阅读通信指南，适配支持的约定和摘要，并保留完整上下文。服务提供真实身份时，不带身份的参考不能匹配该服务。
+
 拒绝或失败的命令在控制区显示原因。展开 Recent commands and results 可查看完整记录。
 
 每次明确选择 Send command 都创建新的 `request_id`。如果响应丢失，Portal 查询原 ID，不重发命令。结果未确定时，禁止再次提交。切换来源会清空命令视图，并忽略旧来源迟到的响应。
@@ -187,6 +191,10 @@ Start test、Run next step 和 Stop test 提供独立的内存交接测试。测
 请求 ID 属于客户端。会话有效时，相同 ID 和请求体返回原记录，不重复执行。同一 ID 使用不同请求体时返回 409。会话过期后不能读取或重发请求。结果未知时，查询原 ID。不得自动用新 ID 重发运动命令。
 
 操作状态为 `accepted`、`running`、`succeeded`、`failed`、`rejected`、`cancelling`、`stopped` 或 `unknown`。Cancel my operation 请求取消本会话的操作。它不能证明设备已停止。取消加热炉命令保留原有运行与恢复规则。必须停止这些输出时，使用明确的加热炉或气体 Stop 控件。
+
+原生 `command` 路径将完成结果绑定到接受时的 `command_id`、服务 `instance`、动作和服务 `client`。服务客户端属于 Console 设备租约，与配对智能体的 `client_id` 分开。完成结果必须匹配进程、`last_command.id`、`last_command.action` 和 `last_command.client`。接受时身份缺失、进程身份变化或结果身份冲突时，结果为 `unknown`。另一进程复用命令 ID 不能证明命令完成。查询已存操作，不得自动重放。
+
+身份和修订均可用时，受保护的位移台运动携带 `expected_instance` 和 `expected_reference_revision`。排队决策和后续轴保留原参考。旧版运动保留原生限位、Stop 版本和命令 ID 检查。缺少服务进程身份时，该路径不能验证进程连续性。只有身份而没有修订时，保留进程检查，但只有修订而没有身份时，不能运动。新增的身份字段要求创建新操作。
 
 记录保存在权限数据库旁的 `agent-connect/commands.db`。重启会把未完成记录改为 `unknown`，不会重放。本地模拟使用内存或临时存储。重启本地测试会清空其记录和配置。
 
@@ -343,4 +351,4 @@ Console 在 `/lab/api/agent` 下提供以下读取路径：
 
 命令目录把智能体操作限制在已审查的原生能力内。启用真机不会启用不受支持的动作，也不会移除设备限制。实时读取、模拟设备和格式测试保留独立的标识与结果。模拟检查不能确定真机行为。
 
-在另一位开发者完成共用服务工作前，继续暂缓设备服务进程 ID 的进一步集成和部署。下次联合集成审查时，核对分支中保留的实现。缺失的服务 ID 仍显示不可用。Console `boot_id`、客户端身份和 `control_epoch` 保持启用。
+部署前，核对 Console 身份检查与当前共用服务的实现。检查目标 Console 的实际服务路径、进程身份和已接受命令字段。缺失的服务 ID 仍显示不可用。Console `boot_id`、客户端身份和 `control_epoch` 保持启用。

@@ -199,6 +199,12 @@ class CacheStateProvider:
                         "quality": "unavailable",
                         "reason": "instance_changed",
                     }
+                elif not state.get("instance") and detail.get("available"):
+                    detail = {
+                        **detail,
+                        "quality": "unknown",
+                        "reason": "source_identity_unavailable",
+                    }
                 rows[name]["observations"] = detail
         return {
             "mode": self.mode,

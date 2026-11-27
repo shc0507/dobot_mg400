@@ -89,7 +89,7 @@ def test_snapshot_then_replay_preserves_old_contract_and_binding(setup):
     old = hub.contract_id
     hub.publish("sample.changed", {"chip_id": "one"})
     changed = bundle()
-    changed["version"] = "1.2.0"
+    changed["version"] = "1.99.0"
     current = hub.change_contract(changed)
     reader = hub.subscribe(cursor={"boot_id": hub.boot_id, "event_seq": 0})
     assert reader.poll()["contract_id"] == current
@@ -138,7 +138,7 @@ def test_bundle_eviction_removes_undecodable_history():
     hub.publish("old", {})
     for index in range(3):
         value = bundle()
-        value["version"] = f"1.{index + 1}.0"
+        value["version"] = f"1.{index + 90}.0"
         hub.change_contract(value)
     assert len(hub.contracts) == 2
     assert hub.contract(original) is None

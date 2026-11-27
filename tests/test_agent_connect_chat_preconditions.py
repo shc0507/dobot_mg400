@@ -32,6 +32,7 @@ def stage_rig(rig):
     control.catalog = definition("stage.position")
     control.state["command_contract_id"] = control.catalog["contract_id"]
     reference = {
+        "instance": "stage-process-a",
         "reference_revision": 3,
         "reference_source": "reference_revision",
         "stop_epoch": 2,
@@ -81,6 +82,7 @@ def test_stage_command_sends_original_reference_and_profile(stage_rig):
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("instance", "stage-process-b"),
         ("reference_revision", 4),
         ("stop_epoch", 3),
         ("limits_digest", "c" * 64),
@@ -103,9 +105,12 @@ def test_changed_context_during_inference_sends_no_command(stage_rig, field, val
     assert "changed" in agent.status()["messages"][-1]["text"]
 
 
-def test_retained_frame_must_match_choices_even_when_choices_stay_constant(stage_rig):
+@pytest.mark.parametrize(
+    "field,value", [("instance", "stage-process-old"), ("reference_revision", 2)]
+)
+def test_retained_frame_must_match_choices_even_when_choices_stay_constant(stage_rig, field, value):
     agent, control, _, _, _, frame_reference = stage_rig
-    frame_reference["reference_revision"] = 2
+    frame_reference[field] = value
     result = run(agent, "Move X to 1 rotation")
     assert not control.sent
     assert "changed" in result["messages"][-1]["text"]
@@ -132,6 +137,10 @@ def test_missing_or_unsupported_context_blocks_stage_only(stage_rig, bad):
 @pytest.mark.parametrize(
     "field,value",
     [
+        ("instance", ""),
+        ("instance", " "),
+        ("instance", True),
+        ("instance", None),
         ("stop_epoch", True),
         ("limits_digest", "bad"),
         ("reference_revision", -1),
@@ -144,6 +153,15 @@ def test_invalid_reference_metadata_is_not_forwarded(stage_rig, field, value):
     frame_reference[field] = value
     run(agent, "Move X to 1 rotation")
     assert not control.sent
+
+
+def test_legacy_context_without_explicit_instance_is_not_forwarded(stage_rig):
+    agent, control, _, _, choices, frame_reference = stage_rig
+    choices["stage_context"]["preconditions"]["stage_reference"].pop("instance")
+    frame_reference.pop("instance")
+    result = run(agent, "Move X to 1 rotation")
+    assert not control.sent
+    assert "stage decision context" in result["messages"][-1]["text"]
 
 
 def test_model_context_cannot_replace_saved_preconditions(stage_rig):
@@ -161,7 +179,9 @@ def test_model_context_cannot_replace_saved_preconditions(stage_rig):
 
 def test_empty_profile_and_legacy_reference_remain_supported(stage_rig):
     agent, control, _, _, choices, frame_reference = stage_rig
-    frame_reference.update(reference_revision=None, reference_source="limits_port_calibration")
+    frame_reference.update(
+        instance=None, reference_revision=None, reference_source="limits_port_calibration"
+    )
     values = choices["stage_context"]["preconditions"]
     values.update(stage_reference=copy.deepcopy(frame_reference), profile_id=None)
     run(agent, "Move X to 1 rotation")
@@ -194,7 +214,7 @@ def test_protected_scope_matches_existing_stage_reference_support():
         )
 
 
-@pytest.mark.parametrize("change", ["profile", "reference"])
+@pytest.mark.parametrize("change", ["profile", "reference", "instance"])
 def test_server_rejects_change_after_portal_final_check_before_taking_control(
     stage_rig, tmp_path, change
 ):
@@ -232,6 +252,8 @@ def test_server_rejects_change_after_portal_final_check_before_taking_control(
             attempts.append(copy.deepcopy(body))
             if change == "profile":
                 backend.transfer.store.select(other["id"])
+            elif change == "instance":
+                console.state["instance"] = "stage-process-b"
             else:
                 console.state["reference_revision"] += 1
             try:

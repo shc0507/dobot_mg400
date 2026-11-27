@@ -101,6 +101,17 @@ class _GuardedTransfer:
 
     def _send(self, method, page, params):
         self.stage_state(page)
+        reference = self.plan["references"]["stage_reference"]
+        params.pop("expected_instance", None)
+        params.pop("expected_reference_revision", None)
+        if (
+            reference.get("instance") is not None
+            and reference.get("reference_revision") is not None
+        ):
+            params.update(
+                expected_instance=reference["instance"],
+                expected_reference_revision=reference["reference_revision"],
+            )
         if self.plan["action"] == "stage.step":
             params.update(
                 rotations=self.plan["params"]["rotations"], speed=self.plan["params"]["speed"]
@@ -110,6 +121,11 @@ class _GuardedTransfer:
         result = self.context.dispatch(method, page, **params)
         self.uncertain = result.get("outcome") not in {"accepted", "refused"}
         self.sent = self.sent or result.get("outcome") == "accepted"
+        if result.get("outcome") == "accepted" and (
+            not isinstance(result.get("command_id"), str) or not result["command_id"].strip()
+        ):
+            self.uncertain = True
+            raise ValueError("The stage returned no command completion ID.")
         return result
 
     def position(self, page, **params):
@@ -637,12 +653,15 @@ class ActionBackend:
                 current = plan["references"][key]
                 if key == "stage_reference":
                     if not isinstance(value, dict) or set(value) - {
+                        "instance",
                         "reference_revision",
                         "stop_epoch",
                         "limits_digest",
                         "reference_source",
                     }:
                         raise ValueError("Send supported stage reference fields.")
+                    if value.get("instance") != current["instance"]:
+                        raise ValueError("The requested stage reference is no longer current.")
                     if any(current.get(field) != expected for field, expected in value.items()):
                         raise ValueError("The requested stage reference is no longer current.")
                 elif value != current:
@@ -765,7 +784,7 @@ class ActionBackend:
             elif command == "position":
                 state = manager._preflight(page)
                 targets = self._targets(spec, params, state)
-                operation = manager._begin(page, params, state.get("stop_epoch"), 1)
+                operation = manager._begin(page, params, state.get("stop_epoch"), 1, stage=state)
                 threading.Thread(
                     target=self._run_position,
                     args=(manager, adapter, operation, targets[0]),
@@ -841,7 +860,7 @@ class ActionBackend:
                     adapter.uncertain = True
                     raise ValueError("The stage returned no command completion ID.")
                 manager._wait(operation, motor, position, result["command_id"])
-            manager._check(operation)
+            manager._stage(operation)
             with manager.lock:
                 operation.update(
                     status="completed",
@@ -896,11 +915,20 @@ class ActionBackend:
             status = "failed" if result.get("outcome") == "refused" else "unknown"
             return {"status": status, "result": result, "error": result.get("error")}
         identifier = result.get("command_id")
-        if not identifier:
+        if not isinstance(identifier, str) or not identifier:
             return {
                 "status": "unknown",
                 "result": result,
                 "error": "The service returned no command completion ID.",
+            }
+        instance, client = result.get("instance"), result.get("client")
+        if not all(isinstance(value, str) and value.strip() for value in (instance, client)):
+            return {
+                "status": "unknown",
+                "result": result,
+                "error": (
+                    "The service did not identify the process and client that accepted the command."
+                ),
             }
         deadline = time.monotonic() + WAIT_SECONDS
         while time.monotonic() < deadline:
@@ -909,7 +937,24 @@ class ActionBackend:
                 raise ValueError("The simulated source reference changed during the command.")
             state = self.service.console.read(device, "api/state")
             self._mode(state)
+            if state.get("instance") != instance:
+                return {
+                    "status": "unknown",
+                    "result": result,
+                    "error": (
+                        "The service process changed or its identity is unavailable. "
+                        "The command outcome is unknown."
+                    ),
+                }
             last = state.get("last_command") or {}
+            if last.get("id") == identifier and (
+                last.get("action") != spec["command"] or last.get("client") != client
+            ):
+                return {
+                    "status": "unknown",
+                    "result": result,
+                    "error": "The command result does not match the accepted action and client.",
+                }
             if last.get("id") == identifier and last.get("result") in {
                 "ok",
                 "failed",
@@ -931,7 +976,7 @@ class ActionBackend:
                     continue
                 return {
                     "status": status,
-                    "result": {"simulated": self.simulated, "command": last},
+                    "result": {"simulated": self.simulated, "instance": instance, "command": last},
                     "error": last.get("message") if status == "failed" else None,
                 }
             context.progress(command_id=identifier, phase="waiting")

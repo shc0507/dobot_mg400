@@ -224,7 +224,7 @@ def test_mock_catalog_contract_and_real_stage_handlers_update_observations(make_
 def test_http_history_is_client_private_and_survives_reconnect(make_rig):
     rig = make_rig()
     paired, _, headers = connect(rig)
-    request = envelope(rig, "turret.begin", {"new": True, "name": "HTTP simulation"})
+    request = envelope(rig, "transfer.profile.new", {"name": "HTTP simulation"})
     result = submit(rig, headers, request)
     assert result["status"] == "succeeded", result
     assert result["params"]["name"] == "HTTP simulation"

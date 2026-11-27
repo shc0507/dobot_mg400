@@ -70,7 +70,7 @@ Older Console versions may omit it.
 ## Definitions and identity
 
 Read `GET /lab/api/agent/discovery` before decoding state. Discovery version `1` provides `mode`, `boot_id`, `contract_version`, `contract_id`, `contract_url`, `endpoints`,
-`release` and control metadata. Follow the advertised endpoint paths on the selected Console origin. The current read bundle is `agent-connect`, version `1.1.0`, with JSON Schema
+`release` and control metadata. Follow the advertised endpoint paths on the selected Console origin. The current read bundle is `agent-connect`, version `1.2.0`, with JSON Schema
 `2020-12`. Its bundle metadata reports Phase `7`. The control contract reports version `6` and Phase `8`. The command catalog reports version `1`. These are different version
 namespaces. Do not use a phase number as the compatibility test.
 
@@ -98,8 +98,8 @@ human-directed adaptation.
 | `control_epoch` | Exact returned string for current ownership. Do not parse or manufacture it. |
 | `client_id` | Paired client identity. Command request IDs belong to this client. |
 | `session_id` | Current connection identity. A replacement session needs a new grant. |
-| Device `instance` | Optional source-process identity. Missing identity means unknown continuity. |
-| Reference revision | Coordinate-reference identity. A changed revision invalidates dependent assumptions. |
+| Device `instance` | Source-process identity. Device reconnect preserves it. Service restart changes it. Missing identity means unknown continuity. |
+| `reference_revision` | Coordinate-reference revision within a service process. Use it with `instance`. The same revision after restart does not establish continuity. |
 
 Discovery sets `identity_scope: "read_stream"`. Control status sets `identity_scope: "command_control"`. Never substitute the read boot ID or digest in a command envelope. Restart
 invalidates sessions and grants, even when the release remains unchanged.
@@ -136,6 +136,15 @@ conversions from numeric values.
 
 `devices.stage.values.stage_reference` uses the same native cache snapshot as that frame. Its value is `null` when unavailable. Before a protected stage decision, compare this
 value with `choices.stage_context.preconditions.stage_reference`. A newer choices response alone cannot establish which calibration reference produced a retained frame.
+
+A present `stage_reference` requires `instance`, `reference_revision`, `reference_source`, `stop_epoch` and `limits_digest`. Copy the real service `instance` without modification.
+The physical legacy fallback reports a missing identity as `instance: null` only when its revision is also absent. A revision without an instance is invalid.
+A missing revision uses `reference_revision: null` and `reference_source: "limits_port_calibration"`.
+These nulls do not establish process continuity. Never manufacture an identity from a revision, limits, port, timestamp or Console boot ID.
+
+Read bundle `1.2.0` changes the bundle digest and requires this nullable identity field. The stage-context envelope retains `version: 1`.
+Older adapters must review this guide, update their supported schema and digest, and preserve the complete stage context before using protected actions.
+The local model command path rejects a context that omits `instance`. A supplied reference without identity cannot match a service that exposes its real identity.
 
 `cached_state` adds bounded native `values`, a `units` map, `complete`, `omitted` and `omitted_count`. Unit keys are JSON Pointer paths within `cached_state.values`. The copy
 excludes private fields, paths, images, thermal matrices and other oversized or unsupported values. Check omissions before treating this copy as complete. `data_gaps` reports
@@ -197,8 +206,12 @@ This includes stage movement, saved targets and transfer-profile edits. Bind mod
 7. Copy the original `preconditions` into the command envelope. Never replace them with the newer values.
 
 The model selects the action and parameters. Connector code supplies the original preconditions. Server checks reject changes after the connector's final comparison and before
-dispatch. This binding covers stage calibration references and the selected transfer profile. It does not freeze arbitrary sensor readings or check every position-derived
-decision. Draft contents and other profiles named by action parameters are outside this binding. It adds no device process identity checks.
+dispatch. This binding covers the stage process identity, calibration reference and selected transfer profile. It does not freeze arbitrary sensor readings or check every
+position-derived decision. Draft contents and other profiles named by action parameters are outside this binding.
+When both identity and revision are available, guarded stage commands carry `expected_instance` and `expected_reference_revision` to the native service.
+The service checks both before accepting movement. Queued decisions and later axes retain the original reference, including across device-lease acquisition.
+Legacy stage movement retains native limits, Stop epochs and command-ID checks. Without a service instance, this path cannot establish process continuity.
+Instance-only legacy state retains its process check. A revision without an instance cannot authorize movement. Reject an operation if a previously missing identity field appears.
 
 The command digest hashes `{"version":1,"actions":[...]}` after sorting actions by `id`. Remove only `available` and `reason` from each action before hashing. Use sorted object
 keys, compact separators, UTF-8 and Python JSON's default ASCII escaping. Reject nonfinite numbers. Preserve the server's numeric encoding. This differs from the read-bundle
@@ -221,7 +234,7 @@ Submit `POST /commands` with the session Bearer token. The following template is
 
 Replace `params` with the selected action's checked parameters. Send only these fields. `preconditions` is optional. Both objects must contain finite JSON values. Request IDs match
 `[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}`. The other identity strings and action are nonempty and at most `256` characters. The body limit is `6 * 1024 * 1024 + 1024` bytes. Supported
-stage preconditions are `stage_reference`, `profile_id` and `profile_digest`. `stage_reference` accepts `reference_revision`, `stop_epoch`, `limits_digest` and `reference_source`.
+stage preconditions are `stage_reference`, `profile_id` and `profile_digest`. `stage_reference` accepts `instance`, `reference_revision`, `stop_epoch`, `limits_digest` and `reference_source`.
 These preconditions apply only to stage actions with the reviewed `transfer` or `profile` route. Native actions such as `stage.calibrate` and `stage.clear_fault` use `{}`.
 Other device actions also use `{}`. Stop keeps its independent path. For compatibility, the server accepts omitted preconditions or `{}` from older and manual clients.
 The local model command path refuses protected stage actions without the captured context. Questions and other device actions do not require stage context. Read
@@ -295,6 +308,11 @@ Records include identity, action, parameters, preconditions, `status`, timestamp
 `accepted`, `running` and `cancelling`. Terminal statuses are `succeeded`, `failed`, `rejected`, `stopped` and `unknown`. The Console admits only `1` active normal operation at a
 time. A completed furnace command does not mean the thermal sequence finished. Read native sequence state and measurement quality separately.
 
+For the native `command` route, retain the accepted `command_id`, service `instance`, native action and service `client`. This client is the Console's device-lease client,
+not the paired agent's `client_id`. Completion requires the same process and matching `last_command.id`, `last_command.action` and `last_command.client`.
+Missing acceptance identity, changed process identity or conflicting completion identity produces `unknown`. A reused command ID from another process cannot prove completion.
+Query the saved operation after an unknown result. Do not replay the command automatically.
+
 An identical request ID and canonical body return the saved record without another dispatch. A different body under that client's existing ID returns HTTP `409`. Omitting
 `preconditions` and sending `{}` produce different submitted bodies. Preserve the exact body for recovery. Duplicates and result reads require a current session. After a lost
 response, query the original request ID. Do not automatically submit movement with a new ID. Restart changes unfinished stored operations to `unknown` and never replays them.
@@ -334,8 +352,8 @@ sequence, recovery and orphan behavior. Report disconnected gas controllers and 
 The Console constructor controls physical dispatch. Requests cannot enable it. The library defaults to disabled physical dispatch. The 8082 physical Console advertises enabled
 commands, physical commands, furnace control and Stop. The simulator advertises simulated commands and Stop, with physical commands and furnace control disabled. Check the current
 mode flags rather than assuming deployment from the URL. Reviewed actions preserve device leases, native speed and alarm checks, stage travel limits, microscope focus travel budgets and switching-height checks, and temperature and ramp limits.
-Further device-service process-ID integration and deployment remain deferred. Console boot identity, client identity and control epoch are active now. Do not invent missing service
-identities, source times, capture times or reference continuity.
+Before deployment, reconcile these checks with the target shared services and check their actual identity and command fields.
+Console boot identity, client identity and control epoch remain independent of device identity. Do not invent missing service identities, source times, capture times or reference continuity.
 
 Test the external adapter offline for these cases:
 
@@ -345,6 +363,8 @@ Test the external adapter offline for these cases:
 - Invitation expiry, observer-only connection, explicit grant, reconnect, token expiry and heartbeat loss.
 - Catalog schema checks, runtime choices, missing or malformed stage context, stale references, changed epochs and server-side physical-mode restrictions.
 - Stage context changes during state capture, model interpretation or submission, with original preconditions preserved and unrelated actions available.
+- Stage restart with unchanged revision, limits and Stop epoch, including restart during lease acquisition or between axes.
+- Missing acceptance identity and reused command IDs with a changed process, action or service client, without automatic replay.
 - Lost command responses, duplicate IDs, changed bodies, asynchronous rejection, cancellation and unknown outcomes.
 - Stop without authority, repeated Stop delivery, fallback without credentials and unconfirmed device outcomes.
 - Furnace command completion versus sequence completion, with no new shutdown policy after control loss.

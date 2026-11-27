@@ -364,29 +364,27 @@ def test_selected_profile_switches_with_only_lens_markers(demo_rig, monkeypatch,
     assert sum(abs(int(move.split()[-1])) for move in moves if move.startswith("FOCUS")) <= 1000
 
 
-def test_unknown_recorded_focus_still_requires_live_clearance_before_turret_movement(
-    demo_rig, monkeypatch
-):
+def test_unknown_recorded_focus_allows_direct_selection_at_current_height(demo_rig, monkeypatch):
     rig = demo_rig()
     begin(rig, reference=False)
     profile = teach_all(rig)
     assert turret(rig, "select", {"id": profile["profile_id"]}).status_code == 200
     establish_manual_reference(rig)
     assert dispatch(rig, "focus_move", steps=30)["last_command"]["result"] == "ok"
-    wait_focus_done = rig.service._motor.wait_focus_done
-
-    def displaced_after_focus_move(*args, **kwargs):
-        result = wait_focus_done(*args, **kwargs)
-        with rig.port.lock:
-            rig.port.sim.focus.position = 1
-        return result
-
-    monkeypatch.setattr(rig.service._motor, "wait_focus_done", displaced_after_focus_move)
+    height = rig.port.focus_origin + rig.port.sim.focus.position
+    monkeypatch.setattr(
+        rig.service._motor,
+        "wait_focus_done",
+        lambda *args, **kwargs: pytest.fail("Direct lens selection moved focus"),
+    )
     before = len(rig.port.commands)
     state = dispatch(rig, "select_objective", id=2)
-    assert state["last_command"]["result"] == "failed"
-    assert "autofocus" in state["last_command"]["message"].lower()
-    assert not any(command.startswith("OBJ MOVE") for command in rig.port.commands[before:])
+    assert state["last_command"]["result"] == "ok"
+    assert state["objective_id"] == 2 and state["last_result"]["autofocus_run"] is False
+    assert rig.port.focus_origin + rig.port.sim.focus.position == height
+    commands = rig.port.commands[before:]
+    assert any(command.startswith("OBJ MOVE") for command in commands)
+    assert not any(command.startswith("FOCUS MOVE") for command in commands)
 
 
 def test_profile_switch_checks_fresh_x_at_verified_focus(demo_rig, monkeypatch):

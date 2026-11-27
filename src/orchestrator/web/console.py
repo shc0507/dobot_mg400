@@ -516,9 +516,13 @@ class Console:
                     }
             self.service.events.add("info", "Console command sent.", device=device, action=action)
             command_id = result.get("command_id") if isinstance(result, dict) else None
+            accepted_state = result.get("state") if isinstance(result, dict) else None
+            instance = accepted_state.get("instance") if isinstance(accepted_state, dict) else None
             return {
                 "outcome": "accepted",
                 "command_id": command_id if isinstance(command_id, str) else None,
+                "instance": instance if isinstance(instance, str) else None,
+                "client": adapter.identity,
             }
         finally:
             if fresh is not None:

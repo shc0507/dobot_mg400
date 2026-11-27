@@ -121,12 +121,14 @@ def bundle():
                     "stage_reference": {
                         "type": ["object", "null"],
                         "required": [
+                            "instance",
                             "reference_revision",
                             "reference_source",
                             "stop_epoch",
                             "limits_digest",
                         ],
                         "properties": {
+                            "instance": {"type": ["string", "null"], "minLength": 1},
                             "reference_revision": {"type": ["integer", "null"], "minimum": 0},
                             "reference_source": {
                                 "enum": ["reference_revision", "limits_port_calibration"]
@@ -264,7 +266,7 @@ def bundle():
     return {
         "$schema": DIALECT,
         "contract": "agent-connect",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "phase": 7,
         "actions": {},
         "semantics": {

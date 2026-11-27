@@ -47,6 +47,20 @@ def test_supplement_cache_schema_and_instance_mismatch():
         jsonschema.Draft202012Validator(schema).validate(row)
 
 
+def test_unidentified_supplement_remains_available_without_a_continuity_claim():
+    state = provider({"thermal": {}, "vision": {}})
+    summaries = {
+        name: {"instance": None, "available": True, "quality": "valid"}
+        for name in ("thermal", "vision")
+    }
+    state.observations_provider = lambda: summaries
+    for row in state()["devices"].values():
+        assert row["observations"]["available"]
+        assert row["observations"]["quality"] == "unknown"
+        assert row["observations"]["reason"] == "source_identity_unavailable"
+    assert all(row["quality"] == "valid" for row in summaries.values())
+
+
 def test_actual_device_shapes_and_schema():
     states = {
         "robot": {

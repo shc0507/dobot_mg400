@@ -18,6 +18,7 @@ class NativeConsole(StageConsole):
     def __init__(self):
         super().__init__()
         self.state.update(demo=False, port="/dev/stage")
+        self.state.pop("instance")
         self.state.pop("reference_revision")
         self.reads = []
         self.sent = []
@@ -55,7 +56,8 @@ class NativeConsole(StageConsole):
             fields["steps"] = {"type": "array", "minItems": 1, "items": {"type": "object"}}
             fields["end_gas"] = {"type": "object"}
         self.states = {
-            device: {"demo": False, "last_command": None} for device in self.descriptions
+            device: {"demo": False, "instance": device + "-process", "last_command": None}
+            for device in self.descriptions
         }
         self.states["stage"] = self.state
         self.states["robot"].update(actual=[100, 0, 50, 0], feedback_fresh=True)
@@ -81,8 +83,18 @@ class NativeConsole(StageConsole):
             return super().command(device, page, action, params)
         self.sent.append((device, action, copy.deepcopy(params)))
         identifier = str(len(self.sent))
-        self.states[device]["last_command"] = {"id": identifier, "result": "ok", "action": action}
-        return {"outcome": "accepted", "command_id": identifier}
+        self.states[device]["last_command"] = {
+            "id": identifier,
+            "result": "ok",
+            "action": action,
+            "client": page,
+        }
+        return {
+            "outcome": "accepted",
+            "command_id": identifier,
+            "instance": self.states[device].get("instance"),
+            "client": page,
+        }
 
     def stop(self, device):
         self.stopped.append(device)
@@ -203,12 +215,65 @@ def test_human_microscope_calibration_cannot_enter_agent_dispatch(live, action):
 )
 def test_fixed_live_actions_use_console_command_and_confirm_native_completion(live, action, params):
     backend, console, _ = live
+    console.states[SPECS[action]["device"]].setdefault("instance", "stage-process")
     assert next(row for row in backend.catalog() if row["id"] == action)["available"]
     result = run(backend, action, params)
     assert console.sent == [(SPECS[action]["device"], SPECS[action]["command"], params)]
     assert console.takes == 1
     assert result["status"] == "succeeded" and result["result"]["simulated"] is False
     assert result["result"]["command"]["result"] == "ok"
+
+
+@pytest.mark.parametrize("instance", [None, "", " ", "new-process"])
+def test_native_completion_rejects_reused_command_id_after_identity_loss(
+    live, monkeypatch, instance
+):
+    backend, console, _ = live
+    command = console.command
+
+    def changed(*args):
+        accepted = command(*args)
+        console.states["microscope"]["instance"] = instance
+        return accepted
+
+    monkeypatch.setattr(console, "command", changed)
+    result = run(backend, "microscope.snapshot", {})
+    assert result["status"] == "unknown"
+    assert "process" in result["error"]
+    assert len(console.sent) == 1 and not console.stopped
+
+
+@pytest.mark.parametrize("field", ["instance", "client", "command_id"])
+def test_native_completion_requires_acceptance_identity(live, monkeypatch, field):
+    backend, console, _ = live
+    command = console.command
+
+    def unidentified(*args):
+        accepted = command(*args)
+        accepted.pop(field)
+        return accepted
+
+    monkeypatch.setattr(console, "command", unidentified)
+    result = run(backend, "microscope.snapshot", {})
+    assert result["status"] == "unknown"
+    assert len(console.sent) == 1 and not console.stopped
+
+
+@pytest.mark.parametrize("field", ["action", "client"])
+def test_native_completion_requires_accepted_action_and_client(live, monkeypatch, field):
+    backend, console, _ = live
+    command = console.command
+
+    def replaced(*args):
+        accepted = command(*args)
+        console.states["microscope"]["last_command"][field] = "other"
+        return accepted
+
+    monkeypatch.setattr(console, "command", replaced)
+    result = run(backend, "microscope.snapshot", {})
+    assert result["status"] == "unknown"
+    assert "action and client" in result["error"]
+    assert len(console.sent) == 1 and not console.stopped
 
 
 def test_live_autofocus_catalog_excludes_legacy_full_mode(live):
@@ -376,10 +441,47 @@ def test_stage_motion_without_deferred_process_metadata_uses_native_epoch_and_li
     reference = plan["references"]["stage_reference"]
     assert reference["reference_revision"] is None
     assert reference["reference_source"] == "limits_port_calibration"
-    assert "instance" not in reference
+    assert reference["instance"] is None
     assert backend.execute(plan, Context())["status"] == "succeeded"
     assert [move["motor"] for move in console.moves] == ["bottom", "top"]
     assert all(move["stop_epoch"] == console.state["stop_epoch"] for move in console.moves)
+
+
+@pytest.mark.parametrize("instance", ["", " ", True, 12])
+def test_invalid_live_stage_identity_is_not_treated_as_legacy(live, instance):
+    backend, console, _ = live
+    console.state["instance"] = instance
+    with pytest.raises(ValueError, match="process identity"):
+        backend.prepare("stage.position", {"motor": "top", "position": 1}, {}, PAGE)
+    assert not console.moves and console.takes == 0
+
+
+def test_legacy_stage_reference_preconditions_keep_explicit_missing_identity(live):
+    backend, console, _ = live
+    reference = backend._stage_reference(console.state)
+    assert reference["instance"] is None
+    for expected in (
+        reference,
+        {key: value for key, value in reference.items() if key != "instance"},
+    ):
+        plan = backend.prepare(
+            "stage.position", {"motor": "top", "position": 1}, {"stage_reference": expected}, PAGE
+        )
+        assert plan["references"]["stage_reference"]["instance"] is None
+    console.state["instance"] = "stage-process-current"
+    with pytest.raises(ValueError, match="no longer current"):
+        backend.prepare(
+            "stage.position", {"motor": "top", "position": 1}, {"stage_reference": reference}, PAGE
+        )
+    assert not console.moves and console.takes == 0
+
+
+def test_live_stage_revision_without_instance_refuses_preparation(live):
+    backend, console, _ = live
+    console.state["reference_revision"] = 3
+    with pytest.raises(ValueError, match="process identity"):
+        backend.prepare("stage.position", {"motor": "top", "position": 1}, {}, PAGE)
+    assert not console.moves and console.takes == 0
 
 
 @pytest.mark.parametrize("field", ["port", "calibration", "upper_limit_rotations", "stop_epoch"])

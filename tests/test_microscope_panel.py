@@ -742,6 +742,7 @@ def test_active_recording_authority_is_irreversible(recording_rig, revoke):
 def test_jog_past_focus_travel_budget_keeps_recording_and_sends_no_move(recording_rig):
     rig = recording_rig
     install_visual_profile(rig)
+    rig.service.set_focus_travel_limit({"pulses": 1000}, "operator")
     ident = "c" * 32
     rig.command("start_recording", {"recording_id": ident, "mode": "live"})
     # This is an operation travel budget, not an absolute physical position limit.

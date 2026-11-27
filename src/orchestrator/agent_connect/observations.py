@@ -45,6 +45,7 @@ def _missing(reason, *, instance=None):
 
 def thermal_summary(response):
     """Keep scalar statistics from one frame. Never keep thermal matrices."""
+    instance = _text(response.get("instance"), 128)
     stats = response.get("stats") or {}
     compact = {
         key: _number(stats.get(key)) for key in ("mean_celsius", "stddev_celsius", "range_celsius")
@@ -63,9 +64,9 @@ def thermal_summary(response):
         }
     return {
         "available": True,
-        "quality": "valid",
-        "reason": None,
-        "instance": _text(response.get("instance"), 128),
+        "quality": "valid" if instance else "unknown",
+        "reason": None if instance else "source_identity_unavailable",
+        "instance": instance,
         "frame_sequence": _number(response.get("sequence")),
         "source": _text(response.get("source")),
         "temperature_unit": "celsius",
@@ -305,7 +306,7 @@ class SharedObservations:
         if name == "vision" and str(response.get("job_id")) != key[1]:
             self._store(name, _missing("result_mismatch", instance=instance))
             return
-        if name == "vision" and instance is None:
+        if instance is None:
             # A response alone cannot establish continuity with an unidentified cache.
             response = {**response, "instance": None, "result_source": "unidentified_result"}
         value = thermal_summary(response) if name == "thermal" else vision_summary(response)
@@ -383,7 +384,7 @@ class SharedObservations:
                 row["frame_age_s"] = None if frame_age is None else frame_age + age
                 row["quality"] = (
                     "unknown"
-                    if frame_age is None
+                    if frame_age is None or not row.get("instance")
                     else ("stale" if row["frame_age_s"] > THERMAL_MAX_AGE_S else "valid")
                 )
             result[name] = row

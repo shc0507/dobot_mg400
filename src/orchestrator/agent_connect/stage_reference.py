@@ -5,8 +5,11 @@ import json
 
 
 def stage_reference(state, *, allow_legacy=False):
+    instance = state.get("instance")
     revision, epoch = state.get("reference_revision"), state.get("stop_epoch")
     legacy = allow_legacy and revision is None
+    if not (isinstance(instance, str) and instance.strip()) and not (legacy and instance is None):
+        raise ValueError("The stage has no current reference process identity.")
     if (
         (not legacy and (type(revision) is not int or revision < 0))
         or type(epoch) is not int
@@ -32,6 +35,7 @@ def stage_reference(state, *, allow_legacy=False):
     }
     payload = json.dumps(limits, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return {
+        "instance": instance,
         "reference_revision": revision,
         "reference_source": "limits_port_calibration" if legacy else "reference_revision",
         "stop_epoch": epoch,

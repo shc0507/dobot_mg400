@@ -8,7 +8,7 @@ from labkit.errors import ServiceError
 from .actions import SPECS
 
 CHANGED = (
-    "The stage calibration or selected profile changed. "
+    "The stage reference or selected profile changed. "
     "No command was sent. Send the instruction again to use the current values."
 )
 UNAVAILABLE = (
@@ -28,13 +28,19 @@ def _hash(value):
 
 def _reference(value):
     if not isinstance(value, dict) or set(value) != {
+        "instance",
         "reference_revision",
         "reference_source",
         "stop_epoch",
         "limits_digest",
     }:
         return False
+    instance = value["instance"]
+    if instance is not None and (not isinstance(instance, str) or not instance.strip()):
+        return False
     revision, source = value["reference_revision"], value["reference_source"]
+    if instance is None and revision is not None:
+        return False
     if source == "reference_revision":
         if type(revision) is not int or revision < 0:
             return False

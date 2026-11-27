@@ -158,6 +158,22 @@ def test_capture_time_is_not_invented_and_age_advances_without_io():
     observations.close()
 
 
+@pytest.mark.parametrize("response_instance", [None, INSTANCE])
+def test_missing_thermal_state_identity_does_not_claim_continuity(response_instance):
+    service, clock = Service(), Clock()
+    service.rows["thermal"]["state"].pop("instance")
+    service.thermal.responses["api/frame?summary=1"]["instance"] = response_instance
+    observations = SharedObservations(service, clock=clock)
+    observations.refresh()
+    value = observations.snapshot()["thermal"]
+    assert value["available"] and value["stats"]["mean_celsius"] == 25
+    assert value["instance"] is None and value["quality"] == "unknown"
+    assert value["reason"] == "source_identity_unavailable"
+    clock.now = 1
+    assert observations.snapshot()["thermal"]["quality"] == "unknown"
+    observations.close()
+
+
 def test_summary_keeps_bounded_items_and_omits_all_image_arrays():
     payload = thermal()
     payload["raw"] = payload["ir"] = payload["temperatures_c"] = [[1]]

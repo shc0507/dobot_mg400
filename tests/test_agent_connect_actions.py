@@ -54,6 +54,7 @@ class StageConsole:
             adapter=SimpleNamespace(state=lambda: {}, owned=lambda state: True)
         )
         self.state = {
+            "instance": "stage-process-a",
             "demo": True,
             "connected": True,
             "reference_revision": 3,
@@ -364,7 +365,7 @@ def test_saved_profile_change_rejects_queued_motion_before_take(rig):
     assert console.takes == 0 and not console.moves
 
 
-@pytest.mark.parametrize("missing", ["reference_revision", "stop_epoch"])
+@pytest.mark.parametrize("missing", ["instance", "reference_revision", "stop_epoch"])
 def test_missing_stage_reference_never_becomes_valid(rig, missing):
     backend, console = rig
     console.state.pop(missing)

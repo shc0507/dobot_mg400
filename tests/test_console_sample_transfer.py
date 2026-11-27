@@ -49,6 +49,7 @@ class Adapter:
         self.after_complete = None
         self.before_move = None
         self.overrides = {}
+        self.reference = {}
 
     def owns(self, page):
         return self.control and page == PAGE
@@ -64,6 +65,7 @@ class Adapter:
             "connected": True,
             "feedback_fresh": True,
             "stop_epoch": self.epoch,
+            **self.reference,
             "port": "test-stage",
             "last_command": copy.deepcopy(self.last),
             "motors": [
@@ -90,6 +92,11 @@ class Adapter:
     def position(self, page, **params):
         if self.before_move:
             self.before_move()
+        if "expected_instance" in params and (
+            params["expected_instance"] != self.reference.get("instance")
+            or params["expected_reference_revision"] != self.reference.get("reference_revision")
+        ):
+            return {"outcome": "refused", "error": "The stage process or reference changed."}
         if params["stop_epoch"] != self.epoch:
             return {"outcome": "refused", "error": "Stage motion was cancelled."}
         assert self.moving is None, "Axes must never overlap"
@@ -475,6 +482,128 @@ def test_stop_between_preflight_and_command_is_rejected_by_epoch(rig):
     manager.start(PAGE, "fully_in")
     assert finish(manager)["status"] == "failed"
     assert adapter.moves == []
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"instance": "stage-b", "reference_revision": 3},
+        {"instance": "stage-a", "reference_revision": 4},
+        {"reference_revision": 3},
+        {"instance": "stage-a"},
+    ],
+)
+@pytest.mark.parametrize("kind", ["named", "coordinates", "jog"])
+def test_stage_reference_change_during_motion_cannot_complete_or_continue(rig, changed, kind):
+    manager, adapter = rig
+    adapter.reference = {"instance": "stage-a", "reference_revision": 3}
+    adapter.finish_move.clear()
+    if kind == "named":
+        manager.start_position(PAGE, "Pickup")
+    elif kind == "coordinates":
+        manager.start_coordinates(PAGE, {"x": 6, "y": 5})
+    else:
+        manager.jog(PAGE, "bottom", "ccw")
+    assert adapter.started.wait(1)
+    adapter.reference = changed
+    # Keep the old stop epoch and command ID to reproduce a restart with reused counters.
+    adapter.finish_move.set()
+    result = finish(manager)
+    assert result["status"] == "failed"
+    assert "process or reference changed" in result["message"]
+    assert len(adapter.moves) == 1
+    assert adapter.moves[0]["expected_instance"] == "stage-a"
+    assert adapter.moves[0]["expected_reference_revision"] == 3
+    assert adapter.stops == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"instance": "stage-b", "reference_revision": 3},
+        {"instance": "stage-a", "reference_revision": 4},
+    ],
+)
+@pytest.mark.parametrize("kind", ["coordinates", "jog"])
+def test_native_reference_guard_rejects_change_after_last_stage_read(rig, changed, kind):
+    manager, adapter = rig
+    adapter.reference = {"instance": "stage-a", "reference_revision": 3}
+    adapter.before_move = lambda: adapter.reference.update(changed)
+    if kind == "coordinates":
+        manager.start_coordinates(PAGE, {"insert": 8})
+    else:
+        manager.jog(PAGE, "insert", "ccw")
+    assert finish(manager)["status"] == "failed"
+    assert adapter.moves == []
+
+
+def test_stage_restart_after_final_move_cannot_report_completion(rig):
+    manager, adapter = rig
+    adapter.reference = {"instance": "stage-a", "reference_revision": 3}
+    wait = manager._wait
+
+    def restarted(*args):
+        wait(*args)
+        adapter.reference["instance"] = "stage-b"
+
+    manager._wait = restarted
+    manager.start_coordinates(PAGE, {"insert": 8})
+    assert finish(manager)["status"] == "failed"
+    assert len(adapter.moves) == 1
+
+
+def test_legacy_stage_moves_without_synthetic_reference_fields(rig):
+    manager, adapter = rig
+    manager.start_position(PAGE, "Pickup")
+    assert finish(manager)["status"] == "completed"
+    assert len(adapter.moves) == 3
+    assert all("expected_instance" not in move for move in adapter.moves)
+    assert all("expected_reference_revision" not in move for move in adapter.moves)
+    assert manager.operation["instance"] is None
+    assert manager.operation["reference_revision"] is None
+
+
+@pytest.mark.parametrize("command_id", [None, "", " ", 3])
+@pytest.mark.parametrize("identified", [False, True])
+def test_unidentified_command_never_completes_or_starts_the_next_axis(rig, command_id, identified):
+    manager, adapter = rig
+    if identified:
+        adapter.reference = {"instance": "stage-a", "reference_revision": 3}
+    position = adapter.position
+
+    def unidentified(*args, **kwargs):
+        result = position(*args, **kwargs)
+        adapter.stage_state(PAGE)
+        return {**result, "command_id": command_id}
+
+    adapter.position = unidentified
+    manager.start_position(PAGE, "Pickup")
+    result = finish(manager)
+    assert result["status"] == "failed"
+    assert "no command completion ID" in result["message"]
+    assert adapter.values["bottom"] == 5
+    assert len(adapter.moves) == 1
+    assert adapter.stops == 1
+
+
+def test_stage_without_reference_revision_still_rejects_known_process_change(rig):
+    manager, adapter = rig
+    adapter.reference = {"instance": "stage-a"}
+    adapter.after_complete = lambda: adapter.reference.update(instance="stage-b")
+    manager.start_position(PAGE, "Pickup")
+    assert finish(manager)["status"] == "failed"
+    assert len(adapter.moves) == 1
+    assert "expected_instance" not in adapter.moves[0]
+
+
+def test_legacy_stage_cannot_adopt_a_new_process_during_motion(rig):
+    manager, adapter = rig
+    adapter.after_complete = lambda: adapter.reference.update(
+        instance="stage-a", reference_revision=3
+    )
+    manager.start_position(PAGE, "Pickup")
+    assert finish(manager)["status"] == "failed"
+    assert len(adapter.moves) == 1
 
 
 def test_stop_between_axes_prevents_continuation(rig):

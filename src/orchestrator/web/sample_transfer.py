@@ -222,9 +222,15 @@ class SampleTransfer:
             "error": error,
         }
 
-    def _begin(self, page, target, epoch, total):
+    def _begin(self, page, target, epoch, total, *, stage=None):
         if type(epoch) is not int:
             raise ValueError("Update the stage service to support guarded encoder moves.")
+        stage = stage or {}
+        instance, revision = stage.get("instance"), stage.get("reference_revision")
+        if instance is not None and (not isinstance(instance, str) or not instance.strip()):
+            raise ValueError("The stage has no current process identity.")
+        if revision is not None and (type(revision) is not int or revision < 0 or instance is None):
+            raise ValueError("The stage has no current process identity or reference revision.")
         with self.lock:
             if self.operation and not self.operation["done"].is_set():
                 raise ServiceError(409, "Wait for the current stage operation to stop.")
@@ -239,6 +245,8 @@ class SampleTransfer:
                 "message": "",
                 "started": time.monotonic(),
                 "stop_epoch": epoch,
+                "instance": instance,
+                "reference_revision": revision,
                 "cancelled": threading.Event(),
                 "done": threading.Event(),
                 "completed_axes": 0,
@@ -288,6 +296,15 @@ class SampleTransfer:
         self._check(operation)
         stage = self.adapter.stage_state(operation["page"])
         self._check(operation)
+        if (
+            stage.get("instance") != operation["instance"]
+            or stage.get("reference_revision") != operation["reference_revision"]
+            or (
+                operation["reference_revision"] is not None
+                and type(stage.get("reference_revision")) is not int
+            )
+        ):
+            raise ValueError("The stage process or reference changed. Start a new move.")
         if stage.get("stop_epoch") != operation["stop_epoch"]:
             raise Cancelled()
         if not stage.get("connected"):
@@ -308,6 +325,8 @@ class SampleTransfer:
         return stage
 
     def _wait(self, operation, motor, target, command_id):
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("The stage returned no command completion ID.")
         while True:
             stage = self._stage(operation)
             axes = motors(stage)
@@ -324,9 +343,7 @@ class SampleTransfer:
                     raise ValueError(last.get("message") or "The stage command failed.")
             if idle(axis) and axis.get("cooldown", 0) <= 0:
                 # The command result must be known before accepting even a near target.
-                if command_id is None or (
-                    last.get("id") == command_id and last.get("result") == "ok"
-                ):
+                if last.get("id") == command_id and last.get("result") == "ok":
                     if (
                         not finite(axis.get("tolerance"))
                         or abs(axis["position_rotations"] - target) > axis["tolerance"]
@@ -358,6 +375,14 @@ class SampleTransfer:
                         "speed": min(SPEED, axis.get("max_speed", SPEED)),
                         "stop_epoch": operation["stop_epoch"],
                     }
+                    if (
+                        operation["instance"] is not None
+                        and operation["reference_revision"] is not None
+                    ):
+                        params.update(
+                            expected_instance=operation["instance"],
+                            expected_reference_revision=operation["reference_revision"],
+                        )
                     if jog is None:
                         result = self.adapter.position(operation["page"], position=target, **params)
                     else:
@@ -370,6 +395,7 @@ class SampleTransfer:
                 self._check(operation)
                 with self.lock:
                     operation["completed_axes"] += 1
+            self._stage(operation)
             with self.lock:
                 self._check(operation)
                 operation.update(status="completed", phase="complete", message="Position reached.")
@@ -400,7 +426,7 @@ class SampleTransfer:
         return None
 
     def _launch(self, page, label, stage, targets, jog=None):
-        operation = self._begin(page, label, stage.get("stop_epoch"), len(targets))
+        operation = self._begin(page, label, stage.get("stop_epoch"), len(targets), stage=stage)
         threading.Thread(target=self._run, args=(operation, targets, jog), daemon=True).start()
         return self.operation_state(page)
 

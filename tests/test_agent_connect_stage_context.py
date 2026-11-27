@@ -88,6 +88,8 @@ def test_choices_share_one_stage_and_profile_snapshot_without_device_io(cached, 
         (lambda entry: entry.update(age_s=None), "age is unavailable"),
         (lambda entry: entry["state"].update(connected=False), "disconnected"),
         (lambda entry: entry["state"].update(demo=False), "different device mode"),
+        (lambda entry: entry["state"].pop("instance"), "no usable reference"),
+        (lambda entry: entry["state"].update(instance=""), "no usable reference"),
         (lambda entry: entry["state"].pop("reference_revision"), "no usable reference"),
         (lambda entry: entry["state"].pop("stop_epoch"), "no usable reference"),
         (lambda entry: entry["state"].update(stop_epoch=True), "no usable reference"),
@@ -120,20 +122,39 @@ def test_context_without_selected_profile_keeps_available_axis_choices(cached):
     assert not axes[0]["available"] and axes[1]["available"]
 
 
-def test_physical_context_keeps_legacy_reference_fallback(cached):
+@pytest.mark.parametrize("missing", [("reference_revision",), ("instance", "reference_revision")])
+def test_physical_context_keeps_legacy_reference_fallback(cached, missing):
     backend, _, entry, _ = cached
     backend.service.demo = backend.simulated = False
     backend.physical = True
     entry["state"]["demo"] = False
-    entry["state"].pop("reference_revision")
+    for key in missing:
+        entry["state"].pop(key)
     context = backend.choices(PAGE)["stage_context"]
     assert context["available"]
     reference = context["preconditions"]["stage_reference"]
-    assert reference["reference_revision"] is None
-    assert reference["reference_source"] == "limits_port_calibration"
+    assert reference["instance"] == entry["state"].get("instance")
+    assert reference["reference_revision"] == entry["state"].get("reference_revision")
+    assert reference["reference_source"] == (
+        "limits_port_calibration" if "reference_revision" in missing else "reference_revision"
+    )
 
 
-@pytest.mark.parametrize("change", ["profile", "contents", "limits", "revision", "stop"])
+def test_physical_revision_without_instance_has_no_decision_context(cached):
+    backend, _, entry, _ = cached
+    backend.service.demo = backend.simulated = False
+    backend.physical = True
+    entry["state"]["demo"] = False
+    entry["state"].pop("instance")
+    context = backend.choices(PAGE)["stage_context"]
+    assert context["available"] is False and context["preconditions"] is None
+    state = CacheStateProvider(backend.service.devices, mode="live")
+    assert state()["devices"]["stage"]["values"]["stage_reference"] is None
+
+
+@pytest.mark.parametrize(
+    "change", ["profile", "contents", "limits", "revision", "stop", "instance"]
+)
 def test_decision_changes_reject_prepare_before_control(cached, monkeypatch, change):
     backend, console, _, _ = cached
     selected = named_profile(backend)
@@ -149,11 +170,48 @@ def test_decision_changes_reject_prepare_before_control(cached, monkeypatch, cha
         console.state["motors"][0]["upper_limit_rotations"] = 9
     elif change == "revision":
         console.state["reference_revision"] += 1
+    elif change == "instance":
+        console.state["instance"] = "stage-process-b"
     else:
         console.state["stop_epoch"] += 1
     with pytest.raises(ValueError, match="no longer current"):
         backend.prepare("transfer.position", {"name": "Pickup"}, preconditions, PAGE)
     assert console.takes == console.stops == 0 and not console.moves
+
+
+@pytest.mark.parametrize("instance", [None, "missing"])
+def test_old_reference_without_instance_cannot_bind_current_service(cached, instance):
+    backend, console, _, _ = cached
+    preconditions = backend.choices(PAGE)["stage_context"]["preconditions"]
+    reference = preconditions["stage_reference"]
+    if instance == "missing":
+        reference.pop("instance")
+    else:
+        reference["instance"] = instance
+    with pytest.raises(ValueError, match="no longer current"):
+        backend.prepare("stage.position", {"motor": "top", "position": 1}, preconditions, PAGE)
+    assert console.takes == console.stops == 0 and not console.moves
+
+
+@pytest.mark.parametrize("during_take", [False, True])
+def test_stage_restart_rejects_queued_decision_even_with_matching_epoch(
+    cached, monkeypatch, during_take
+):
+    backend, console, _, _ = cached
+    plan = backend.prepare("stage.position", {"motor": "top", "position": 1}, {}, PAGE)
+    if during_take:
+        take = console.take
+
+        def restart_and_take(device, page):
+            console.state["instance"] = "stage-process-b"
+            return take(device, page)
+
+        monkeypatch.setattr(console, "take", restart_and_take)
+    else:
+        console.state["instance"] = "stage-process-b"
+    with pytest.raises(ValueError, match="reference.*changed"):
+        backend.execute(plan, Context())
+    assert console.takes == int(during_take) and not console.moves
 
 
 @pytest.mark.parametrize("action", ["transfer.position", "transfer.stage"])
@@ -203,7 +261,7 @@ def test_valid_decision_context_and_legacy_empty_preconditions_are_accepted(cach
     assert prepared == legacy
 
 
-@pytest.mark.parametrize("change", ["profile", "limits", "stop"])
+@pytest.mark.parametrize("change", ["profile", "limits", "stop", "instance"])
 def test_decision_references_are_checked_before_later_axes(cached, change):
     backend, console, _, _ = cached
     selected = named_profile(backend)
@@ -217,6 +275,8 @@ def test_decision_references_are_checked_before_later_axes(cached, change):
             backend.transfer.store.select(saved["id"])
         elif change == "limits":
             console.state["motors"][1]["upper_limit_rotations"] = 9
+        elif change == "instance":
+            console.state["instance"] = "stage-process-b"
         else:
             console.state["stop_epoch"] += 1
 
@@ -226,14 +286,18 @@ def test_decision_references_are_checked_before_later_axes(cached, change):
     assert len(console.moves) == 1 and console.stops == 1
 
 
-def test_state_frame_reference_matches_choices_and_retains_its_snapshot(cached):
+@pytest.mark.parametrize("change", ["reference", "instance"])
+def test_state_frame_reference_matches_choices_and_retains_its_snapshot(cached, change):
     backend, _, entry, _ = cached
     state = CacheStateProvider(backend.service.devices, mode="MOCK")
     first = state()["devices"]["stage"]
     original = backend.choices(PAGE)["stage_context"]["preconditions"]["stage_reference"]
     assert first["values"]["stage_reference"] == original
-    entry["state"]["reference_revision"] += 1
-    entry["state"]["motors"][1]["upper_limit_rotations"] = 9
+    if change == "reference":
+        entry["state"]["reference_revision"] += 1
+        entry["state"]["motors"][1]["upper_limit_rotations"] = 9
+    else:
+        entry["state"]["instance"] = "stage-process-b"
     second = state()["devices"]["stage"]
     current = backend.choices(PAGE)["stage_context"]["preconditions"]["stage_reference"]
     assert second["values"]["stage_reference"] == current != original

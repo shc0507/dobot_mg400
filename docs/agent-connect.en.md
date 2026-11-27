@@ -135,6 +135,10 @@ The `/commands/choices` response includes `constraints.stage` from the existing 
 
 The state field `devices.stage.values.stage_reference` uses the same native cache snapshot as that frame. Its value is `null` when unavailable. The portal compares it with the choices reference before a protected stage decision.
 
+`stage_reference` requires `instance`, `reference_revision`, `reference_source`, `stop_epoch` and `limits_digest`. The service process keeps its `instance` across device reconnects and changes it after service restart. Its `reference_revision` can repeat after restart. Physical legacy context keeps missing identity or revision values as `null`, but a revision without an instance is invalid. Missing identity leaves process continuity unverified. The local model rejects context that omits the `instance` field.
+
+Read bundle `1.2.0` has a new digest and requires the nullable identity field. The stage-context envelope retains `version: 1`. Older agents must review the communication guide, adapt the supported schema and digest, and preserve the complete context. A supplied reference without identity cannot match a service that exposes its real identity.
+
 Rejected and failed commands show their reason beside the command controls. Expand Recent commands and results for the full record.
 
 Each deliberate Send command creates a new `request_id`. If the response is lost, the portal queries that ID without repeating the command. An unresolved result blocks another submission. Changing sources clears the command view and ignores late responses from the previous source.
@@ -187,6 +191,10 @@ Use control status `command_boot_id` as the command's `boot_id`. Its `identity_s
 Request IDs belong to a client. With a current session, an identical ID and body return the saved record without dispatch. A different body under the same ID returns 409. An expired session cannot read or repeat a request. For an unknown result, query the original ID. Do not replay movement with a new ID automatically.
 
 Operations report `accepted`, `running`, `succeeded`, `failed`, `rejected`, `cancelling`, `stopped` or `unknown`. Cancel my operation requests cancellation of this session's operation. It does not prove equipment stopped. Furnace cancellation preserves its run/recovery behavior. Use the explicit furnace or gas Stop controls when those outputs must stop.
+
+The native `command` route binds completion to the accepted `command_id`, service `instance`, action and service `client`. The service client belongs to the Console device lease, separate from the paired agent's `client_id`. Completion must match the process and `last_command.id`, `last_command.action` and `last_command.client`. Missing acceptance identity, changed process identity or conflicting result identity produces `unknown`. A reused command ID cannot prove completion in another process. Query the saved operation and do not replay automatically.
+
+Guarded stage movement carries `expected_instance` and `expected_reference_revision` when both are available. Queued decisions and later axes retain the original reference. Legacy movement keeps native limits, Stop epochs and command-ID checks. Without a service instance, it cannot establish process continuity. An instance without a revision retains its process check, but a revision without an instance cannot authorize movement. Newly available identity fields require a new operation.
 
 Records persist in `agent-connect/commands.db` beside the authority database. Restart changes unfinished records to `unknown` without replay. Local simulation uses memory or temporary storage. Restarting local tests clears their records and profiles.
 
@@ -343,4 +351,4 @@ The `source` object reports `digest`, `complete`, `file_count`, `bytes_hashed` a
 
 The catalog limits agent operation to reviewed native capabilities. Enabling physical operation does not enable an unsupported action or remove device limits. The live reader, simulated equipment and format fixtures retain separate identities and results. Simulated checks do not establish physical-device behavior.
 
-Further device-service process-ID integration and deployment remain deferred until the other developer completes shared-service work. Reconcile the retained branch implementation at the next joint integration review. Missing service IDs remain unavailable. Console `boot_id`, client identity and `control_epoch` remain active.
+Before deployment, reconcile Console identity checks with the current shared services. Check live service paths, process identities and accepted command fields on the target Console. Missing service IDs remain unavailable. Console `boot_id`, client identity and `control_epoch` remain active.

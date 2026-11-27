@@ -130,7 +130,7 @@ class Device:
                 with device.lock:
                     if not spec["any_client"] and device.holder != identity:
                         raise ServiceError(409, "Another client holds the control lease.")
-                return {"command_id": "c-1"}
+                return {"command_id": "c-1", "state": self.state()}
 
             def stop(self):
                 device.calls.append(("stop", identity))
@@ -288,12 +288,15 @@ def test_state_reports_frame_data_without_secrets(rig):
 
 def test_take_relay_and_release_use_one_fresh_console_identity(rig):
     stage = rig.devices["stage"]
+    stage.state["instance"] = "stage-process"
     response = post(rig, "control/stage/take")
     assert response.status_code == 200
     holder = response.get_json()["control"]["holder"]
     assert holder.startswith("console-control-") and stage.holder == holder
     sent = post(rig, "command/stage", {"action": "move", "params": {"motor": 1}})
     assert sent.status_code == 202 and sent.get_json()["outcome"] == "accepted"
+    assert sent.get_json()["instance"] == "stage-process"
+    assert sent.get_json()["client"] == holder
     assert ("command", holder, "move", {"motor": 1}) in stage.calls
     released = post(rig, "control/stage/release")
     assert released.get_json()["result"] == "released"

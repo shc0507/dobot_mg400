@@ -11,7 +11,7 @@ from .actions import descriptors
 DOCS = "https://github.com/shc0507/dobot_mg400/blob/main/docs/agent-connect/"
 REVIEWED_DOCUMENTS = {
     "project-knowledge.md": "67deb09c72874e786f28683d2315d5bc3ad26697c4556fb16a9549b572c7d82f",
-    "communication-contract.md": "4a6b931ef41a5cf5896778ed0dd2525735b447cc9ab163258df63117f4c743d3",
+    "communication-contract.md": "302f4fe0d9383a3ff39a34b80c1cc89819f30897e05dd23bcd651ed64cb5bbd5",
 }
 
 
